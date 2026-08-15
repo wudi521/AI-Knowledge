@@ -5,6 +5,7 @@ spring:
     active: local
   main:
     allow-circular-references: true # 允许循环依赖
+    allow-bean-definition-overriding: true # 允许 Bean 覆盖(Feign 等重复定义场景, 对齐芋道)
   config:
     import:
       - optional:classpath:application-${spring.profiles.active}.yaml # 加载【本地】配置
@@ -16,3 +17,49 @@ server:
 logging:
   file:
     name: ${user.home}/logs/${spring.application.name}.log # 日志文件名
+
+
+# MyBatis Plus 的配置项
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true # 虽然默认为 true ，但是还是显示去指定下。
+  global-config:
+    db-config:
+      id-type: NONE # “智能”模式，基于 IdTypeEnvironmentPostProcessor + 数据源的类型，自动适配成 AUTO、INPUT 模式。
+      logic-delete-value: 1 # 逻辑已删除值(默认为 1)
+      logic-not-delete-value: 0 # 逻辑未删除值(默认为 0)
+    banner: false # 关闭控制台的 Banner 打印
+  type-aliases-package: ${yudao.info.base-package}.dal.dataobject
+
+# 芋道相关配置
+yudao:
+  info:
+    version: 1.0.0
+    base-package: cn.iocoder.yudao.module.knowledge
+  web:
+    admin-ui:
+      url: http://localhost:5666 # Admin 管理后台 UI 的地址
+  xss:
+    enable: false
+  api-encrypt:
+    enable: false
+  swagger:
+    title: 知识平台 管理后台
+    description: 提供知识平台的管理功能
+    version: ${yudao.info.version}
+  tenant: # 多租户相关配置项
+    enable: true
+
+
+# 定时任务(xxl-job)相关配置
+xxl:
+  job:
+    executor:
+      appname: ${spring.application.name} # 执行器 AppName
+      logpath: ${user.home}/logs/xxl-job/${spring.application.name} # 执行器运行日志文件存储磁盘路径
+    accessToken: default_token # 执行器通讯TOKEN
+# knife4j 接口文档
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn

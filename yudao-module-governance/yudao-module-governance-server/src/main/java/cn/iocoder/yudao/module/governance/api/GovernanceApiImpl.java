@@ -11,6 +11,7 @@ public class GovernanceApiImpl implements GovernanceApi {
 
     @Override
     public java.math.BigDecimal monthCost(Long tenantId) {
-    return java.math.BigDecimal.ZERO;
+        return java.math.BigDecimal.ZERO;
+    }
 
 }

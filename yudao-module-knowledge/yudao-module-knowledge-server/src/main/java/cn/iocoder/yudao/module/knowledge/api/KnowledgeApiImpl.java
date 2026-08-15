@@ -11,6 +11,7 @@ public class KnowledgeApiImpl implements KnowledgeApi {
 
     @Override
     public Boolean checkKnowledgePermission(Long chunkId, Long userId) {
-    return true;
+        return true;
+    }
 
 }

@@ -11,6 +11,7 @@ public class RuleApiImpl implements RuleApi {
 
     @Override
     public String evaluate(String ruleCode, String payload) {
-    return "{}";
+        return "{}";
+    }
 
 }

@@ -11,6 +11,7 @@ public class ChatApiImpl implements ChatApi {
 
     @Override
     public String sendMessage(Long conversationId, String message) {
-    return "";
+        return "";
+    }
 
 }

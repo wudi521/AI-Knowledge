@@ -11,6 +11,7 @@ public class ModelApiImpl implements ModelApi {
 
     @Override
     public String chat(String model, String prompt) {
-    return "";
+        return "";
+    }
 
 }

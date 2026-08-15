@@ -4,7 +4,7 @@ import cn.iocoder.yudao.module.rule.api.RuleApi;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.context.annotation.Configuration;
 
-@Configuration(proxyBeanMethods = false)
+@Configuration(value = "ruleRpcConfiguration", proxyBeanMethods = false)
 @EnableFeignClients(clients = {RuleApi.class})
 public class RpcConfiguration {
 }

@@ -4,7 +4,7 @@ import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.context.annotation.Configuration;
 
-@Configuration(proxyBeanMethods = false)
+@Configuration(value = "ingestionRpcConfiguration", proxyBeanMethods = false)
 @EnableFeignClients(clients = {IngestionApi.class})
 public class RpcConfiguration {
 }

@@ -11,6 +11,7 @@ public class RetrievalApiImpl implements RetrievalApi {
 
     @Override
     public java.util.List<String> search(Long tenantId, String query) {
-    return java.util.Collections.emptyList();
+        return java.util.Collections.emptyList();
+    }
 
 }

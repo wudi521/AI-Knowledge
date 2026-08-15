@@ -11,6 +11,7 @@ public class EvidenceApiImpl implements EvidenceApi {
 
     @Override
     public String verifyClaim(String claim, java.util.List<String> chunkIds) {
-    return "UNSUPPORTED";
+        return "UNSUPPORTED";
 
+    }
 }

@@ -11,6 +11,7 @@ public class IngestionApiImpl implements IngestionApi {
 
     @Override
     public Boolean triggerIngest(Long documentId) {
-    return true;
+        return true;
+    }
 
 }

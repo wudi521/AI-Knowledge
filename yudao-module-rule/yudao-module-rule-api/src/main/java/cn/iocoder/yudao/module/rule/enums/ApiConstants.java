@@ -8,6 +8,9 @@ public interface ApiConstants {
     /** 服务名 */
     String NAME = "rule-server";
 
+    /** 前缀 */
+    String PREFIX = "/admin-api/rule";
+
     /** 包名 */
     String PACKAGE_NAME = "cn.iocoder.yudao.module.rule.api";
 
