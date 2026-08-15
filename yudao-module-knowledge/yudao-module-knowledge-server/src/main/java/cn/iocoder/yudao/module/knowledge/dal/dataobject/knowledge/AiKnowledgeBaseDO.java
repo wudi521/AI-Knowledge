@@ -1,0 +1,36 @@
+package cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge;
+
+import cn.iocoder.yudao.framework.mybatis.core.dataobject.BaseDO;
+import com.baomidou.mybatisplus.annotation.KeySequence;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.*;
+
+/**
+ * 知识库 DO
+ */
+@TableName("ai_knowledge_base")
+@KeySequence("ai_knowledge_base_seq")
+@Data
+@EqualsAndHashCode(callSuper = true)
+@ToString(callSuper = true)
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class AiKnowledgeBaseDO extends BaseDO {
+
+    /** 编号 */
+    @TableId
+    private Long id;
+    /** 名称 */
+    private String name;
+    /** 切分策略: Semantic / ParentChild / Table / FAQ / Policy */
+    private String chunkStrategy;
+    /** Embedding 模型: BGE-M3 / Qwen */
+    private String embedModel;
+    /** 状态: 0 停用 1 启用 */
+    private Integer status;
+    /** 备注 */
+    private String remark;
+
+}

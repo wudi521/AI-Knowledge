@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <groupId>cn.iocoder.cloud</groupId>
+        <artifactId>yudao</artifactId>
+        <version>${revision}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+    <artifactId>yudao-module-knowledge</artifactId>
+    <packaging>pom</packaging>
+    <name>${project.artifactId}</name>
+    <description>知识平台 模块(对应旧清单 knowledge-service)</description>
+    <modules>
+        <module>yudao-module-knowledge-api</module>
+        <module>yudao-module-knowledge-server</module>
+    </modules>
+</project>

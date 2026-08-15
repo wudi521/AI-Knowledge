@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: knowledge-server
+  profiles:
+    active: local
+  main:
+    allow-circular-references: true # 允许循环依赖
+  config:
+    import:
+      - optional:classpath:application-${spring.profiles.active}.yaml # 加载【本地】配置
+      - optional:nacos:${spring.application.name}-${spring.profiles.active}.yaml # 加载【Nacos】的配置
+
+server:
+  port: 48084
+
+logging:
+  file:
+    name: ${user.home}/logs/${spring.application.name}.log # 日志文件名

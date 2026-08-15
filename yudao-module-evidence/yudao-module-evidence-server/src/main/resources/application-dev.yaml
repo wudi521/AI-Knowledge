@@ -1,0 +1,37 @@
+# 证据平台 本地开发配置(与《8-中间件清单-本机Docker.md》对应, 实测 9/9 healthy)
+spring:
+  cloud:
+    nacos:
+      server-addr: 127.0.0.1:8848 # Nacos 服务器地址
+      username: # Nacos 账号
+      password: # Nacos 密码
+      discovery: # 【注册中心】配置项
+        namespace: dev # 命名空间
+        group: DEFAULT_GROUP
+      config: # 【配置中心】配置项
+        namespace: dev
+        group: DEFAULT_GROUP
+  datasource: # 数据库: MySQL 8 / 库 ruoyi-vue-pro / root-123456
+    druid:
+      initial-size: 1
+      min-idle: 1
+      max-active: 20
+      max-wait: 60000
+    dynamic:
+      primary: master
+      datasource:
+        master:
+          name: ruoyi-vue-pro
+          url: jdbc:mysql://127.0.0.1:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true
+          username: root
+          password: 123456
+        slave: # 开发环境从库指向同一实例
+          name: ruoyi-vue-pro
+          lazy: true
+          url: jdbc:mysql://127.0.0.1:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true
+          username: root
+          password: 123456
+  redis: # Redis 7.0 :6379
+    host: 127.0.0.1
+    port: 6379
+    database: 0

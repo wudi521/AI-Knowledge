@@ -1,0 +1,33 @@
+package cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+
+import java.time.LocalDateTime;
+
+@Schema(description = "管理后台 - 知识库 Response VO")
+@Data
+public class AiKnowledgeBaseRespVO {
+
+    @Schema(description = "编号", example = "1024")
+    private Long id;
+
+    @Schema(description = "名称", example = "产品与售后知识库")
+    private String name;
+
+    @Schema(description = "切分策略", example = "ParentChild")
+    private String chunkStrategy;
+
+    @Schema(description = "Embedding 模型", example = "BGE-M3")
+    private String embedModel;
+
+    @Schema(description = "状态", example = "1")
+    private Integer status;
+
+    @Schema(description = "备注", example = "核心知识库")
+    private String remark;
+
+    @Schema(description = "创建时间")
+    private LocalDateTime createTime;
+
+}
