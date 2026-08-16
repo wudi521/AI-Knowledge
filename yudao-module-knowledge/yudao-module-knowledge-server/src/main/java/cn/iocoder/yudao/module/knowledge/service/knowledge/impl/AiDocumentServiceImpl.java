@@ -1,0 +1,60 @@
+package cn.iocoder.yudao.module.knowledge.service.knowledge.impl;
+
+import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
+import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentPageReqVO;
+import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentSaveReqVO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
+import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
+import jakarta.annotation.Resource;
+import org.springframework.stereotype.Service;
+import org.springframework.validation.annotation.Validated;
+
+import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.DOCUMENT_NOT_EXISTS;
+
+/**
+ * AI 文档 Service 实现
+ */
+@Service
+@Validated
+public class AiDocumentServiceImpl implements AiDocumentService {
+
+    @Resource
+    private AiDocumentMapper aiDocumentMapper;
+
+    @Override
+    public Long createAiDocument(AiDocumentSaveReqVO createReqVO) {
+        AiDocumentDO doc = BeanUtils.toBean(createReqVO, AiDocumentDO.class);
+        // 初始状态: 待解析
+        if (doc.getParseStatus() == null) {
+            doc.setParseStatus("PENDING");
+        }
+        aiDocumentMapper.insert(doc);
+        return doc.getId();
+    }
+
+    @Override
+    public void deleteAiDocument(Long id) {
+        validateAiDocumentExists(id);
+        aiDocumentMapper.deleteById(id);
+    }
+
+    @Override
+    public AiDocumentDO getAiDocument(Long id) {
+        return aiDocumentMapper.selectById(id);
+    }
+
+    @Override
+    public PageResult<AiDocumentDO> getAiDocumentPage(AiDocumentPageReqVO pageReqVO) {
+        return aiDocumentMapper.selectPage(pageReqVO);
+    }
+
+    private void validateAiDocumentExists(Long id) {
+        if (aiDocumentMapper.selectById(id) == null) {
+            throw exception(DOCUMENT_NOT_EXISTS);
+        }
+    }
+
+}

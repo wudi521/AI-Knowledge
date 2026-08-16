@@ -8,6 +8,8 @@ import cn.iocoder.yudao.framework.common.exception.ErrorCode;
  */
 public interface ErrorCodeConstants {
 
+    ErrorCode DOCUMENT_NOT_EXISTS = new ErrorCode(1_001_002_000, "文档不存在");
+
     ErrorCode KNOWLEDGE_NOT_EXISTS = new ErrorCode(1_004_000_001, "知识平台数据不存在");
 
 }

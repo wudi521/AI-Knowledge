@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS `ai_document`  (
   `storage_path` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '存储路径(MinIO)',
   `file_hash` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '文件 SHA-256',
   `parse_status` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PENDING' COMMENT '解析状态: PENDING/PARSING/EMBEDDING/INDEXED/FAILED',
+  `error_msg` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '失败原因',
+  `chunk_count` int NULL DEFAULT 0 COMMENT '切分片段数(解析结果)',
   `owner` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '上传人',
   `creator` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '创建者',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -80,4 +82,10 @@ CREATE TABLE IF NOT EXISTS `ai_chunk`  (
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `idx_version`(`version_id` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI 知识片段';
+
+-- ----------------------------
+-- 增量语句(已建库环境执行): ai_document 增加 error_msg/chunk_count 字段
+-- ----------------------------
+ALTER TABLE `ai_document` ADD COLUMN IF NOT EXISTS `error_msg` varchar(512) NULL DEFAULT NULL COMMENT '失败原因' AFTER `parse_status`;
+ALTER TABLE `ai_document` ADD COLUMN IF NOT EXISTS `chunk_count` int NULL DEFAULT 0 COMMENT '切分片段数(解析结果)' AFTER `error_msg`;
 
