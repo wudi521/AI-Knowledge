@@ -1,9 +1,11 @@
 package cn.iocoder.yudao.module.knowledge.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.enums.ApiConstants;
 import feign.FeignIgnore;
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 /**
@@ -30,5 +32,14 @@ public interface KnowledgeApi {
                                                     @RequestParam("parseStatus") String parseStatus,
                                                     @RequestParam(value = "chunkCount", required = false) Integer chunkCount,
                                                     @RequestParam(value = "errorMsg", required = false) String errorMsg);
+
+    /**
+     * 查询文档详情(供 ingestion-server 取元数据)
+     *
+     * @param id 文档编号
+     * @return 文档详情(不存在返回 null)
+     */
+    @GetMapping(ApiConstants.PREFIX + "/get-document")
+    CommonResult<KnowledgeDocumentRespDTO> getDocument(@RequestParam("id") Long id);
 
 }

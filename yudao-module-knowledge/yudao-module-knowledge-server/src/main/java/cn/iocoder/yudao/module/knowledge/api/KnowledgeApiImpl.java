@@ -1,6 +1,8 @@
 package cn.iocoder.yudao.module.knowledge.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
 import jakarta.annotation.Resource;
 import org.springframework.validation.annotation.Validated;
@@ -28,6 +30,23 @@ public class KnowledgeApiImpl implements KnowledgeApi {
                                                            Integer chunkCount, String errorMsg) {
         aiDocumentService.updateParseStatus(documentId, parseStatus, chunkCount, errorMsg);
         return success(true);
+    }
+
+    @Override
+    public CommonResult<KnowledgeDocumentRespDTO> getDocument(Long id) {
+        AiDocumentDO doc = aiDocumentService.getAiDocument(id);
+        if (doc == null) {
+            return success(null);
+        }
+        KnowledgeDocumentRespDTO dto = new KnowledgeDocumentRespDTO();
+        dto.setId(doc.getId());
+        dto.setKbId(doc.getKbId());
+        dto.setName(doc.getName());
+        dto.setType(doc.getType());
+        dto.setStoragePath(doc.getStoragePath());
+        dto.setParseStatus(doc.getParseStatus());
+        dto.setTenantId(doc.getTenantId());
+        return success(dto);
     }
 
 }
