@@ -14,5 +14,6 @@ public interface ErrorCodeConstants {
     ErrorCode VERSION_NOT_EXISTS = new ErrorCode(1_004_000_002, "文档版本不存在");
     ErrorCode VERSION_STATUS_ERROR = new ErrorCode(1_004_000_003, "文档版本状态不允许该操作");
     ErrorCode VERSION_PUBLISH_BLOCKED = new ErrorCode(1_004_000_004, "存在未处理完的必审条目或待裁决冲突,无法发布");
+    ErrorCode VERSION_DOC_MISMATCH = new ErrorCode(1_004_000_012, "版本与文档不匹配");
 
 }

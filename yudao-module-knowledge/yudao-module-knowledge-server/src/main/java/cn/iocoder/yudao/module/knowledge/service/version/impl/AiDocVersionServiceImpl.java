@@ -100,6 +100,11 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     @Transactional
     public void publish(Long versionId) {
         AiDocVersionDO version = getVersion(versionId);
+        // 幂等: 已发布则直接返回(notifyParsed 在 Kafka 重投/重试场景可能重复触发)
+        if (VersionStatusEnum.PUBLISHED.getStatus().equals(version.getStatus())) {
+            log.info("[publish][版本 {} 已发布, 幂等跳过]", versionId);
+            return;
+        }
         // 门禁 1: 状态必须 DRAFT(自动发布)或 REVIEW
         if (!VersionStatusEnum.REVIEW.getStatus().equals(version.getStatus())
                 && !VersionStatusEnum.DRAFT.getStatus().equals(version.getStatus())) {

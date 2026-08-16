@@ -20,6 +20,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.VERSION_DOC_MISMATCH;
 import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
@@ -111,18 +113,18 @@ public class AiDocumentServiceImpl implements AiDocumentService {
     }
 
     @Override
-    public void notifyParsed(Long documentId) {
+    public void notifyParsed(Long documentId, Long versionId) {
         validateAiDocumentExists(documentId);
-        // 确保有 DRAFT 版本(createAiDocument 已创建, 此处兜底)
-        AiDocVersionDO version = aiDocVersionService.getLatestVersion(documentId);
-        if (version == null) {
-            version = aiDocVersionService.createVersion(documentId);
+        // 严格绑定 ingestion 传入的版本(不能按最新推断, 防止旧消息重投误发布新版本)
+        AiDocVersionDO version = aiDocVersionService.getVersion(versionId);
+        if (!documentId.equals(version.getDocId())) {
+            throw new ServiceException(VERSION_DOC_MISMATCH);
         }
         // 抽取失败由 reviewItemService 内部兜底: 置文档 FAILED, 不向上抛(ingestion 无需感知)
         try {
             reviewItemService.processAfterParsed(version.getId());
         } catch (Exception e) {
-            log.error("[notifyParsed][文档 {} 审核处理失败]", documentId, e);
+            log.error("[notifyParsed][文档 {} 版本 {} 审核处理失败]", documentId, versionId, e);
             updateParseStatus(documentId, "FAILED", null, StrUtil.sub(e.getMessage(), 0, 500));
         }
     }

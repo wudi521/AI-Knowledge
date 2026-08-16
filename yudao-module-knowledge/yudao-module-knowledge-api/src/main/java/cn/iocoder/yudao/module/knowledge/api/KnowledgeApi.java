@@ -45,11 +45,16 @@ public interface KnowledgeApi {
     /**
      * 解析完成通知(ingestion 管线 MySQL 落库后调用)
      * knowledge 侧执行: 拉取 chunk -> LLM 抽取审核条目 -> 分流(REVIEW 或自动发布)
+     * <p>
+     * 必须携带 versionId(ingestion 在管线开始时从 getDocument 取得), 不能按"最新版本"推断:
+     * 否则旧版本的 Kafka 消息重投会绑定到新版本, 导致误发布
      *
      * @param documentId 文档编号
+     * @param versionId 管线实际写入 chunk 的版本编号
      * @return 是否成功
      */
     @PostMapping(ApiConstants.PREFIX + "/notify-parsed")
-    CommonResult<Boolean> notifyParsed(@RequestParam("documentId") Long documentId);
+    CommonResult<Boolean> notifyParsed(@RequestParam("documentId") Long documentId,
+                                       @RequestParam("versionId") Long versionId);
 
 }

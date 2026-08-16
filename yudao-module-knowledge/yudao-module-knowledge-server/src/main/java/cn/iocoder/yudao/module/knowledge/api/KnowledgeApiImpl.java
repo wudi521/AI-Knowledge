@@ -58,8 +58,8 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     }
 
     @Override
-    public CommonResult<Boolean> notifyParsed(Long documentId) {
-        aiDocumentService.notifyParsed(documentId);
+    public CommonResult<Boolean> notifyParsed(Long documentId, Long versionId) {
+        aiDocumentService.notifyParsed(documentId, versionId);
         return success(true);
     }
 
