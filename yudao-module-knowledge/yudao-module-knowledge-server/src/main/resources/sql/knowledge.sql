@@ -86,26 +86,27 @@ CREATE TABLE IF NOT EXISTS `ai_chunk`  (
 
 -- ----------------------------
 -- 增量语句(已建库环境执行): ai_document 增加 error_msg/chunk_count, ai_chunk 增加 parent_id
--- 注意: MySQL 8.0 不支持 ADD COLUMN IF NOT EXISTS, 重复执行会报错, 已存在则跳过
+-- 注意: 目标库为 MySQL 8.0, 不支持 ADD COLUMN IF NOT EXISTS; 本文件首次建库/迁移时执行一次,
+--       列已存在时请跳过对应语句(或按 Task 5 迁移脚本顺序执行)
 -- ----------------------------
-ALTER TABLE `ai_document` ADD COLUMN IF NOT EXISTS `error_msg` varchar(512) NULL DEFAULT NULL COMMENT '失败原因' AFTER `parse_status`;
-ALTER TABLE `ai_document` ADD COLUMN IF NOT EXISTS `chunk_count` int NULL DEFAULT 0 COMMENT '切分片段数(解析结果)' AFTER `error_msg`;
-ALTER TABLE `ai_chunk` ADD COLUMN IF NOT EXISTS `parent_id` bigint NULL DEFAULT NULL COMMENT '父块编号(ParentChild 子块用)' AFTER `vector_key`;
+ALTER TABLE `ai_document` ADD COLUMN `error_msg` varchar(512) NULL DEFAULT NULL COMMENT '失败原因' AFTER `parse_status`;
+ALTER TABLE `ai_document` ADD COLUMN `chunk_count` int NULL DEFAULT 0 COMMENT '切分片段数(解析结果)' AFTER `error_msg`;
+ALTER TABLE `ai_chunk` ADD COLUMN `parent_id` bigint NULL DEFAULT NULL COMMENT '父块编号(ParentChild 子块用)' AFTER `vector_key`;
 
 -- ----------------------------
--- 知识治理增量(已建库环境执行)
+-- 知识治理增量(已建库环境执行, MySQL 8.0 兼容: 不用 IF NOT EXISTS)
 -- ----------------------------
 -- 1. 知识库: 可见角色(code 逗号分隔,空=全部可见) + 有效期至
-ALTER TABLE `ai_knowledge_base` ADD COLUMN IF NOT EXISTS `visible_roles` varchar(512) NULL DEFAULT NULL COMMENT '可见角色code,逗号分隔;空=全部可见' AFTER `status`;
-ALTER TABLE `ai_knowledge_base` ADD COLUMN IF NOT EXISTS `effective_to` datetime NULL DEFAULT NULL COMMENT '有效期至(空=永久)' AFTER `visible_roles`;
+ALTER TABLE `ai_knowledge_base` ADD COLUMN `visible_roles` varchar(512) NULL DEFAULT NULL COMMENT '可见角色code,逗号分隔;空=全部可见' AFTER `status`;
+ALTER TABLE `ai_knowledge_base` ADD COLUMN `effective_to` datetime NULL DEFAULT NULL COMMENT '有效期至(空=永久)' AFTER `visible_roles`;
 
 -- 2. 文档版本: 冲突状态 + 审核结果
-ALTER TABLE `ai_doc_version` ADD COLUMN IF NOT EXISTS `conflict_status` tinyint NOT NULL DEFAULT 0 COMMENT '冲突状态:0无 1待裁决 2已裁决' AFTER `reviewer`;
-ALTER TABLE `ai_doc_version` ADD COLUMN IF NOT EXISTS `review_result` varchar(16) NULL DEFAULT NULL COMMENT '审核结果: APPROVED/REJECTED' AFTER `conflict_status`;
-ALTER TABLE `ai_doc_version` ADD COLUMN IF NOT EXISTS `review_comment` varchar(512) NULL DEFAULT NULL COMMENT '审核意见' AFTER `review_result`;
+ALTER TABLE `ai_doc_version` ADD COLUMN `conflict_status` tinyint NOT NULL DEFAULT 0 COMMENT '冲突状态:0无 1待裁决 2已裁决' AFTER `reviewer`;
+ALTER TABLE `ai_doc_version` ADD COLUMN `review_result` varchar(16) NULL DEFAULT NULL COMMENT '审核结果: APPROVED/REJECTED' AFTER `conflict_status`;
+ALTER TABLE `ai_doc_version` ADD COLUMN `review_comment` varchar(512) NULL DEFAULT NULL COMMENT '审核意见' AFTER `review_result`;
 
 -- 3. 片段: 向量(JSON 数组字符串,管线阶段存 MySQL,发布时写 Milvus)
-ALTER TABLE `ai_chunk` ADD COLUMN IF NOT EXISTS `embedding` text NULL DEFAULT NULL COMMENT 'BGE-M3向量(JSON数组,发布时写Milvus)' AFTER `content`;
+ALTER TABLE `ai_chunk` ADD COLUMN `embedding` text NULL DEFAULT NULL COMMENT 'BGE-M3向量(JSON数组,发布时写Milvus)' AFTER `content`;
 
 -- 4. 审核条目
 CREATE TABLE IF NOT EXISTS `ai_review_item` (
