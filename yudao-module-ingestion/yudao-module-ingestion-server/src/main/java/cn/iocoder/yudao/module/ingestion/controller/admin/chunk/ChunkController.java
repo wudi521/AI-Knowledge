@@ -8,7 +8,7 @@ import cn.iocoder.yudao.module.ingestion.controller.admin.chunk.vo.ChunkRespVO;
 import cn.iocoder.yudao.module.ingestion.controller.admin.chunk.vo.ChunkUpdateReqVO;
 import cn.iocoder.yudao.module.ingestion.controller.admin.chunk.vo.ChunkUpdateStatusReqVO;
 import cn.iocoder.yudao.module.ingestion.dal.dataobject.ChunkDO;
-import cn.iocoder.yudao.module.ingestion.dal.mysql.ChunkMapper;
+import cn.iocoder.yudao.module.ingestion.service.chunk.ChunkService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
@@ -24,9 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.ArrayList;
 import java.util.List;
 
-import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
-import static cn.iocoder.yudao.module.ingestion.enums.ErrorCodeConstants.CHUNK_NOT_EXISTS;
 
 @Tag(name = "管理后台 - AI 知识片段")
 @RestController
@@ -35,13 +33,13 @@ import static cn.iocoder.yudao.module.ingestion.enums.ErrorCodeConstants.CHUNK_N
 public class ChunkController {
 
     @Resource
-    private ChunkMapper chunkMapper;
+    private ChunkService chunkService;
 
     @GetMapping("/page")
     @Operation(summary = "获得 AI 知识片段分页")
     @PreAuthorize("@ss.hasPermission('ai:knowledge:query')")
     public CommonResult<PageResult<ChunkRespVO>> getChunkPage(@Valid ChunkPageReqVO pageReqVO) {
-        PageResult<ChunkDO> pageResult = chunkMapper.selectPage(pageReqVO);
+        PageResult<ChunkDO> pageResult = chunkService.getChunkPage(pageReqVO);
         // ChunkDO.versionId 即文档编号(documentId), 手动映射
         List<ChunkRespVO> list = new ArrayList<>(pageResult.getList().size());
         for (ChunkDO chunk : pageResult.getList()) {
@@ -56,13 +54,7 @@ public class ChunkController {
     @Operation(summary = "编辑 AI 知识片段内容")
     @PreAuthorize("@ss.hasPermission('ai:knowledge:update')")
     public CommonResult<Boolean> updateChunk(@Valid @RequestBody ChunkUpdateReqVO updateReqVO) {
-        // 校验片段存在
-        validateChunkExists(updateReqVO.getId());
-        // 仅更新内容
-        ChunkDO update = new ChunkDO();
-        update.setId(updateReqVO.getId());
-        update.setContent(updateReqVO.getContent());
-        chunkMapper.updateById(update);
+        chunkService.updateChunk(updateReqVO.getId(), updateReqVO.getContent());
         return success(true);
     }
 
@@ -70,20 +62,8 @@ public class ChunkController {
     @Operation(summary = "启用/禁用 AI 知识片段")
     @PreAuthorize("@ss.hasPermission('ai:knowledge:update')")
     public CommonResult<Boolean> updateChunkStatus(@Valid @RequestBody ChunkUpdateStatusReqVO updateStatusReqVO) {
-        // 校验片段存在
-        validateChunkExists(updateStatusReqVO.getId());
-        // 仅更新状态(PUBLISHED=启用 / DISABLED=禁用)
-        ChunkDO update = new ChunkDO();
-        update.setId(updateStatusReqVO.getId());
-        update.setStatus(updateStatusReqVO.getStatus());
-        chunkMapper.updateById(update);
+        chunkService.updateChunkStatus(updateStatusReqVO.getId(), updateStatusReqVO.getStatus());
         return success(true);
-    }
-
-    private void validateChunkExists(Long id) {
-        if (chunkMapper.selectById(id) == null) {
-            throw exception(CHUNK_NOT_EXISTS);
-        }
     }
 
 }

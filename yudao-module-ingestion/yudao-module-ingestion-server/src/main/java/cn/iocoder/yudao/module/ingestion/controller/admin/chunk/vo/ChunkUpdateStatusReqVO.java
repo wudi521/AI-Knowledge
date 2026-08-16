@@ -1,5 +1,7 @@
 package cn.iocoder.yudao.module.ingestion.controller.admin.chunk.vo;
 
+import cn.iocoder.yudao.framework.common.validation.InEnum;
+import cn.iocoder.yudao.module.ingestion.enums.ChunkStatusEnum;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -15,6 +17,7 @@ public class ChunkUpdateStatusReqVO {
 
     @Schema(description = "状态(PUBLISHED=启用 / DISABLED=禁用)", requiredMode = Schema.RequiredMode.REQUIRED, example = "PUBLISHED")
     @NotBlank(message = "状态不能为空")
+    @InEnum(value = ChunkStatusEnum.class, message = "状态必须是 {value}")
     private String status;
 
 }

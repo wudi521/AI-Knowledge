@@ -12,4 +12,6 @@ public interface ErrorCodeConstants {
 
     ErrorCode CHUNK_NOT_EXISTS = new ErrorCode(1_005_002_000, "知识片段不存在");
 
+    ErrorCode CHUNK_STATUS_ERROR = new ErrorCode(1_005_002_001, "知识片段状态不正确");
+
 }
