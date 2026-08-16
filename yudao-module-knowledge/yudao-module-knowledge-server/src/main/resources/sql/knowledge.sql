@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS `ai_chunk`  (
   `metadata` json NULL DEFAULT NULL COMMENT '元数据',
   `status` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'PUBLISHED' COMMENT '状态',
   `vector_key` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT 'Milvus 向量关联键(默认=chunk_id)',
+  `parent_id` bigint NULL DEFAULT NULL COMMENT '父块编号(ParentChild 子块用)',
   `creator` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '创建者',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updater` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '更新者',
@@ -84,8 +85,10 @@ CREATE TABLE IF NOT EXISTS `ai_chunk`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI 知识片段';
 
 -- ----------------------------
--- 增量语句(已建库环境执行): ai_document 增加 error_msg/chunk_count 字段
+-- 增量语句(已建库环境执行): ai_document 增加 error_msg/chunk_count, ai_chunk 增加 parent_id
+-- 注意: MySQL 8.0 不支持 ADD COLUMN IF NOT EXISTS, 重复执行会报错, 已存在则跳过
 -- ----------------------------
 ALTER TABLE `ai_document` ADD COLUMN IF NOT EXISTS `error_msg` varchar(512) NULL DEFAULT NULL COMMENT '失败原因' AFTER `parse_status`;
 ALTER TABLE `ai_document` ADD COLUMN IF NOT EXISTS `chunk_count` int NULL DEFAULT 0 COMMENT '切分片段数(解析结果)' AFTER `error_msg`;
+ALTER TABLE `ai_chunk` ADD COLUMN IF NOT EXISTS `parent_id` bigint NULL DEFAULT NULL COMMENT '父块编号(ParentChild 子块用)' AFTER `vector_key`;
 
