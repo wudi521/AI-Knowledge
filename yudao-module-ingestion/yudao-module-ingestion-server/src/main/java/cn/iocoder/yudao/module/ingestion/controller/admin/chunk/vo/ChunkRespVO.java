@@ -15,6 +15,12 @@ public class ChunkRespVO {
     @Schema(description = "文档编号(映射自 ai_chunk.version_id)", example = "1024")
     private Long documentId;
 
+    @Schema(description = "所属文档名称")
+    private String documentName;
+
+    @Schema(description = "文档存储路径(MinIO, 供下载)")
+    private String storagePath;
+
     @Schema(description = "片段类型", example = "SEMANTIC")
     private String chunkType;
 

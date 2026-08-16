@@ -33,4 +33,11 @@ public interface ChunkService {
      */
     void updateChunkStatus(Long id, String status);
 
+    /**
+     * 删除片段(MySQL + ES + Milvus 三处联动)
+     *
+     * @param id 片段编号
+     */
+    void deleteChunk(Long id);
+
 }
