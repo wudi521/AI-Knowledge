@@ -7,6 +7,7 @@ import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
@@ -33,6 +34,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     private AiDocVersionMapper aiDocVersionMapper;
     @Resource
     private AiDocumentService aiDocumentService;
+    @Resource
+    private ReviewItemMapper reviewItemMapper;
     @Resource
     private IngestionApi ingestionApi;
 
@@ -117,6 +120,11 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         if (!VersionStatusEnum.REVIEW.getStatus().equals(version.getStatus())
                 && !VersionStatusEnum.DRAFT.getStatus().equals(version.getStatus())) {
             throw new ServiceException(VERSION_STATUS_ERROR);
+        }
+        // 门禁 2: 必审条目全部处理完(无 PENDING/REJECTED; 价格类双人复核完成)
+        if (reviewItemMapper.existsUnfinishedRequired(versionId)
+                || reviewItemMapper.existsPriceWithoutDoubleReview(versionId)) {
+            throw new ServiceException(VERSION_PUBLISH_BLOCKED);
         }
         AiDocumentDO doc = aiDocumentService.getAiDocument(version.getDocId());
         if (doc == null) {

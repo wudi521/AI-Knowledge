@@ -6,8 +6,12 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
+import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
+import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
+import cn.iocoder.yudao.module.knowledge.controller.admin.review.vo.ReviewItemPageReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.enums.review.ReviewItemStatusEnum;
@@ -21,10 +25,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_EXTRACT_FAILED;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_NOT_EXISTS;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_STATUS_ERROR;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_PRICE_DOUBLE_REQUIRED;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_PRICE_SAME_REVIEWER;
 
 /**
  * 审核条目服务: LLM 抽取 -> 分级 -> 分流(REVIEW / 自动发布)
@@ -165,6 +174,81 @@ public class ReviewItemServiceImpl implements ReviewItemService {
             log.error("[parseExtractJson][解析失败, 原文: {}]", resp);
             throw new ServiceException(REVIEW_EXTRACT_FAILED);
         }
+    }
+
+    @Override
+    public PageResult<ReviewItemDO> getReviewItemPage(ReviewItemPageReqVO pageReqVO) {
+        return reviewItemMapper.selectPage(pageReqVO, new LambdaQueryWrapperX<ReviewItemDO>()
+                .eqIfPresent(ReviewItemDO::getDocId, pageReqVO.getDocId())
+                .eqIfPresent(ReviewItemDO::getVersionId, pageReqVO.getVersionId())
+                .eqIfPresent(ReviewItemDO::getStatus, pageReqVO.getStatus())
+                .eqIfPresent(ReviewItemDO::getItemType, pageReqVO.getItemType())
+                .eqIfPresent(ReviewItemDO::getRiskLevel, pageReqVO.getRiskLevel())
+                .orderByAsc(ReviewItemDO::getRiskLevel) // 高风险在前
+                .orderByDesc(ReviewItemDO::getId));
+    }
+
+    @Override
+    public void approve(Long id) {
+        ReviewItemDO item = getItem(id);
+        if (!ReviewItemStatusEnum.PENDING.getStatus().equals(item.getStatus())) {
+            throw new ServiceException(REVIEW_ITEM_STATUS_ERROR);
+        }
+        ReviewItemDO update = new ReviewItemDO();
+        update.setId(id);
+        update.setStatus(ReviewItemStatusEnum.APPROVED.getStatus());
+        update.setReviewer(currentNickname());
+        update.setReviewTime(LocalDateTime.now());
+        reviewItemMapper.updateById(update);
+        log.info("[approve][条目 {} 通过]", id);
+    }
+
+    @Override
+    public void approveSecond(Long id) {
+        ReviewItemDO item = getItem(id);
+        if (!"PRICE".equals(item.getItemType())) {
+            throw new ServiceException(REVIEW_PRICE_DOUBLE_REQUIRED);
+        }
+        if (!ReviewItemStatusEnum.APPROVED.getStatus().equals(item.getStatus()) || item.getReviewer2() != null) {
+            throw new ServiceException(REVIEW_ITEM_STATUS_ERROR);
+        }
+        String reviewer = currentNickname();
+        if (StrUtil.equals(item.getReviewer(), reviewer)) {
+            throw new ServiceException(REVIEW_PRICE_SAME_REVIEWER);
+        }
+        ReviewItemDO update = new ReviewItemDO();
+        update.setId(id);
+        update.setReviewer2(reviewer);
+        reviewItemMapper.updateById(update);
+        log.info("[approveSecond][条目 {} 双人复核完成]", id);
+    }
+
+    @Override
+    public void reject(Long id, String reason) {
+        ReviewItemDO item = getItem(id);
+        if (!ReviewItemStatusEnum.PENDING.getStatus().equals(item.getStatus())) {
+            throw new ServiceException(REVIEW_ITEM_STATUS_ERROR);
+        }
+        ReviewItemDO update = new ReviewItemDO();
+        update.setId(id);
+        update.setStatus(ReviewItemStatusEnum.REJECTED.getStatus());
+        update.setRejectReason(reason);
+        update.setReviewer(currentNickname());
+        update.setReviewTime(LocalDateTime.now());
+        reviewItemMapper.updateById(update);
+        log.info("[reject][条目 {} 驳回: {}]", id, reason);
+    }
+
+    private ReviewItemDO getItem(Long id) {
+        ReviewItemDO item = reviewItemMapper.selectById(id);
+        if (item == null) {
+            throw new ServiceException(REVIEW_ITEM_NOT_EXISTS);
+        }
+        return item;
+    }
+
+    private String currentNickname() {
+        return SecurityFrameworkUtils.getLoginUserNickname();
     }
 
 }
