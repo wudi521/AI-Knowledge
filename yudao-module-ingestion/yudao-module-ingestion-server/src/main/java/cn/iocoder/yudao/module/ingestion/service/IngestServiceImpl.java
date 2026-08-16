@@ -84,7 +84,7 @@ public class IngestServiceImpl implements IngestService {
                 chunkDO.setStatus("PUBLISHED");
                 chunkDO.setMetadata(chunks.get(i).getMetadata());
                 chunkDO.setParentId(chunks.get(i).getParentId());
-                mysqlChunkStore.insertChunks(List.of(chunkDO));
+                mysqlChunkStore.insertChunks(List.of(chunkDO), tenantId);
                 chunkDO.setVectorKey(String.valueOf(chunkDO.getId()));
                 chunkIds.add(chunkDO.getId());
                 validVectors.add(vectors.get(i));

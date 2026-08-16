@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.ingestion.store;
 import io.milvus.client.MilvusServiceClient;
 import io.milvus.common.clientenum.ConsistencyLevelEnum;
 import io.milvus.grpc.DataType;
+import io.milvus.grpc.MutationResult;
 import io.milvus.param.ConnectParam;
 import io.milvus.param.IndexType;
 import io.milvus.param.MetricType;
@@ -46,6 +47,10 @@ public class MilvusChunkStore {
                 .withPort(port)
                 .build());
         createCollectionIfAbsent();
+        // 无论集合是否新建都加载: Milvus 重启后已有集合可能处于未加载状态, 插入会报错
+        client.loadCollection(LoadCollectionParam.newBuilder()
+                .withCollectionName(collection).build());
+        log.info("[init][Milvus 集合 {} 加载完成]", collection);
     }
 
     private void createCollectionIfAbsent() {
@@ -76,8 +81,6 @@ public class MilvusChunkStore {
                 .withMetricType(MetricType.COSINE)
                 .withExtraParam("{\"nlist\":1024}")
                 .build());
-        client.loadCollection(LoadCollectionParam.newBuilder()
-                .withCollectionName(collection).build());
         log.info("[init][Milvus 集合 {} 创建完成]", collection);
     }
 
@@ -99,7 +102,10 @@ public class MilvusChunkStore {
                 .withCollectionName(collection)
                 .withFields(fields)
                 .build();
-        client.insert(param);
+        R<MutationResult> insertResp = client.insert(param);
+        if (insertResp.getStatus() != R.Status.Success.getCode()) {
+            throw new RuntimeException("Milvus 写入失败: " + insertResp.getMessage());
+        }
     }
 
 }

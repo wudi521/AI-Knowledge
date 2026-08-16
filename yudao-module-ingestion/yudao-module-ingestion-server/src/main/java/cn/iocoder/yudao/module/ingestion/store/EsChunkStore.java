@@ -30,9 +30,42 @@ public class EsChunkStore {
 
     @PostConstruct
     public void init() {
-        String host = uris.replaceAll("^https?://", "").split(":")[0];
-        int port = Integer.parseInt(uris.replaceAll("^https?://", "").split(":")[1].replaceAll("/.*", ""));
-        client = RestClient.builder(new HttpHost(host, port, "http")).build();
+        try {
+            parseAndInit();
+        } catch (Exception e) {
+            // 解析失败不阻断启动, 仅记录日志(后续写入会因 client 为空抛异常)
+            log.error("[init][ES uris 解析失败, 跳过初始化: {}]", uris, e);
+        }
+    }
+
+    private void parseAndInit() {
+        // 多节点逗号分隔时取第一个; 兼容 scheme/无端口/IPv6/尾随路径
+        String uri = uris.split(",")[0].trim();
+        String scheme = uri.startsWith("https") ? "https" : "http";
+        String rest = uri.replaceAll("^https?://", "");
+        int slash = rest.indexOf('/');
+        if (slash >= 0) {
+            rest = rest.substring(0, slash);
+        }
+        String host;
+        int port;
+        if (rest.startsWith("[")) {
+            // IPv6: [::1]:9200
+            int close = rest.indexOf(']');
+            host = rest.substring(1, close);
+            String after = rest.substring(close + 1);
+            port = after.startsWith(":") ? Integer.parseInt(after.substring(1)) : 9200;
+        } else {
+            int colon = rest.lastIndexOf(':');
+            if (colon >= 0) {
+                host = rest.substring(0, colon);
+                port = Integer.parseInt(rest.substring(colon + 1));
+            } else {
+                host = rest;
+                port = 9200;
+            }
+        }
+        client = RestClient.builder(new HttpHost(host, port, scheme)).build();
         createIndexIfAbsent();
     }
 

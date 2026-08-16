@@ -1,17 +1,17 @@
 package cn.iocoder.yudao.module.ingestion.dal.dataobject;
 
-import cn.iocoder.yudao.framework.mybatis.core.dataobject.BaseDO;
+import cn.iocoder.yudao.framework.tenant.core.db.TenantBaseDO;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
 /**
- * AI 知识片段(与 ai_chunk 表对应)
+ * AI 知识片段(与 ai_chunk 表对应, 租户隔离由 TenantBaseDO.tenantId 承载)
  */
 @TableName("ai_chunk")
 @Data
 @EqualsAndHashCode(callSuper = true)
-public class ChunkDO extends BaseDO {
+public class ChunkDO extends TenantBaseDO {
 
     /** 编号 */
     private Long id;

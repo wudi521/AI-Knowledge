@@ -16,10 +16,11 @@ public class MysqlChunkStore {
     @Resource
     private ChunkMapper chunkMapper;
 
-    public void insertChunks(List<ChunkDO> chunks) {
+    public void insertChunks(List<ChunkDO> chunks, Long tenantId) {
         for (ChunkDO chunk : chunks) {
-            chunkMapper.insert(chunk);
+            chunk.setTenantId(tenantId);
         }
+        chunkMapper.insertBatch(chunks);
     }
 
 }
