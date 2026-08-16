@@ -12,8 +12,6 @@ import cn.iocoder.yudao.module.ingestion.parse.PdfParser;
 import cn.iocoder.yudao.module.ingestion.parse.TextParser;
 import cn.iocoder.yudao.module.ingestion.split.Chunk;
 import cn.iocoder.yudao.module.ingestion.split.SplitterFactory;
-import cn.iocoder.yudao.module.ingestion.store.EsChunkStore;
-import cn.iocoder.yudao.module.ingestion.store.MilvusChunkStore;
 import cn.iocoder.yudao.module.ingestion.store.MysqlChunkStore;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
@@ -26,7 +24,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 文档入库主流程: 解析 → 切分 → 向量化 → 三写
+ * 文档入库主流程: 解析 → 切分 → 向量化 → 只写 MySQL → 通知审核
  */
 @Slf4j
 @Service
@@ -45,17 +43,14 @@ public class IngestServiceImpl implements IngestService {
     @Resource
     private MysqlChunkStore mysqlChunkStore;
     @Resource
-    private MilvusChunkStore milvusChunkStore;
-    @Resource
-    private EsChunkStore esChunkStore;
-    @Resource
     private KnowledgeApi knowledgeApi;
     @Resource
     private ChunkMapper chunkMapper;
 
     /**
-     * 入库主流程: 解析 → 切分 → 向量化 → 三写
+     * 入库主流程: 解析 → 切分 → 向量化 → 只写 MySQL(REVIEW) → 通知审核
      * <p>
+     * Milvus/ES 由审核通过后的发布(indexVersion)写入, 不在本方法执行。
      * MySQL 写入处于同一事务: 中途失败回滚已插行; FAILED 状态回写是 Feign 远程调用,
      * 在 catch 中执行, 不受本地事务回滚影响
      */
@@ -96,33 +91,36 @@ public class IngestServiceImpl implements IngestService {
             List<String> contents = chunks.stream().map(Chunk::getContent).toList();
             List<List<Float>> vectors = embeddingClient.embed(contents);
 
-            // 6. 三写前清理旧片段: 重试/重发时按 versionId 删除残留, 保证幂等(ai_chunk 无唯一约束)
-            chunkMapper.deleteByVersionId(documentId);
+            // 6. 清理旧片段(按真实版本 id, 幂等)
+            Long versionId = document.getCurrentVersionId();
+            if (versionId == null) {
+                throw new RuntimeException("文档无版本记录: " + documentId);
+            }
+            chunkMapper.deleteByVersionId(versionId);
 
-            // 7. 三写: 先 MySQL, 再 Milvus, 再 ES
+            // 7. 只写 MySQL(向量存 embedding; Milvus/ES 待审核通过发布时写)
             List<Long> chunkIds = new ArrayList<>();
-            List<List<Float>> validVectors = new ArrayList<>();
             for (int i = 0; i < chunks.size(); i++) {
                 ChunkDO chunkDO = new ChunkDO();
-                chunkDO.setVersionId(documentId); // 版本状态机后续接入, 暂用文档 id
+                chunkDO.setVersionId(versionId); // 真实版本 id(版本状态机)
                 chunkDO.setContent(chunks.get(i).getContent());
                 chunkDO.setChunkType(chunks.get(i).getChunkType());
-                chunkDO.setStatus("PUBLISHED");
+                chunkDO.setStatus("REVIEW"); // 待审核状态, 发布时置 PUBLISHED
                 chunkDO.setMetadata(chunks.get(i).getMetadata());
                 chunkDO.setParentId(chunks.get(i).getParentId());
+                chunkDO.setEmbedding(cn.hutool.json.JSONUtil.toJsonStr(vectors.get(i)));
                 mysqlChunkStore.insertChunks(List.of(chunkDO), tenantId);
-                chunkDO.setVectorKey(String.valueOf(chunkDO.getId()));
                 chunkIds.add(chunkDO.getId());
-                validVectors.add(vectors.get(i));
-                // ES 写入
-                esChunkStore.insertChunk(chunkDO.getId(), tenantId, kbId, chunkDO.getContent());
             }
-            // Milvus 批量写
-            milvusChunkStore.insertVectors(chunkIds, validVectors, tenantId, kbId);
 
-            // 8. 置为已入库(带回片段数)
-            updateStatus(documentId, "INDEXED", chunks.size(), null);
-            log.info("[ingestDocument][文档 {} 入库完成, {} 个片段]", documentId, chunks.size());
+            // 8. 置为 REVIEW(管线完成, 待审核)并通知 knowledge 处理审核
+            updateStatus(documentId, "REVIEW", chunks.size(), null);
+            // 必须传管线实际使用的 versionId(不能由 knowledge 按最新推断)
+            CommonResult<Boolean> notifyResult = knowledgeApi.notifyParsed(documentId, versionId);
+            if (notifyResult.isError()) {
+                throw new ServiceException(notifyResult.getCode(), notifyResult.getMsg());
+            }
+            log.info("[ingestDocument][文档 {} 落库完成(REVIEW), {} 个片段, 已通知审核]", documentId, chunks.size());
         } catch (Exception e) {
             log.error("[ingestDocument][文档 {} 入库失败]", documentId, e);
             try {

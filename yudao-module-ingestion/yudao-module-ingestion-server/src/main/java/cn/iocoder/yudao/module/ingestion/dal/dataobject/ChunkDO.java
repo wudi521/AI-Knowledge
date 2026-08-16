@@ -16,7 +16,7 @@ public class ChunkDO extends TenantBaseDO {
     /** 编号 */
     private Long id;
 
-    /** 版本编号(暂用文档 id 占位, 版本状态机后续接入) */
+    /** 版本编号(版本状态机真实 versionId) */
     private Long versionId;
 
     /** 片段内容 */
@@ -33,6 +33,9 @@ public class ChunkDO extends TenantBaseDO {
 
     /** Milvus 向量关联键 */
     private String vectorKey;
+
+    /** 向量(JSON 数组字符串, 发布时写 Milvus) */
+    private String embedding;
 
     /** 父块编号 */
     private Long parentId;

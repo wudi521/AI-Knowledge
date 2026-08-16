@@ -1,11 +1,15 @@
 package cn.iocoder.yudao.module.ingestion.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.ingestion.enums.ApiConstants;
 import feign.FeignIgnore;
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+
+import java.util.List;
 /**
  * 入库管线 对外 RPC 接口(Feign)
  * 其他模块通过 Feign 调用本接口, 实现位于 ingestion-server
@@ -41,5 +45,14 @@ public interface IngestionApi {
     CommonResult<Boolean> indexVersion(@RequestParam("versionId") Long versionId,
                                        @RequestParam("kbId") Long kbId,
                                        @RequestParam("tenantId") Long tenantId);
+
+    /**
+     * 按版本查询片段列表(供 knowledge 抽取审核条目)
+     *
+     * @param versionId 版本编号
+     * @return 片段列表
+     */
+    @GetMapping(ApiConstants.PREFIX + "/get-chunks-by-version")
+    CommonResult<List<ChunkRespDTO>> getChunksByVersion(@RequestParam("versionId") Long versionId);
 
 }

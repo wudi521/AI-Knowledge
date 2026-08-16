@@ -8,11 +8,13 @@ import cn.iocoder.yudao.module.ingestion.dal.dataobject.ChunkDO;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.apache.ibatis.annotations.Mapper;
 
+import java.util.List;
+
 @Mapper
 public interface ChunkMapper extends BaseMapperX<ChunkDO> {
 
     /**
-     * 分页查询片段(ChunkDO.versionId 即文档编号 documentId)
+     * 分页查询片段(ChunkDO.versionId 即版本编号, 与文档 id 非一一对应)
      *
      * @param reqVO 分页查询条件
      * @return 分页结果
@@ -26,7 +28,7 @@ public interface ChunkMapper extends BaseMapperX<ChunkDO> {
     }
 
     /**
-     * 按版本(暂为文档 id)删除旧片段
+     * 按版本删除旧片段
      * 重试/重发前清理残留数据, 保证入库幂等(ai_chunk 无唯一约束)
      *
      * @param versionId 版本编号
@@ -34,6 +36,18 @@ public interface ChunkMapper extends BaseMapperX<ChunkDO> {
      */
     default int deleteByVersionId(Long versionId) {
         return delete(new LambdaQueryWrapper<ChunkDO>().eq(ChunkDO::getVersionId, versionId));
+    }
+
+    /** 按版本查询片段 */
+    default List<ChunkDO> selectListByVersionId(Long versionId) {
+        return selectList(new LambdaQueryWrapper<ChunkDO>().eq(ChunkDO::getVersionId, versionId));
+    }
+
+    /** 按版本更新片段状态 */
+    default int updateStatusByVersionId(Long versionId, String status) {
+        return update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<ChunkDO>()
+                .eq(ChunkDO::getVersionId, versionId)
+                .set(ChunkDO::getStatus, status));
     }
 
 }
