@@ -1,5 +1,9 @@
 package cn.iocoder.yudao.module.knowledge.service.review;
 
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO;
+
+import java.util.List;
+
 /**
  * 审核条目服务
  */
@@ -26,6 +30,6 @@ public interface ReviewItemService {
      * @param versionId 版本编号
      * @return 抽取出的条目
      */
-    java.util.List<cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO> extractItems(Long versionId);
+    List<ReviewItemDO> extractItems(Long versionId);
 
 }

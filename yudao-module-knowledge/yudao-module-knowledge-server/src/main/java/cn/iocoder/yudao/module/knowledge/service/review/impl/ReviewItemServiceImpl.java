@@ -5,6 +5,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO;
@@ -23,6 +24,8 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_EXTRACT_FAILED;
+
 /**
  * 审核条目服务: LLM 抽取 -> 分级 -> 分流(REVIEW / 自动发布)
  */
@@ -39,6 +42,9 @@ public class ReviewItemServiceImpl implements ReviewItemService {
             """;
 
     private static final int BATCH_SIZE = 10;
+
+    /** 置信度低于该值强制人工审核(BR-006) */
+    private static final BigDecimal CONFIDENCE_MANUAL_THRESHOLD = new BigDecimal("0.85");
 
     @Resource
     private ReviewItemMapper reviewItemMapper;
@@ -73,6 +79,7 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     }
 
     @Override
+    @Transactional
     public List<ReviewItemDO> extractItems(Long versionId) {
         Long docId = aiDocVersionService.getVersion(versionId).getDocId();
         // 1. 拉取该版本全部 chunk
@@ -108,20 +115,31 @@ public class ReviewItemServiceImpl implements ReviewItemService {
         JSONArray array = parseExtractJson(resp);
         List<ReviewItemDO> items = new ArrayList<>();
         for (Object o : array) {
-            JSONObject obj = (JSONObject) o;
+            if (!(o instanceof JSONObject obj)) {
+                continue; // 模型输出非对象元素时跳过, 不中断整批
+            }
             ReviewItemDO item = new ReviewItemDO();
             item.setVersionId(versionId);
             item.setDocId(docId);
-            String type = StrUtil.upperFirst(StrUtil.nullToEmpty(obj.getStr("item_type", "POLICY")));
+            // 归一化为全大写, 保证与 mustReview/PRICE 双人复核等比较一致(LLM 可能输出小写)
+            String type = StrUtil.nullToEmpty(obj.getStr("item_type", "POLICY")).toUpperCase();
             item.setItemType(type);
             item.setTitle(StrUtil.sub(obj.getStr("title", "未命名条目"), 0, 255));
             item.setContent(StrUtil.sub(obj.getStr("content", ""), 0, 2000));
             item.setRiskLevel(StrUtil.nullToDefault(obj.getStr("risk_level", "MED"), "MED").toUpperCase());
             BigDecimal confidence = obj.getBigDecimal("confidence");
+            // 置信度归一化到 [0,1](防止模型输出越界导致 decimal(4,3) 落库失败)
+            if (confidence != null) {
+                if (confidence.compareTo(BigDecimal.ZERO) < 0) {
+                    confidence = BigDecimal.ZERO;
+                } else if (confidence.compareTo(BigDecimal.ONE) > 0) {
+                    confidence = BigDecimal.ONE;
+                }
+            }
             item.setAiConfidence(confidence);
-            // 分级规则(BR-006): POLICY/PRICE/LEGAL 必审; 置信度 < 0.85 强制人工
+            // 分级规则(BR-006): POLICY/PRICE/LEGAL 必审; 置信度缺失或 < 0.85 强制人工(fail-closed)
             boolean mustReview = "POLICY".equals(type) || "PRICE".equals(type) || "LEGAL".equals(type)
-                    || (confidence != null && confidence.compareTo(new BigDecimal("0.85")) < 0);
+                    || confidence == null || confidence.compareTo(CONFIDENCE_MANUAL_THRESHOLD) < 0;
             item.setMustReview(mustReview);
             item.setStatus(ReviewItemStatusEnum.PENDING.getStatus());
             items.add(item);
@@ -133,7 +151,7 @@ public class ReviewItemServiceImpl implements ReviewItemService {
         // 兼容模型输出带 ```json 包裹
         String content = resp == null ? "" : resp.trim();
         if (content.startsWith("```")) {
-            content = content.replaceAll("```json", "").replaceAll("```", "").trim();
+            content = content.replaceAll("(?i)```json", "").replaceAll("```", "").trim();
         }
         int start = content.indexOf('[');
         int end = content.lastIndexOf(']');
@@ -143,8 +161,9 @@ public class ReviewItemServiceImpl implements ReviewItemService {
         try {
             return JSONUtil.parseArray(content);
         } catch (Exception e) {
-            log.warn("[parseExtractJson][解析失败, 返回空: {}]", resp);
-            return new JSONArray();
+            // 解析失败必须抛错(走 FAILED + 可重试), 不能静默返回空导致"无必审条目 -> 自动发布"绕过门禁
+            log.error("[parseExtractJson][解析失败, 原文: {}]", resp);
+            throw new ServiceException(REVIEW_EXTRACT_FAILED);
         }
     }
 
