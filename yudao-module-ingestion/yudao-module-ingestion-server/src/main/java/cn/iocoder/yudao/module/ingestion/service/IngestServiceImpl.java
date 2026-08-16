@@ -105,7 +105,7 @@ public class IngestServiceImpl implements IngestService {
                 chunkDO.setVersionId(versionId); // 真实版本 id(版本状态机)
                 chunkDO.setContent(chunks.get(i).getContent());
                 chunkDO.setChunkType(chunks.get(i).getChunkType());
-                chunkDO.setStatus("REVIEW"); // 待审核状态, 发布时置 PUBLISHED
+                chunkDO.setStatus(cn.iocoder.yudao.module.ingestion.enums.ChunkStatusEnum.REVIEW.getStatus()); // 待审核, 发布时置 PUBLISHED
                 chunkDO.setMetadata(chunks.get(i).getMetadata());
                 chunkDO.setParentId(chunks.get(i).getParentId());
                 chunkDO.setEmbedding(cn.hutool.json.JSONUtil.toJsonStr(vectors.get(i)));

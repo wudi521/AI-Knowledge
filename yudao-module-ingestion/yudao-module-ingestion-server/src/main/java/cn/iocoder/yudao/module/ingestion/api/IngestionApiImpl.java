@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.ingestion.api;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.ingestion.dal.dataobject.ChunkDO;
@@ -59,6 +60,10 @@ public class IngestionApiImpl implements IngestionApi {
     public CommonResult<Boolean> indexVersion(Long versionId, Long kbId, Long tenantId) {
         // 幂等契约: 覆盖式重写 Milvus/ES; "置 chunk PUBLISHED"必须是最后一步
         List<ChunkDO> chunks = chunkMapper.selectListByVersionId(versionId);
+        if (CollUtil.isEmpty(chunks)) {
+            // 空版本无片段: 视为成功, 避免空向量写入 Milvus 报错
+            return success(true);
+        }
         List<Long> chunkIds = new ArrayList<>();
         List<List<Float>> vectors = new ArrayList<>();
         for (ChunkDO chunk : chunks) {
@@ -70,7 +75,7 @@ public class IngestionApiImpl implements IngestionApi {
         // Milvus 批量写
         milvusChunkStore.insertVectors(chunkIds, vectors, tenantId, kbId);
         // 最后: chunk 状态置 PUBLISHED
-        chunkMapper.updateStatusByVersionId(versionId, "PUBLISHED");
+        chunkMapper.updateStatusByVersionId(versionId, cn.iocoder.yudao.module.ingestion.enums.ChunkStatusEnum.PUBLISHED.getStatus());
         return success(true);
     }
 

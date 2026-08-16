@@ -15,6 +15,7 @@ import java.util.Arrays;
 public enum ChunkStatusEnum implements ArrayValuable<String> {
 
     PUBLISHED("PUBLISHED", "已发布"),
+    REVIEW("REVIEW", "待审核"),
     DISABLED("DISABLED", "已禁用");
 
     public static final String[] ARRAYS = Arrays.stream(values())

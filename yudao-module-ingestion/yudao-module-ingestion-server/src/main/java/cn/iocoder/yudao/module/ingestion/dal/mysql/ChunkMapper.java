@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.ingestion.dal.mysql;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
@@ -29,12 +30,16 @@ public interface ChunkMapper extends BaseMapperX<ChunkDO> {
 
     /**
      * 分页查询片段(按版本编号集合过滤, 文档过滤时使用: documentId -> 版本 ids)
+     * 注意: versionIds 为空时直接返回空页(不能退化为无过滤查全表)
      *
      * @param reqVO 分页查询条件
      * @param versionIds 版本编号集合
      * @return 分页结果
      */
     default PageResult<ChunkDO> selectPageByVersionIds(ChunkPageReqVO reqVO, List<Long> versionIds) {
+        if (CollUtil.isEmpty(versionIds)) {
+            return PageResult.empty();
+        }
         return selectPage(reqVO, new LambdaQueryWrapperX<ChunkDO>()
                 .inIfPresent(ChunkDO::getVersionId, versionIds)
                 .eqIfPresent(ChunkDO::getChunkType, reqVO.getChunkType())

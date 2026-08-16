@@ -10,7 +10,7 @@ import lombok.EqualsAndHashCode;
 @EqualsAndHashCode(callSuper = true)
 public class ChunkPageReqVO extends PageParam {
 
-    @Schema(description = "文档编号(映射 ai_chunk.version_id)", example = "1024")
+    @Schema(description = "文档编号(查询时解析为文档全部版本 id 再过滤)", example = "1024")
     private Long documentId;
 
     @Schema(description = "片段类型", example = "SEMANTIC")

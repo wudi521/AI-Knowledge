@@ -52,9 +52,14 @@ public class ChunkController {
     public CommonResult<PageResult<ChunkRespVO>> getChunkPage(@Valid ChunkPageReqVO pageReqVO) {
         PageResult<ChunkDO> pageResult = chunkService.getChunkPage(pageReqVO);
         List<ChunkDO> chunks = pageResult.getList();
-        // 批量解析版本信息(versionId -> docId/versionNo), 避免逐行 Feign
-        Map<Long, KnowledgeVersionRespDTO> versionMap = cn.hutool.core.collection.CollUtil.isEmpty(chunks) ? Map.of()
-                : knowledgeApi.getVersionMap(chunks.stream().map(ChunkDO::getVersionId).distinct().toList()).getCheckedData();
+        // 批量解析版本信息(versionId -> docId/versionNo), 避免逐行 Feign; knowledge 异常时降级为空(不阻塞页面)
+        Map<Long, KnowledgeVersionRespDTO> versionMap;
+        try {
+            versionMap = cn.hutool.core.collection.CollUtil.isEmpty(chunks) ? Map.of()
+                    : knowledgeApi.getVersionMap(chunks.stream().map(ChunkDO::getVersionId).distinct().toList()).getCheckedData();
+        } catch (Exception e) {
+            versionMap = Map.of();
+        }
         // 文档信息按 docId 缓存(文档可能被删, 为空时跳过)
         Map<Long, KnowledgeDocumentRespDTO> docCache = new HashMap<>();
         List<ChunkRespVO> list = new ArrayList<>(chunks.size());
