@@ -66,12 +66,22 @@ public class ChunkServiceImpl implements ChunkService {
 
     @Override
     public void deleteChunk(Long id) {
-        // 校验片段存在
+        // 校验片段存在(单条删除保持原校验行为)
         validateChunkExists(id);
-        // 三处联动: ES → Milvus → MySQL(最后删, 失败可重试)
-        esChunkStore.deleteChunks(List.of(id));
-        milvusChunkStore.deleteVectors(List.of(id));
-        chunkMapper.deleteById(id);
+        // 委托批量删除, 三处联动行为不变
+        deleteChunks(List.of(id));
+    }
+
+    @Override
+    public void deleteChunks(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        // 批量场景不逐个校验: ids 不存在时 ES/Milvus 删除为幂等 no-op, MySQL deleteBatchIds 亦幂等
+        // 三处联动: ES 批量 → Milvus 批量 → MySQL 批量(最后删, 失败可重试)
+        esChunkStore.deleteChunks(ids);
+        milvusChunkStore.deleteVectors(ids);
+        chunkMapper.deleteBatchIds(ids);
     }
 
     private void validateChunkExists(Long id) {

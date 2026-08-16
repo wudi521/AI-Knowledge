@@ -4,6 +4,8 @@ import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.module.ingestion.controller.admin.chunk.vo.ChunkPageReqVO;
 import cn.iocoder.yudao.module.ingestion.dal.dataobject.ChunkDO;
 
+import java.util.List;
+
 /**
  * AI 知识片段 Service 接口
  */
@@ -39,5 +41,12 @@ public interface ChunkService {
      * @param id 片段编号
      */
     void deleteChunk(Long id);
+
+    /**
+     * 批量删除片段(MySQL + ES + Milvus 三处联动)
+     *
+     * @param ids 片段编号列表
+     */
+    void deleteChunks(List<Long> ids);
 
 }

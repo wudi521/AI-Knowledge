@@ -91,4 +91,13 @@ public class ChunkController {
         return success(true);
     }
 
+    @DeleteMapping("/delete-batch")
+    @Operation(summary = "批量删除片段(三处联动)")
+    @Parameter(name = "ids", description = "片段编号列表, 逗号分隔", required = true)
+    @PreAuthorize("@ss.hasPermission('ai:knowledge:update')")
+    public CommonResult<Boolean> deleteChunkBatch(@RequestParam("ids") List<Long> ids) {
+        chunkService.deleteChunks(ids);
+        return success(true);
+    }
+
 }
