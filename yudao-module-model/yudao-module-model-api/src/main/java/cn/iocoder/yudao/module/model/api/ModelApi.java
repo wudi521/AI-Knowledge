@@ -15,9 +15,6 @@ import java.util.List;
 @FeignClient(name = ApiConstants.NAME)
 public interface ModelApi {
 
-    /** 占位方法: 按领域替换为真实接口 */
-    String chat(String model, String prompt);
-
     /**
      * 文本向量化(Embedding)
      *

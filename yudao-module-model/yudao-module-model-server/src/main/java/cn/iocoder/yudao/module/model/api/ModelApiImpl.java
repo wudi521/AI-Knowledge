@@ -28,10 +28,8 @@ public class ModelApiImpl implements ModelApi {
     @Resource
     private Environment environment;
 
-    @Override
-    public String chat(String model, String prompt) {
-        return "";
-    }
+    @Resource
+    private RestTemplate restTemplate;
 
     @Override
     public CommonResult<List<List<Float>>> embedding(List<String> texts) {
@@ -48,7 +46,6 @@ public class ModelApiImpl implements ModelApi {
         headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, headers);
 
-        RestTemplate restTemplate = new RestTemplate();
         ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
         List<Map<String, Object>> data = (List<Map<String, Object>>) response.getBody().get("data");
         List<List<Float>> result = new ArrayList<>();
