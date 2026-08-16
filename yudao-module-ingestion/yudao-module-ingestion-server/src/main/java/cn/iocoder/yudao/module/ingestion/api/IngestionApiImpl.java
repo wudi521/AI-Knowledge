@@ -49,4 +49,10 @@ public class IngestionApiImpl implements IngestionApi {
         return success(true);
     }
 
+    @Override
+    public CommonResult<Boolean> indexVersion(Long versionId, Long kbId, Long tenantId) {
+        // TODO Task 4: 读 chunk+embedding -> Milvus/ES -> status PUBLISHED
+        return success(true);
+    }
+
 }

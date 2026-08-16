@@ -26,4 +26,17 @@ public interface IngestionApi {
     @PostMapping(ApiConstants.PREFIX + "/delete-document-data")
     CommonResult<Boolean> deleteDocumentData(@RequestParam("documentId") Long documentId);
 
+    /**
+     * 发布索引: 按版本从 MySQL 读 chunk + embedding, 写 Milvus/ES, 置 chunk PUBLISHED
+     *
+     * @param versionId 版本编号(ai_chunk.version_id)
+     * @param kbId 知识库编号
+     * @param tenantId 租户编号
+     * @return 是否成功
+     */
+    @PostMapping(ApiConstants.PREFIX + "/index-version")
+    CommonResult<Boolean> indexVersion(@RequestParam("versionId") Long versionId,
+                                       @RequestParam("kbId") Long kbId,
+                                       @RequestParam("tenantId") Long tenantId);
+
 }
