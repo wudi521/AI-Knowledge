@@ -18,7 +18,7 @@ import static cn.iocoder.yudao.framework.common.util.object.BeanUtils.toBean;
 
 @Tag(name = "管理后台 - AI 文档版本")
 @RestController
-@RequestMapping("/admin-api/ai-knowledge/version")
+@RequestMapping("/knowledge/version")
 @Validated
 public class VersionController {
 

@@ -28,6 +28,9 @@ public interface IngestionApi {
 
     /**
      * 发布索引: 按版本从 MySQL 读 chunk + embedding, 写 Milvus/ES, 置 chunk PUBLISHED
+     * <p>
+     * 幂等契约(发布可重试): 同版本重复调用为"覆盖式"重写 Milvus/ES, 不产生重复数据;
+     * "置 chunk PUBLISHED"必须是最后一步; 任一中间失败可安全重试。
      *
      * @param versionId 版本编号(ai_chunk.version_id)
      * @param kbId 知识库编号

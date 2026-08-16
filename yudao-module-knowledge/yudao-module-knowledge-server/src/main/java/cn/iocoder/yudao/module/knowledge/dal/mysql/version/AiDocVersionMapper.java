@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.knowledge.dal.mysql.version;
 import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
+import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
 import org.apache.ibatis.annotations.Mapper;
 
 import java.util.List;
@@ -20,7 +21,7 @@ public interface AiDocVersionMapper extends BaseMapperX<AiDocVersionDO> {
     default AiDocVersionDO selectPublishedByDocId(Long docId) {
         return selectOne(new LambdaQueryWrapperX<AiDocVersionDO>()
                 .eq(AiDocVersionDO::getDocId, docId)
-                .eq(AiDocVersionDO::getStatus, "PUBLISHED")
+                .eq(AiDocVersionDO::getStatus, VersionStatusEnum.PUBLISHED.getStatus())
                 .orderByDesc(AiDocVersionDO::getId)
                 .last("LIMIT 1"));
     }

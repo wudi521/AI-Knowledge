@@ -11,6 +11,7 @@ import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -138,6 +139,10 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     @Override
     public void reject(Long versionId, String comment) {
         AiDocVersionDO version = getVersion(versionId);
+        // 仅审核中可整体驳回, 避免已发布版本被误操作回退
+        if (!VersionStatusEnum.REVIEW.getStatus().equals(version.getStatus())) {
+            throw new ServiceException(VERSION_STATUS_ERROR);
+        }
         AiDocVersionDO update = new AiDocVersionDO();
         update.setId(versionId);
         update.setStatus(VersionStatusEnum.DRAFT.getStatus());
@@ -149,16 +154,13 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
 
     @Override
     public void expireOldVersions(Long docId, Long exceptVersionId) {
-        aiDocVersionMapper.selectListByDocId(docId).stream()
-                .filter(v -> !v.getId().equals(exceptVersionId))
-                .filter(v -> VersionStatusEnum.PUBLISHED.getStatus().equals(v.getStatus()))
-                .forEach(v -> {
-                    AiDocVersionDO update = new AiDocVersionDO();
-                    update.setId(v.getId());
-                    update.setStatus(VersionStatusEnum.EXPIRED.getStatus());
-                    update.setEffectiveTo(LocalDateTime.now());
-                    aiDocVersionMapper.updateById(update);
-                });
+        // 单条 UPDATE 原子过期旧已发布版本, 收窄并发发布竞态窗口
+        aiDocVersionMapper.update(null, new LambdaUpdateWrapper<AiDocVersionDO>()
+                .eq(AiDocVersionDO::getDocId, docId)
+                .eq(AiDocVersionDO::getStatus, VersionStatusEnum.PUBLISHED.getStatus())
+                .ne(AiDocVersionDO::getId, exceptVersionId)
+                .set(AiDocVersionDO::getStatus, VersionStatusEnum.EXPIRED.getStatus())
+                .set(AiDocVersionDO::getEffectiveTo, LocalDateTime.now()));
     }
 
 }
