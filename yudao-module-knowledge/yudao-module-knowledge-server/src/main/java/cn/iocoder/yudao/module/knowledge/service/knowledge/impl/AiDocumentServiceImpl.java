@@ -1,7 +1,10 @@
 package cn.iocoder.yudao.module.knowledge.service.knowledge.impl;
 
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
+import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
+import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentPageReqVO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentSaveReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
@@ -28,6 +31,9 @@ public class AiDocumentServiceImpl implements AiDocumentService {
     @Resource
     private KnowledgeIngestProducer knowledgeIngestProducer;
 
+    @Resource
+    private IngestionApi ingestionApi;
+
     @Override
     public Long createAiDocument(AiDocumentSaveReqVO createReqVO) {
         AiDocumentDO doc = BeanUtils.toBean(createReqVO, AiDocumentDO.class);
@@ -44,6 +50,12 @@ public class AiDocumentServiceImpl implements AiDocumentService {
     @Override
     public void deleteAiDocument(Long id) {
         validateAiDocumentExists(id);
+        // 级联清理片段数据(MySQL ai_chunk + ES + Milvus), 失败则中断删除
+        CommonResult<Boolean> result = ingestionApi.deleteDocumentData(id);
+        if (result.isError()) {
+            throw new ServiceException(result.getCode(), result.getMsg());
+        }
+        // 最后删除文档行
         aiDocumentMapper.deleteById(id);
     }
 
