@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumen
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentSaveReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
+import cn.iocoder.yudao.module.knowledge.mq.KnowledgeIngestProducer;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
@@ -24,6 +25,9 @@ public class AiDocumentServiceImpl implements AiDocumentService {
     @Resource
     private AiDocumentMapper aiDocumentMapper;
 
+    @Resource
+    private KnowledgeIngestProducer knowledgeIngestProducer;
+
     @Override
     public Long createAiDocument(AiDocumentSaveReqVO createReqVO) {
         AiDocumentDO doc = BeanUtils.toBean(createReqVO, AiDocumentDO.class);
@@ -32,6 +36,8 @@ public class AiDocumentServiceImpl implements AiDocumentService {
             doc.setParseStatus("PENDING");
         }
         aiDocumentMapper.insert(doc);
+        // 发送入库任务消息(Kafka), ingestion-server 异步解析/切分/向量化/三写
+        knowledgeIngestProducer.sendDocumentIngest(doc.getId());
         return doc.getId();
     }
 

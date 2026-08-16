@@ -37,6 +37,12 @@ spring:
     database: 0
   kafka: # Kafka 3.9 :9092
     bootstrap-servers: 127.0.0.1:9092
+    producer:
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    consumer:
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"   # 允许反序列化任意包(开发环境)
 
 
 # 定时任务(本地环境关闭 xxl-job 调度中心, 对齐芋道)
