@@ -19,6 +19,7 @@ import cn.iocoder.yudao.module.knowledge.service.review.ReviewItemService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -34,6 +35,7 @@ import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_STATUS_ERROR;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_PRICE_DOUBLE_REQUIRED;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_PRICE_SAME_REVIEWER;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_REASON_REQUIRED;
 
 /**
  * 审核条目服务: LLM 抽取 -> 分级 -> 分流(REVIEW / 自动发布)
@@ -184,8 +186,8 @@ public class ReviewItemServiceImpl implements ReviewItemService {
                 .eqIfPresent(ReviewItemDO::getStatus, pageReqVO.getStatus())
                 .eqIfPresent(ReviewItemDO::getItemType, pageReqVO.getItemType())
                 .eqIfPresent(ReviewItemDO::getRiskLevel, pageReqVO.getRiskLevel())
-                .orderByAsc(ReviewItemDO::getRiskLevel) // 高风险在前
-                .orderByDesc(ReviewItemDO::getId));
+                // 风险降序: HIGH > MED > LOW(字母序为 HIGH<LOW<MED, 需 FIELD 显式排序), 同风险按 id 倒序
+                .last("ORDER BY FIELD(risk_level, 'HIGH', 'MED', 'LOW'), id DESC"));
     }
 
     @Override
@@ -209,22 +211,29 @@ public class ReviewItemServiceImpl implements ReviewItemService {
         if (!"PRICE".equals(item.getItemType())) {
             throw new ServiceException(REVIEW_PRICE_DOUBLE_REQUIRED);
         }
-        if (!ReviewItemStatusEnum.APPROVED.getStatus().equals(item.getStatus()) || item.getReviewer2() != null) {
+        // 原子条件更新防并发(TOCTOU): 校验并入 WHERE, 以影响行数为准
+        String reviewer = currentNickname();
+        int rows = reviewItemMapper.update(null, new LambdaUpdateWrapper<ReviewItemDO>()
+                .eq(ReviewItemDO::getId, id)
+                .eq(ReviewItemDO::getStatus, ReviewItemStatusEnum.APPROVED.getStatus())
+                .isNull(ReviewItemDO::getReviewer2)
+                .ne(ReviewItemDO::getReviewer, reviewer)
+                .set(ReviewItemDO::getReviewer2, reviewer));
+        if (rows == 0) {
+            // 未更新: 状态不对/已双人复核/同人复核
+            if (StrUtil.equals(item.getReviewer(), reviewer)) {
+                throw new ServiceException(REVIEW_PRICE_SAME_REVIEWER);
+            }
             throw new ServiceException(REVIEW_ITEM_STATUS_ERROR);
         }
-        String reviewer = currentNickname();
-        if (StrUtil.equals(item.getReviewer(), reviewer)) {
-            throw new ServiceException(REVIEW_PRICE_SAME_REVIEWER);
-        }
-        ReviewItemDO update = new ReviewItemDO();
-        update.setId(id);
-        update.setReviewer2(reviewer);
-        reviewItemMapper.updateById(update);
         log.info("[approveSecond][条目 {} 双人复核完成]", id);
     }
 
     @Override
     public void reject(Long id, String reason) {
+        if (StrUtil.isBlank(reason)) {
+            throw new ServiceException(REVIEW_REASON_REQUIRED);
+        }
         ReviewItemDO item = getItem(id);
         if (!ReviewItemStatusEnum.PENDING.getStatus().equals(item.getStatus())) {
             throw new ServiceException(REVIEW_ITEM_STATUS_ERROR);

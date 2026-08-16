@@ -18,6 +18,7 @@ public interface ErrorCodeConstants {
     ErrorCode REVIEW_ITEM_STATUS_ERROR = new ErrorCode(1_004_000_006, "审核条目状态不允许该操作");
     ErrorCode REVIEW_PRICE_DOUBLE_REQUIRED = new ErrorCode(1_004_000_007, "价格类条目需双人复核");
     ErrorCode REVIEW_PRICE_SAME_REVIEWER = new ErrorCode(1_004_000_008, "双人复核需由不同审核人完成");
+    ErrorCode REVIEW_REASON_REQUIRED = new ErrorCode(1_004_000_009, "驳回原因不能为空");
     ErrorCode VERSION_DOC_MISMATCH = new ErrorCode(1_004_000_012, "版本与文档不匹配");
     ErrorCode REVIEW_EXTRACT_FAILED = new ErrorCode(1_004_000_013, "审核条目抽取失败(LLM 输出无法解析), 请重试");
 

@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.knowledge.dal.mysql.review;
 import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO;
+import cn.iocoder.yudao.module.knowledge.enums.review.ReviewItemStatusEnum;
 import org.apache.ibatis.annotations.Mapper;
 
 import java.util.List;
@@ -20,20 +21,21 @@ public interface ReviewItemMapper extends BaseMapperX<ReviewItemDO> {
         return delete(new LambdaQueryWrapperX<ReviewItemDO>().eq(ReviewItemDO::getVersionId, versionId));
     }
 
-    /** 是否存在未处理完(含驳回)的必审条目 */
+    /** 是否存在未处理完(含驳回)的必审条目(发布门禁用) */
     default boolean existsUnfinishedRequired(Long versionId) {
         return selectCount(new LambdaQueryWrapperX<ReviewItemDO>()
                 .eq(ReviewItemDO::getVersionId, versionId)
                 .eq(ReviewItemDO::getMustReview, true)
-                .in(ReviewItemDO::getStatus, "PENDING", "REJECTED")) > 0;
+                .in(ReviewItemDO::getStatus,
+                        ReviewItemStatusEnum.PENDING.getStatus(), ReviewItemStatusEnum.REJECTED.getStatus())) > 0;
     }
 
-    /** 价格类双人复核是否全部完成(PRICE 条目 reviewer2 非空且与 reviewer 不同) */
+    /** 是否存在未完成双人复核的已通过价格条目(reviewer2 为空或与 reviewer 相同, 发布门禁用) */
     default boolean existsPriceWithoutDoubleReview(Long versionId) {
         return selectCount(new LambdaQueryWrapperX<ReviewItemDO>()
                 .eq(ReviewItemDO::getVersionId, versionId)
                 .eq(ReviewItemDO::getItemType, "PRICE")
-                .eq(ReviewItemDO::getStatus, "APPROVED")
+                .eq(ReviewItemDO::getStatus, ReviewItemStatusEnum.APPROVED.getStatus())
                 .and(w -> w.isNull(ReviewItemDO::getReviewer2)
                         .or().apply("reviewer = reviewer2"))) > 0;
     }
