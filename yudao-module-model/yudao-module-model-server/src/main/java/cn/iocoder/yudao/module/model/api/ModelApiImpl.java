@@ -65,9 +65,19 @@ public class ModelApiImpl implements ModelApi {
 
         Map<String, Object> body = new HashMap<>();
         body.put("model", modelName);
-        body.put("messages", List.of(
-                Map.of("role", "system", "content", req.getSystem()),
-                Map.of("role", "user", "content", req.getUser())));
+        // 用 HashMap 而非 Map.of: 允许 system/user 为空时仍可发出请求(Map.of 遇 null 抛 NPE)
+        List<Map<String, Object>> messages = new ArrayList<>();
+        if (req.getSystem() != null) {
+            Map<String, Object> systemMsg = new HashMap<>();
+            systemMsg.put("role", "system");
+            systemMsg.put("content", req.getSystem());
+            messages.add(systemMsg);
+        }
+        Map<String, Object> userMsg = new HashMap<>();
+        userMsg.put("role", "user");
+        userMsg.put("content", req.getUser() == null ? "" : req.getUser());
+        messages.add(userMsg);
+        body.put("messages", messages);
         body.put("temperature", 0.2);
 
         HttpHeaders headers = new HttpHeaders();
