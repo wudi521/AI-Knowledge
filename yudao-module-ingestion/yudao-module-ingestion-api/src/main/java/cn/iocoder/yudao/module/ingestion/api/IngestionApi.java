@@ -1,7 +1,11 @@
 package cn.iocoder.yudao.module.ingestion.api;
 
+import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.ingestion.enums.ApiConstants;
+import feign.FeignIgnore;
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 /**
  * 入库管线 对外 RPC 接口(Feign)
  * 其他模块通过 Feign 调用本接口, 实现位于 ingestion-server
@@ -10,6 +14,16 @@ import org.springframework.cloud.openfeign.FeignClient;
 public interface IngestionApi {
 
     /** 占位方法: 按领域替换为真实接口 */
+    @FeignIgnore
     Boolean triggerIngest(Long documentId);
+
+    /**
+     * 删除文档关联的全部数据(MySQL ai_chunk + ES 索引 + Milvus 向量)
+     *
+     * @param documentId 文档编号(ai_chunk.version_id)
+     * @return 是否成功
+     */
+    @PostMapping(ApiConstants.PREFIX + "/delete-document-data")
+    CommonResult<Boolean> deleteDocumentData(@RequestParam("documentId") Long documentId);
 
 }

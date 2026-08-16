@@ -12,6 +12,7 @@ import io.milvus.param.collection.CreateCollectionParam;
 import io.milvus.param.collection.FieldType;
 import io.milvus.param.collection.HasCollectionParam;
 import io.milvus.param.collection.LoadCollectionParam;
+import io.milvus.param.dml.DeleteParam;
 import io.milvus.param.dml.InsertParam;
 import io.milvus.param.index.CreateIndexParam;
 import jakarta.annotation.PostConstruct;
@@ -114,6 +115,30 @@ public class MilvusChunkStore {
         R<MutationResult> insertResp = client.insert(param);
         if (insertResp.getStatus() != R.Status.Success.getCode()) {
             throw new RuntimeException("Milvus 写入失败: " + insertResp.getMessage());
+        }
+    }
+
+    /**
+     * 按片段 id 批量删除向量(chunk_id 主键)
+     *
+     * @param chunkIds 片段 id
+     */
+    public void deleteVectors(List<Long> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) {
+            return;
+        }
+        // 写入前确保集合存在(幂等): 集合被外部删除/清空后运行期可自愈
+        ensureCollection();
+        // 用 chunk_id IN (...) 表达式删除(Milvus 标准标量过滤)
+        String expr = "chunk_id in [" + chunkIds.stream()
+                .map(String::valueOf)
+                .collect(java.util.stream.Collectors.joining(",")) + "]";
+        R<MutationResult> resp = client.delete(DeleteParam.newBuilder()
+                .withCollectionName(collection)
+                .withExpr(expr)
+                .build());
+        if (resp.getStatus() != R.Status.Success.getCode()) {
+            throw new RuntimeException("Milvus 删除失败: " + resp.getMessage());
         }
     }
 

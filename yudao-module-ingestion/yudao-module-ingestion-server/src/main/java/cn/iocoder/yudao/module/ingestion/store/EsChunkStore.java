@@ -4,13 +4,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.http.HttpHost;
+import org.apache.http.entity.ContentType;
+import org.apache.http.entity.StringEntity;
 import org.elasticsearch.client.Request;
 import org.elasticsearch.client.ResponseException;
 import org.elasticsearch.client.RestClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -120,6 +124,30 @@ public class EsChunkStore {
             client.performRequest(request);
         } catch (Exception e) {
             throw new RuntimeException("ES 写入失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 按片段 id 批量删除 ES 文档
+     *
+     * @param chunkIds 片段 id(ES 文档 _id = chunkId)
+     */
+    public void deleteChunks(List<Long> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) {
+            return;
+        }
+        try {
+            // 批量删除: 构造 _bulk 请求, 每条 delete by id(NDJSON, 每行一个 action, 末尾换行)
+            StringBuilder bulk = new StringBuilder();
+            for (Long id : chunkIds) {
+                bulk.append("{\"delete\":{\"_index\":\"").append(index).append("\",\"_id\":\"").append(id).append("\"}}\n");
+            }
+            Request request = new Request("POST", "/_bulk");
+            // _bulk 需要 application/x-ndjson(不能直接用 setJsonEntity 的 application/json)
+            request.setEntity(new StringEntity(bulk.toString(), ContentType.create("application/x-ndjson", StandardCharsets.UTF_8)));
+            client.performRequest(request);
+        } catch (Exception e) {
+            throw new RuntimeException("ES 批量删除失败: " + e.getMessage(), e);
         }
     }
 
