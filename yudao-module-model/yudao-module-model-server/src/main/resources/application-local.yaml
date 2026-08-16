@@ -50,3 +50,6 @@ yudao:
     embedding:
       base-url: http://127.0.0.1:1234/v1   # LM Studio
       model: text-embedding-bge-m3
+    chat:
+      base-url: http://127.0.0.1:1234/v1   # LM Studio
+      model: qwen/qwen3-8b                  # 已确认加载; 备选 qwen/qwen3-14b

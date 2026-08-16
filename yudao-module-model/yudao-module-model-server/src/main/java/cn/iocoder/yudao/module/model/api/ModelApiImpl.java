@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.model.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import jakarta.annotation.Resource;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpEntity;
@@ -53,6 +54,30 @@ public class ModelApiImpl implements ModelApi {
             result.add((List<Float>) item.get("embedding"));
         }
         return success(result);
+    }
+
+    @Override
+    public CommonResult<String> chat(ModelChatReqDTO req) {
+        // 读取本地配置的对话服务(LM Studio, OpenAI 兼容接口)
+        String baseUrl = environment.getProperty("yudao.model.chat.base-url", "http://127.0.0.1:1234/v1");
+        String modelName = environment.getProperty("yudao.model.chat.model", "qwen/qwen3-8b");
+        String url = baseUrl + "/chat/completions";
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("model", modelName);
+        body.put("messages", List.of(
+                Map.of("role", "system", "content", req.getSystem()),
+                Map.of("role", "user", "content", req.getUser())));
+        body.put("temperature", 0.2);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, headers);
+
+        ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
+        List<Map<String, Object>> choices = (List<Map<String, Object>>) response.getBody().get("choices");
+        Map<String, Object> message = (Map<String, Object>) choices.get(0).get("message");
+        return success((String) message.get("content"));
     }
 
 }

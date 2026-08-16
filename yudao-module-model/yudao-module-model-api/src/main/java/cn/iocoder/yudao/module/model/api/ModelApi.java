@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.model.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import cn.iocoder.yudao.module.model.enums.ApiConstants;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,5 +24,14 @@ public interface ModelApi {
      */
     @PostMapping(ApiConstants.PREFIX + "/embedding")
     CommonResult<List<List<Float>>> embedding(@RequestBody List<String> texts);
+
+    /**
+     * 文本对话(LLM 生成, 供审核条目抽取/冲突判定)
+     *
+     * @param req 系统提示 + 用户提示
+     * @return 模型输出文本(JSON 由调用方解析)
+     */
+    @PostMapping(ApiConstants.PREFIX + "/chat")
+    CommonResult<String> chat(@RequestBody ModelChatReqDTO req);
 
 }
