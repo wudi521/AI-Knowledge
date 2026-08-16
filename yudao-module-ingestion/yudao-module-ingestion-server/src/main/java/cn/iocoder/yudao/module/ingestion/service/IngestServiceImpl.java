@@ -1,7 +1,10 @@
 package cn.iocoder.yudao.module.ingestion.service;
 
 import cn.hutool.core.util.StrUtil;
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
+import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.ingestion.dal.dataobject.ChunkDO;
+import cn.iocoder.yudao.module.ingestion.dal.mysql.ChunkMapper;
 import cn.iocoder.yudao.module.ingestion.embedding.EmbeddingClient;
 import cn.iocoder.yudao.module.ingestion.parse.DocumentParser;
 import cn.iocoder.yudao.module.ingestion.parse.OfficeParser;
@@ -16,6 +19,7 @@ import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,11 +49,20 @@ public class IngestServiceImpl implements IngestService {
     private EsChunkStore esChunkStore;
     @Resource
     private KnowledgeApi knowledgeApi;
+    @Resource
+    private ChunkMapper chunkMapper;
 
+    /**
+     * 入库主流程: 解析 → 切分 → 向量化 → 三写
+     * <p>
+     * MySQL 写入处于同一事务: 中途失败回滚已插行; FAILED 状态回写是 Feign 远程调用,
+     * 在 catch 中执行, 不受本地事务回滚影响
+     */
     @Override
+    @Transactional
     public void ingestDocument(Long documentId) {
         // 1. 置为解析中
-        knowledgeApi.updateDocumentParseStatus(documentId, "PARSING", null, null);
+        updateStatus(documentId, "PARSING", null, null);
         try {
             // 2. 查询文档信息(占位: Task 10 接入文档详情 Feign 后替换)
             // TODO: 从 knowledge-server 取文档详情(类型/存储路径/知识库/租户/切分策略)
@@ -72,8 +85,10 @@ public class IngestServiceImpl implements IngestService {
             List<String> contents = chunks.stream().map(Chunk::getContent).toList();
             List<List<Float>> vectors = embeddingClient.embed(contents);
 
-            // 6. 三写: 先 MySQL, 再 Milvus, 再 ES
-            List<ChunkDO> dos = new ArrayList<>();
+            // 6. 三写前清理旧片段: 重试/重发时按 versionId 删除残留, 保证幂等(ai_chunk 无唯一约束)
+            chunkMapper.deleteByVersionId(documentId);
+
+            // 7. 三写: 先 MySQL, 再 Milvus, 再 ES
             List<Long> chunkIds = new ArrayList<>();
             List<List<Float>> validVectors = new ArrayList<>();
             for (int i = 0; i < chunks.size(); i++) {
@@ -94,12 +109,31 @@ public class IngestServiceImpl implements IngestService {
             // Milvus 批量写
             milvusChunkStore.insertVectors(chunkIds, validVectors, tenantId, kbId);
 
-            // 7. 置为已入库(带回片段数)
-            knowledgeApi.updateDocumentParseStatus(documentId, "INDEXED", chunks.size(), null);
+            // 8. 置为已入库(带回片段数)
+            updateStatus(documentId, "INDEXED", chunks.size(), null);
             log.info("[ingestDocument][文档 {} 入库完成, {} 个片段]", documentId, chunks.size());
         } catch (Exception e) {
             log.error("[ingestDocument][文档 {} 入库失败]", documentId, e);
-            knowledgeApi.updateDocumentParseStatus(documentId, "FAILED", null, StrUtil.sub(e.getMessage(), 0, 500));
+            try {
+                updateStatus(documentId, "FAILED", null, StrUtil.sub(e.getMessage(), 0, 500));
+            } catch (Exception ex) {
+                log.error("[ingestDocument][文档 {} 回写 FAILED 状态失败]", documentId, ex);
+            }
+            // 异常继续传播: 触发 @Transactional 回滚 MySQL 已插行, 并交由 Kafka 重投
+            if (e instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new RuntimeException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 回写文档解析状态; 回写失败抛业务异常(芋道惯例: 检查 CommonResult)
+     */
+    private void updateStatus(Long documentId, String parseStatus, Integer chunkCount, String errorMsg) {
+        CommonResult<Boolean> result = knowledgeApi.updateDocumentParseStatus(documentId, parseStatus, chunkCount, errorMsg);
+        if (result.isError()) {
+            throw new ServiceException(result.getCode(), result.getMsg());
         }
     }
 
