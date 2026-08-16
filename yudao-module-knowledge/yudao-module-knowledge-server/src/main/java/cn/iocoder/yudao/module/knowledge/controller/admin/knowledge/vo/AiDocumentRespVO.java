@@ -15,6 +15,15 @@ public class AiDocumentRespVO {
     @Schema(description = "知识库编号")
     private Long kbId;
 
+    @Schema(description = "知识库名称")
+    private String kbName;
+
+    @Schema(description = "切分策略", example = "ParentChild")
+    private String chunkStrategy;
+
+    @Schema(description = "Embedding 模型", example = "BGE-M3")
+    private String embedModel;
+
     @Schema(description = "文档名", example = "退换货政策.md")
     private String name;
 

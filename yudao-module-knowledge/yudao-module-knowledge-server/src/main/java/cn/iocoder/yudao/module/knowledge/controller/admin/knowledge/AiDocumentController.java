@@ -7,6 +7,8 @@ import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumen
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentRespVO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentSaveReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -27,6 +29,9 @@ public class AiDocumentController {
 
     @Resource
     private AiDocumentService aiDocumentService;
+
+    @Resource
+    private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
 
     @PostMapping("/create")
     @Operation(summary = "创建文档(上传后登记)")
@@ -58,7 +63,20 @@ public class AiDocumentController {
     @PreAuthorize("@ss.hasPermission('knowledge:document:query')")
     public CommonResult<PageResult<AiDocumentRespVO>> getAiDocumentPage(@Valid AiDocumentPageReqVO pageReqVO) {
         PageResult<AiDocumentDO> pageResult = aiDocumentService.getAiDocumentPage(pageReqVO);
-        return success(BeanUtils.toBean(pageResult, AiDocumentRespVO.class));
+        PageResult<AiDocumentRespVO> voPageResult = BeanUtils.toBean(pageResult, AiDocumentRespVO.class);
+        // 联表填充知识库信息(名称/切分策略/Embedding 模型), 知识库可能被删故 null 安全
+        for (AiDocumentRespVO respVO : voPageResult.getList()) {
+            if (respVO.getKbId() == null) {
+                continue;
+            }
+            AiKnowledgeBaseDO knowledgeBase = aiKnowledgeBaseMapper.selectById(respVO.getKbId());
+            if (knowledgeBase != null) {
+                respVO.setKbName(knowledgeBase.getName());
+                respVO.setChunkStrategy(knowledgeBase.getChunkStrategy());
+                respVO.setEmbedModel(knowledgeBase.getEmbedModel());
+            }
+        }
+        return success(voPageResult);
     }
 
 }
