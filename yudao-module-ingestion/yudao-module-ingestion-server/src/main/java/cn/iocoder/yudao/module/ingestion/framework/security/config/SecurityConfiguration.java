@@ -31,7 +31,9 @@ public class SecurityConfiguration {
                 registry.requestMatchers("/druid/**").permitAll();
                 // 健康检查(骨架自定义)
                 registry.requestMatchers("/ingestion/health/**").permitAll();
-                // RPC 服务的安全配置
+                // 管理后台 Chunk 接口需要登录鉴权(在下方 PREFIX permitAll 之前匹配)
+                registry.requestMatchers(ApiConstants.PREFIX + "/chunk/**").authenticated();
+                // RPC 服务的安全配置(其余 /admin-api/ingestion/** 保持 permitAll 供 Feign 调用)
                 registry.requestMatchers(ApiConstants.PREFIX + "/**").permitAll();
             }
 

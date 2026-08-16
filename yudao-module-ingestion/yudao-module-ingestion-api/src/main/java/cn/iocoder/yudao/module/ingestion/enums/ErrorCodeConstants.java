@@ -10,4 +10,6 @@ public interface ErrorCodeConstants {
 
     ErrorCode INGESTION_NOT_EXISTS = new ErrorCode(1_005_000_001, "入库管线数据不存在");
 
+    ErrorCode CHUNK_NOT_EXISTS = new ErrorCode(1_005_002_000, "知识片段不存在");
+
 }
