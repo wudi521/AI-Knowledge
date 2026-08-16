@@ -16,6 +16,7 @@ import cn.iocoder.yudao.module.ingestion.store.EsChunkStore;
 import cn.iocoder.yudao.module.ingestion.store.MilvusChunkStore;
 import cn.iocoder.yudao.module.ingestion.store.MysqlChunkStore;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -64,13 +65,23 @@ public class IngestServiceImpl implements IngestService {
         // 1. 置为解析中
         updateStatus(documentId, "PARSING", null, null);
         try {
-            // 2. 查询文档信息(占位: Task 10 接入文档详情 Feign 后替换)
-            // TODO: 从 knowledge-server 取文档详情(类型/存储路径/知识库/租户/切分策略)
-            String docType = "TXT";          // 占位
-            String storagePath = "";         // 占位(MinIO URL)
-            Long kbId = 1L;                  // 占位
-            Long tenantId = 1L;              // 占位
-            String chunkStrategy = "ParentChild"; // 占位
+            // 2. 查询文档信息
+            CommonResult<KnowledgeDocumentRespDTO> documentResult = knowledgeApi.getDocument(documentId);
+            if (documentResult.isError()) {
+                throw new ServiceException(documentResult.getCode(), documentResult.getMsg());
+            }
+            KnowledgeDocumentRespDTO document = documentResult.getData();
+            if (document == null) {
+                throw new RuntimeException("文档不存在: " + documentId);
+            }
+            String docType = document.getType();
+            String storagePath = document.getStoragePath();
+            Long kbId = document.getKbId();
+            Long tenantId = document.getTenantId();
+            if (tenantId == null) {
+                throw new RuntimeException("文档租户不存在: " + documentId);
+            }
+            String chunkStrategy = getKnowledgeBaseStrategy(kbId);
 
             // 3. 解析
             String filePath = downloadFromMinio(storagePath);
@@ -145,9 +156,20 @@ public class IngestServiceImpl implements IngestService {
         };
     }
 
+    private String getKnowledgeBaseStrategy(Long kbId) {
+        // TODO: 知识库详情 Feign 后续接入; 先返回默认 ParentChild
+        return "ParentChild";
+    }
+
     private String downloadFromMinio(String storagePath) {
-        // TODO: 从 MinIO 下载(storagePath 为 URL); Task 11 接入
-        throw new UnsupportedOperationException("MinIO 下载待接入");
+        if (StrUtil.isBlank(storagePath)) {
+            throw new RuntimeException("存储路径为空");
+        }
+        // MinIO URL 形如 http://127.0.0.1:9000/kb-docs/xxx
+        String fileName = StrUtil.subAfter(storagePath, "/", true);
+        String tmpFile = System.getProperty("java.io.tmpdir") + "/" + fileName;
+        cn.hutool.http.HttpUtil.downloadFile(storagePath, tmpFile);
+        return tmpFile;
     }
 
 }
