@@ -46,17 +46,24 @@ public class MilvusChunkStore {
                 .withHost(host)
                 .withPort(port)
                 .build());
-        createCollectionIfAbsent();
-        // 无论集合是否新建都加载: Milvus 重启后已有集合可能处于未加载状态, 插入会报错
-        client.loadCollection(LoadCollectionParam.newBuilder()
-                .withCollectionName(collection).build());
+        ensureCollection();
         log.info("[init][Milvus 集合 {} 加载完成]", collection);
     }
 
-    private void createCollectionIfAbsent() {
+    /**
+     * 确保集合存在并已加载(幂等)
+     *
+     * <p>集合不存在时自动创建(含索引), 存在但未加载时执行加载。
+     * 在启动与每次写入前调用, 避免集合被外部删除/清空后运行期报
+     * "can't find collection" 且无法自愈。
+     */
+    public void ensureCollection() {
         R<Boolean> has = client.hasCollection(HasCollectionParam.newBuilder()
                 .withCollectionName(collection).build());
         if (has.getData() != null && has.getData()) {
+            // 已存在: 仅确保加载(Milvus 重启后已有集合可能处于未加载状态)
+            client.loadCollection(LoadCollectionParam.newBuilder()
+                    .withCollectionName(collection).build());
             return;
         }
         FieldType chunkId = FieldType.newBuilder()
@@ -93,6 +100,8 @@ public class MilvusChunkStore {
      * @param kbId 知识库
      */
     public void insertVectors(List<Long> chunkIds, List<List<Float>> vectors, Long tenantId, Long kbId) {
+        // 写入前确保集合存在(幂等): 集合被外部删除/清空后运行期可自愈
+        ensureCollection();
         List<InsertParam.Field> fields = new ArrayList<>();
         fields.add(new InsertParam.Field("chunk_id", chunkIds));
         fields.add(new InsertParam.Field("embedding", vectors));
