@@ -27,6 +27,12 @@
             <artifactId>yudao-module-ingestion-api</artifactId>
             <version>${revision}</version>
         </dependency>
+        <!-- AI 模型网关(chat 抽取/判定) -->
+        <dependency>
+            <groupId>cn.iocoder.cloud</groupId>
+            <artifactId>yudao-module-model-api</artifactId>
+            <version>${revision}</version>
+        </dependency>
         <!-- 业务组件: 多租户 -->
         <dependency>
             <groupId>cn.iocoder.cloud</groupId>

@@ -20,4 +20,12 @@ public interface ReviewItemService {
      */
     void retryExtract(Long versionId);
 
+    /**
+     * LLM 抽取该版本的审核条目(幂等: 先清后插)
+     *
+     * @param versionId 版本编号
+     * @return 抽取出的条目
+     */
+    java.util.List<cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO> extractItems(Long versionId);
+
 }
