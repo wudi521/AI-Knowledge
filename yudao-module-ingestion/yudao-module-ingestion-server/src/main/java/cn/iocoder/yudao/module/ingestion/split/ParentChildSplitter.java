@@ -11,8 +11,6 @@ import java.util.List;
 @Component
 public class ParentChildSplitter implements ChunkSplitter {
 
-    private final SemanticSplitter semanticSplitter = new SemanticSplitter();
-
     @Override
     public List<Chunk> split(String text, int maxTokens) {
         List<Chunk> result = new ArrayList<>();
@@ -46,6 +44,7 @@ public class ParentChildSplitter implements ChunkSplitter {
         return result;
     }
 
+    /** 粗略估计 token 数: 统一按 1.5 字符/token 估算(中文为主场景), 英文文档会偏保守切分 */
     private int estimateTokens(String text) {
         return (int) Math.ceil(text.length() / 1.5);
     }

@@ -36,7 +36,7 @@ public class SemanticSplitter implements ChunkSplitter {
         return result;
     }
 
-    /** 粗略估计 token 数: 中文按 1.5 字符/token, 英文按 4 字符/token */
+    /** 粗略估计 token 数: 统一按 1.5 字符/token 估算(中文为主场景), 英文文档会偏保守切分 */
     private int estimateTokens(String text) {
         return (int) Math.ceil(text.length() / 1.5);
     }
