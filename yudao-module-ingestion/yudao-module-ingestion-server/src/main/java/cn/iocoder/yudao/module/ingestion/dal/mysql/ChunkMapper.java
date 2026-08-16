@@ -16,12 +16,27 @@ public interface ChunkMapper extends BaseMapperX<ChunkDO> {
     /**
      * 分页查询片段(ChunkDO.versionId 即版本编号, 与文档 id 非一一对应)
      *
-     * @param reqVO 分页查询条件
+     * @param reqVO 分页查询条件(未按文档过滤时 documentId 为 null)
      * @return 分页结果
      */
     default PageResult<ChunkDO> selectPage(ChunkPageReqVO reqVO) {
         return selectPage(reqVO, new LambdaQueryWrapperX<ChunkDO>()
                 .eqIfPresent(ChunkDO::getVersionId, reqVO.getDocumentId())
+                .eqIfPresent(ChunkDO::getChunkType, reqVO.getChunkType())
+                .eqIfPresent(ChunkDO::getStatus, reqVO.getStatus())
+                .orderByDesc(ChunkDO::getId));
+    }
+
+    /**
+     * 分页查询片段(按版本编号集合过滤, 文档过滤时使用: documentId -> 版本 ids)
+     *
+     * @param reqVO 分页查询条件
+     * @param versionIds 版本编号集合
+     * @return 分页结果
+     */
+    default PageResult<ChunkDO> selectPageByVersionIds(ChunkPageReqVO reqVO, List<Long> versionIds) {
+        return selectPage(reqVO, new LambdaQueryWrapperX<ChunkDO>()
+                .inIfPresent(ChunkDO::getVersionId, versionIds)
                 .eqIfPresent(ChunkDO::getChunkType, reqVO.getChunkType())
                 .eqIfPresent(ChunkDO::getStatus, reqVO.getStatus())
                 .orderByDesc(ChunkDO::getId));

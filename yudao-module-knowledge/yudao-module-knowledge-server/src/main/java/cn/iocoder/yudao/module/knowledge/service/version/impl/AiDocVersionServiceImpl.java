@@ -84,6 +84,14 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     }
 
     @Override
+    public List<AiDocVersionDO> getVersionListByIds(java.util.Collection<Long> versionIds) {
+        if (versionIds == null || versionIds.isEmpty()) {
+            return List.of();
+        }
+        return aiDocVersionMapper.selectBatchIds(versionIds);
+    }
+
+    @Override
     public void submitForReview(Long versionId) {
         AiDocVersionDO version = getVersion(versionId);
         if (!VersionStatusEnum.DRAFT.getStatus().equals(version.getStatus())

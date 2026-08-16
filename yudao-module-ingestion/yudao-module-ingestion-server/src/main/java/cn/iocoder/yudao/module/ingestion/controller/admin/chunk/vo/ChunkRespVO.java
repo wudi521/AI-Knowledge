@@ -12,8 +12,11 @@ public class ChunkRespVO {
     @Schema(description = "编号", example = "1024")
     private Long id;
 
-    @Schema(description = "文档编号(映射自 ai_chunk.version_id)", example = "1024")
+    @Schema(description = "文档编号(映射自 ai_chunk.version_id -> 版本.docId)", example = "1024")
     private Long documentId;
+
+    @Schema(description = "所属版本号", example = "V3")
+    private String versionNo;
 
     @Schema(description = "所属文档名称")
     private String documentName;

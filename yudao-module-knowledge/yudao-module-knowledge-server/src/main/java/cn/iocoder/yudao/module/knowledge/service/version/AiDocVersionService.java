@@ -19,6 +19,9 @@ public interface AiDocVersionService {
 
     List<AiDocVersionDO> getVersionList(Long docId);
 
+    /** 按编号批量查询版本(Feign 联表用, 不存在自动过滤) */
+    List<AiDocVersionDO> getVersionListByIds(java.util.Collection<Long> versionIds);
+
     /** 提交审核: DRAFT -> REVIEW */
     void submitForReview(Long versionId);
 

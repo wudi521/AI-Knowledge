@@ -11,6 +11,7 @@ import cn.iocoder.yudao.module.ingestion.dal.dataobject.ChunkDO;
 import cn.iocoder.yudao.module.ingestion.service.chunk.ChunkService;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -27,7 +28,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
@@ -48,17 +51,27 @@ public class ChunkController {
     @PreAuthorize("@ss.hasPermission('ai:knowledge:query')")
     public CommonResult<PageResult<ChunkRespVO>> getChunkPage(@Valid ChunkPageReqVO pageReqVO) {
         PageResult<ChunkDO> pageResult = chunkService.getChunkPage(pageReqVO);
-        // ChunkDO.versionId 即文档编号(documentId), 手动映射
-        List<ChunkRespVO> list = new ArrayList<>(pageResult.getList().size());
-        for (ChunkDO chunk : pageResult.getList()) {
+        List<ChunkDO> chunks = pageResult.getList();
+        // 批量解析版本信息(versionId -> docId/versionNo), 避免逐行 Feign
+        Map<Long, KnowledgeVersionRespDTO> versionMap = cn.hutool.core.collection.CollUtil.isEmpty(chunks) ? Map.of()
+                : knowledgeApi.getVersionMap(chunks.stream().map(ChunkDO::getVersionId).distinct().toList()).getCheckedData();
+        // 文档信息按 docId 缓存(文档可能被删, 为空时跳过)
+        Map<Long, KnowledgeDocumentRespDTO> docCache = new HashMap<>();
+        List<ChunkRespVO> list = new ArrayList<>(chunks.size());
+        for (ChunkDO chunk : chunks) {
+            KnowledgeVersionRespDTO version = versionMap.get(chunk.getVersionId());
+            Long docId = version == null ? null : version.getDocId();
             ChunkRespVO respVO = BeanUtils.toBean(chunk, ChunkRespVO.class);
-            respVO.setDocumentId(chunk.getVersionId());
-            // 联表填充文档信息(Feign 调 knowledge-server), 文档可能被删故异常/为空时跳过
-            if (chunk.getVersionId() != null) {
-                CommonResult<KnowledgeDocumentRespDTO> documentResult = knowledgeApi.getDocument(chunk.getVersionId());
-                if (!documentResult.isError() && documentResult.getData() != null) {
-                    respVO.setDocumentName(documentResult.getData().getName());
-                    respVO.setStoragePath(documentResult.getData().getStoragePath());
+            respVO.setDocumentId(docId);
+            respVO.setVersionNo(version == null ? null : version.getVersionNo());
+            if (docId != null) {
+                KnowledgeDocumentRespDTO doc = docCache.computeIfAbsent(docId, id -> {
+                    CommonResult<KnowledgeDocumentRespDTO> r = knowledgeApi.getDocument(id);
+                    return r.isError() || r.getData() == null ? null : r.getData();
+                });
+                if (doc != null) {
+                    respVO.setDocumentName(doc.getName());
+                    respVO.setStoragePath(doc.getStoragePath());
                 }
             }
             list.add(respVO);

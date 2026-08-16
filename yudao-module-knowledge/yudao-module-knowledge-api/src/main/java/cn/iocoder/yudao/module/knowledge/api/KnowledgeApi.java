@@ -2,12 +2,17 @@ package cn.iocoder.yudao.module.knowledge.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.enums.ApiConstants;
 import feign.FeignIgnore;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
+
+import java.util.List;
+import java.util.Map;
 /**
  * 知识平台 对外 RPC 接口(Feign)
  * 其他模块通过 Feign 调用本接口, 实现位于 knowledge-server
@@ -56,5 +61,23 @@ public interface KnowledgeApi {
     @PostMapping(ApiConstants.PREFIX + "/notify-parsed")
     CommonResult<Boolean> notifyParsed(@RequestParam("documentId") Long documentId,
                                        @RequestParam("versionId") Long versionId);
+
+    /**
+     * 查询文档的全部版本编号(供 ingestion 级联删除/片段页过滤)
+     *
+     * @param docId 文档编号
+     * @return 版本编号列表(按 id 倒序, 空则无版本)
+     */
+    @GetMapping(ApiConstants.PREFIX + "/get-doc-version-ids")
+    CommonResult<List<Long>> getDocVersionIds(@RequestParam("docId") Long docId);
+
+    /**
+     * 批量查询版本信息(供片段页联表: versionId -> docId/versionNo)
+     *
+     * @param versionIds 版本编号列表
+     * @return 版本编号 -> 版本信息
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-version-map")
+    CommonResult<Map<Long, KnowledgeVersionRespDTO>> getVersionMap(@RequestBody List<Long> versionIds);
 
 }

@@ -6,7 +6,7 @@ import cn.iocoder.yudao.module.ingestion.dal.dataobject.ChunkDO;
 import cn.iocoder.yudao.module.ingestion.dal.mysql.ChunkMapper;
 import cn.iocoder.yudao.module.ingestion.store.EsChunkStore;
 import cn.iocoder.yudao.module.ingestion.store.MilvusChunkStore;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import jakarta.annotation.Resource;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.RestController;
@@ -29,6 +29,8 @@ public class IngestionApiImpl implements IngestionApi {
     private EsChunkStore esChunkStore;
     @Resource
     private MilvusChunkStore milvusChunkStore;
+    @Resource
+    private KnowledgeApi knowledgeApi;
 
     @Override
     public Boolean triggerIngest(Long documentId) {
@@ -37,17 +39,19 @@ public class IngestionApiImpl implements IngestionApi {
 
     @Override
     public CommonResult<Boolean> deleteDocumentData(Long documentId) {
-        // 1. 查该文档所有 chunkId
-        List<Long> chunkIds = chunkMapper.selectList(new LambdaQueryWrapper<ChunkDO>()
-                        .eq(ChunkDO::getVersionId, documentId)
-                        .select(ChunkDO::getId))
-                .stream().map(ChunkDO::getId).toList();
+        // 0. 解析文档全部版本 id(version_id 已是真实版本 id, 不能再按 documentId 查)
+        List<Long> versionIds = knowledgeApi.getDocVersionIds(documentId).getCheckedData();
+        // 1. 收集该文档全部版本下的 chunkId
+        List<Long> chunkIds = new ArrayList<>();
+        for (Long versionId : versionIds) {
+            chunkIds.addAll(chunkMapper.selectListByVersionId(versionId).stream().map(ChunkDO::getId).toList());
+        }
         // 2. 删 ES
         esChunkStore.deleteChunks(chunkIds);
         // 3. 删 Milvus
         milvusChunkStore.deleteVectors(chunkIds);
         // 4. 删 MySQL(最后删, 失败可重试查)
-        chunkMapper.deleteByVersionId(documentId);
+        versionIds.forEach(chunkMapper::deleteByVersionId);
         return success(true);
     }
 

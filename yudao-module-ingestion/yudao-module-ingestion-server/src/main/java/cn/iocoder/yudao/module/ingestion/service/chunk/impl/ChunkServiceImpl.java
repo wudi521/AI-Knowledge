@@ -8,6 +8,7 @@ import cn.iocoder.yudao.module.ingestion.enums.ChunkStatusEnum;
 import cn.iocoder.yudao.module.ingestion.service.chunk.ChunkService;
 import cn.iocoder.yudao.module.ingestion.store.EsChunkStore;
 import cn.iocoder.yudao.module.ingestion.store.MilvusChunkStore;
+import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
@@ -34,9 +35,16 @@ public class ChunkServiceImpl implements ChunkService {
     @Resource
     private MilvusChunkStore milvusChunkStore;
 
+    @Resource
+    private KnowledgeApi knowledgeApi;
+
     @Override
     public PageResult<ChunkDO> getChunkPage(ChunkPageReqVO pageReqVO) {
-        // 查询条件中的 documentId 由 ChunkMapper 映射到 ai_chunk.version_id
+        // documentId 过滤: 先解析文档的全部版本 id, 再按 version_id IN 过滤(version_id 已是真实版本 id)
+        if (pageReqVO.getDocumentId() != null) {
+            List<Long> versionIds = knowledgeApi.getDocVersionIds(pageReqVO.getDocumentId()).getCheckedData();
+            return chunkMapper.selectPageByVersionIds(pageReqVO, versionIds);
+        }
         return chunkMapper.selectPage(pageReqVO);
     }
 

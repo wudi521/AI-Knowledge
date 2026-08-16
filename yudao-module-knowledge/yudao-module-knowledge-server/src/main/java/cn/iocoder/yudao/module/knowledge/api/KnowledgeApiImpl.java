@@ -2,13 +2,19 @@ package cn.iocoder.yudao.module.knowledge.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
+import cn.hutool.core.collection.CollUtil;
 import jakarta.annotation.Resource;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
@@ -61,6 +67,29 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     public CommonResult<Boolean> notifyParsed(Long documentId, Long versionId) {
         aiDocumentService.notifyParsed(documentId, versionId);
         return success(true);
+    }
+
+    @Override
+    public CommonResult<List<Long>> getDocVersionIds(Long docId) {
+        return success(aiDocVersionService.getVersionList(docId).stream()
+                .map(AiDocVersionDO::getId).toList());
+    }
+
+    @Override
+    public CommonResult<Map<Long, KnowledgeVersionRespDTO>> getVersionMap(List<Long> versionIds) {
+        Map<Long, KnowledgeVersionRespDTO> map = new HashMap<>();
+        if (CollUtil.isEmpty(versionIds)) {
+            return success(map);
+        }
+        for (AiDocVersionDO v : aiDocVersionService.getVersionListByIds(versionIds)) {
+            KnowledgeVersionRespDTO dto = new KnowledgeVersionRespDTO();
+            dto.setId(v.getId());
+            dto.setDocId(v.getDocId());
+            dto.setVersionNo(v.getVersionNo());
+            dto.setStatus(v.getStatus());
+            map.put(v.getId(), dto);
+        }
+        return success(map);
     }
 
 }
