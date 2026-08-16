@@ -35,8 +35,14 @@ spring:
     host: 127.0.0.1
     port: 6379
     database: 0
-  kafka: # Kafka 3.9 :9092
+  kafka: # Kafka 3.7.1 :9092
     bootstrap-servers: 127.0.0.1:9092
+    consumer:
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"   # 允许反序列化任意包(开发环境)
+    producer:
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
   elasticsearch: # Elasticsearch 8.13.4 :9200
     uris: http://127.0.0.1:9200
 
@@ -46,6 +52,10 @@ yudao:
     milvus:
       host: 127.0.0.1
       port: 19530
+      collection: ai_chunk_vector   # 向量集合名
+      dim: 1024                     # BGE-M3 向量维度
+    es:
+      index: ai_chunk_bm25          # BM25 索引名
 
 
 # 定时任务(本地环境关闭 xxl-job 调度中心, 对齐芋道)
