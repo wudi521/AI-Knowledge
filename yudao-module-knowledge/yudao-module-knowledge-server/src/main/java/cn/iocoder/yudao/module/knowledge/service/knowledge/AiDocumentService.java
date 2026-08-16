@@ -23,4 +23,9 @@ public interface AiDocumentService {
     /** 获得文档分页 */
     PageResult<AiDocumentDO> getAiDocumentPage(AiDocumentPageReqVO pageReqVO);
 
+    /**
+     * 更新文档解析状态
+     */
+    void updateParseStatus(Long id, String parseStatus, Integer chunkCount, String errorMsg);
+
 }

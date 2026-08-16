@@ -57,6 +57,12 @@ public class AiDocumentServiceImpl implements AiDocumentService {
         return aiDocumentMapper.selectPage(pageReqVO);
     }
 
+    @Override
+    public void updateParseStatus(Long id, String parseStatus, Integer chunkCount, String errorMsg) {
+        validateAiDocumentExists(id);
+        aiDocumentMapper.updateParseStatus(id, parseStatus, chunkCount, errorMsg);
+    }
+
     private void validateAiDocumentExists(Long id) {
         if (aiDocumentMapper.selectById(id) == null) {
             throw exception(DOCUMENT_NOT_EXISTS);
