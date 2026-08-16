@@ -28,4 +28,7 @@ public interface AiDocumentService {
      */
     void updateParseStatus(Long id, String parseStatus, Integer chunkCount, String errorMsg);
 
+    /** 解析完成通知: 确保存在 DRAFT 版本并触发审核条目处理 */
+    void notifyParsed(Long documentId);
+
 }

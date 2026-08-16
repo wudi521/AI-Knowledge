@@ -26,4 +26,7 @@ public class KnowledgeDocumentRespDTO {
     /** 租户编号 */
     private Long tenantId;
 
+    /** 当前版本编号(管线写 chunk.version_id 用) */
+    private Long currentVersionId;
+
 }

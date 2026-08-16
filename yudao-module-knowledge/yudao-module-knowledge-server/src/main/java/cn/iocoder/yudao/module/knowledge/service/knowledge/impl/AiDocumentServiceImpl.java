@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.knowledge.service.knowledge.impl;
 
+import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
@@ -8,12 +9,22 @@ import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentPageReqVO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentSaveReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.mq.KnowledgeIngestProducer;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
+import cn.iocoder.yudao.module.knowledge.service.review.ReviewItemService;
+import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
+
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.DOCUMENT_NOT_EXISTS;
@@ -21,6 +32,7 @@ import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.DOCUMEN
 /**
  * AI 文档 Service 实现
  */
+@Slf4j
 @Service
 @Validated
 public class AiDocumentServiceImpl implements AiDocumentService {
@@ -34,6 +46,15 @@ public class AiDocumentServiceImpl implements AiDocumentService {
     @Resource
     private IngestionApi ingestionApi;
 
+    @Resource
+    private AiDocVersionService aiDocVersionService;
+
+    @Resource
+    private ReviewItemService reviewItemService;
+
+    @Resource
+    private AiDocVersionMapper aiDocVersionMapper;
+
     @Override
     public Long createAiDocument(AiDocumentSaveReqVO createReqVO) {
         AiDocumentDO doc = BeanUtils.toBean(createReqVO, AiDocumentDO.class);
@@ -42,6 +63,8 @@ public class AiDocumentServiceImpl implements AiDocumentService {
             doc.setParseStatus("PENDING");
         }
         aiDocumentMapper.insert(doc);
+        // 创建 DRAFT 版本(版本状态机)
+        aiDocVersionService.createVersion(doc.getId());
         // 发送入库任务消息(Kafka), ingestion-server 异步解析/切分/向量化/三写
         knowledgeIngestProducer.sendDocumentIngest(doc.getId());
         return doc.getId();
@@ -55,6 +78,8 @@ public class AiDocumentServiceImpl implements AiDocumentService {
         if (result.isError()) {
             throw new ServiceException(result.getCode(), result.getMsg());
         }
+        // 级联删除版本记录
+        aiDocVersionMapper.delete(new LambdaQueryWrapper<AiDocVersionDO>().eq(AiDocVersionDO::getDocId, id));
         // 最后删除文档行
         aiDocumentMapper.deleteById(id);
     }
@@ -66,7 +91,40 @@ public class AiDocumentServiceImpl implements AiDocumentService {
 
     @Override
     public PageResult<AiDocumentDO> getAiDocumentPage(AiDocumentPageReqVO pageReqVO) {
-        return aiDocumentMapper.selectPage(pageReqVO);
+        PageResult<AiDocumentDO> pageResult = aiDocumentMapper.selectPage(pageReqVO);
+        // 填充当前版本号/状态(批量查版本)
+        List<Long> docIds = pageResult.getList().stream().map(AiDocumentDO::getId).toList();
+        if (!docIds.isEmpty()) {
+            Map<Long, AiDocVersionDO> latestMap = aiDocVersionMapper.selectList(new LambdaQueryWrapper<AiDocVersionDO>()
+                            .in(AiDocVersionDO::getDocId, docIds))
+                    .stream().collect(Collectors.toMap(
+                            v -> v.getDocId(), v -> v, (a, b) -> a.getId() >= b.getId() ? a : b));
+            pageResult.getList().forEach(doc -> {
+                AiDocVersionDO v = latestMap.get(doc.getId());
+                if (v != null) {
+                    doc.setVersionNo(v.getVersionNo());
+                    doc.setVersionStatus(v.getStatus());
+                }
+            });
+        }
+        return pageResult;
+    }
+
+    @Override
+    public void notifyParsed(Long documentId) {
+        validateAiDocumentExists(documentId);
+        // 确保有 DRAFT 版本(createAiDocument 已创建, 此处兜底)
+        AiDocVersionDO version = aiDocVersionService.getLatestVersion(documentId);
+        if (version == null) {
+            version = aiDocVersionService.createVersion(documentId);
+        }
+        // 抽取失败由 reviewItemService 内部兜底: 置文档 FAILED, 不向上抛(ingestion 无需感知)
+        try {
+            reviewItemService.processAfterParsed(version.getId());
+        } catch (Exception e) {
+            log.error("[notifyParsed][文档 {} 审核处理失败]", documentId, e);
+            updateParseStatus(documentId, "FAILED", null, StrUtil.sub(e.getMessage(), 0, 500));
+        }
     }
 
     @Override

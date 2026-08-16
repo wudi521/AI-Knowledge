@@ -42,4 +42,14 @@ public interface KnowledgeApi {
     @GetMapping(ApiConstants.PREFIX + "/get-document")
     CommonResult<KnowledgeDocumentRespDTO> getDocument(@RequestParam("id") Long id);
 
+    /**
+     * 解析完成通知(ingestion 管线 MySQL 落库后调用)
+     * knowledge 侧执行: 拉取 chunk -> LLM 抽取审核条目 -> 分流(REVIEW 或自动发布)
+     *
+     * @param documentId 文档编号
+     * @return 是否成功
+     */
+    @PostMapping(ApiConstants.PREFIX + "/notify-parsed")
+    CommonResult<Boolean> notifyParsed(@RequestParam("documentId") Long documentId);
+
 }

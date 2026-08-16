@@ -48,6 +48,12 @@ public class AiDocumentRespVO {
     @Schema(description = "上传人")
     private String owner;
 
+    @Schema(description = "当前版本号", example = "V3")
+    private String versionNo;
+
+    @Schema(description = "当前版本状态", example = "REVIEW")
+    private String versionStatus;
+
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 

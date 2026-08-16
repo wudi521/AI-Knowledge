@@ -3,7 +3,9 @@ package cn.iocoder.yudao.module.knowledge.api;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
+import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import jakarta.annotation.Resource;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.RestController;
@@ -19,6 +21,9 @@ public class KnowledgeApiImpl implements KnowledgeApi {
 
     @Resource
     private AiDocumentService aiDocumentService;
+
+    @Resource
+    private AiDocVersionService aiDocVersionService;
 
     @Override
     public Boolean checkKnowledgePermission(Long chunkId, Long userId) {
@@ -46,7 +51,16 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         dto.setStoragePath(doc.getStoragePath());
         dto.setParseStatus(doc.getParseStatus());
         dto.setTenantId(doc.getTenantId());
+        // 当前版本编号(管线写 chunk.version_id 用)
+        AiDocVersionDO version = aiDocVersionService.getLatestVersion(doc.getId());
+        dto.setCurrentVersionId(version == null ? null : version.getId());
         return success(dto);
+    }
+
+    @Override
+    public CommonResult<Boolean> notifyParsed(Long documentId) {
+        aiDocumentService.notifyParsed(documentId);
+        return success(true);
     }
 
 }

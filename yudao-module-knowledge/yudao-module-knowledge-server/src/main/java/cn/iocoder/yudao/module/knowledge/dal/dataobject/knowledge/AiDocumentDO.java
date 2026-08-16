@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge;
 
 import cn.iocoder.yudao.framework.tenant.core.db.TenantBaseDO;
 import com.baomidou.mybatisplus.annotation.KeySequence;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.*;
@@ -41,5 +42,13 @@ public class AiDocumentDO extends TenantBaseDO {
     private Integer chunkCount;
     /** 上传人 */
     private String owner;
+
+    /** 当前版本号(联表, 非表字段) */
+    @TableField(exist = false)
+    private String versionNo;
+
+    /** 当前版本状态(联表, 非表字段) */
+    @TableField(exist = false)
+    private String versionStatus;
 
 }
