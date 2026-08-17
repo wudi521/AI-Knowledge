@@ -14,9 +14,9 @@ import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.review.vo.ReviewItemPageReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.enums.review.ReviewItemStatusEnum;
-import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
 import cn.iocoder.yudao.module.knowledge.service.review.ReviewItemService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import cn.iocoder.yudao.module.model.api.ModelApi;
@@ -65,7 +65,7 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     @Resource
     private AiDocVersionService aiDocVersionService;
     @Resource
-    private AiDocumentService aiDocumentService;
+    private AiDocumentMapper aiDocumentMapper;
     @Resource
     private IngestionApi ingestionApi;
     @Resource
@@ -80,7 +80,7 @@ public class ReviewItemServiceImpl implements ReviewItemService {
         if (hasRequired) {
             // 有必审条目 -> 提交审核; 文档状态回 REVIEW(重试场景下此前可能为 FAILED)
             aiDocVersionService.submitForReview(versionId);
-            aiDocumentService.updateParseStatus(docId, "REVIEW", null, null);
+            aiDocumentMapper.updateParseStatus(docId, "REVIEW", null, null);
             log.info("[processAfterParsed][版本 {} 含必审条目 {} 条, 进入审核]", versionId,
                     items.stream().filter(i -> Boolean.TRUE.equals(i.getMustReview())).count());
         } else {

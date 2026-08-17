@@ -10,7 +10,7 @@ import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
-import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
 import cn.iocoder.yudao.module.knowledge.service.conflict.ConflictService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
@@ -34,7 +34,7 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     @Resource
     private AiDocVersionMapper aiDocVersionMapper;
     @Resource
-    private AiDocumentService aiDocumentService;
+    private AiDocumentMapper aiDocumentMapper;
     @Resource
     private ReviewItemMapper reviewItemMapper;
     @Resource
@@ -138,7 +138,7 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         if (conflictService.hasPendingConflicts(versionId)) {
             throw new ServiceException(CONFLICT_PENDING_EXISTS);
         }
-        AiDocumentDO doc = aiDocumentService.getAiDocument(version.getDocId());
+        AiDocumentDO doc = aiDocumentMapper.selectById(version.getDocId());
         if (doc == null) {
             throw new ServiceException(DOCUMENT_NOT_EXISTS);
         }
@@ -157,7 +157,7 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         // 旧版本过期
         expireOldVersions(version.getDocId(), versionId);
         // 文档置已发布
-        aiDocumentService.updateParseStatus(doc.getId(), "PUBLISHED", null, null);
+        aiDocumentMapper.updateParseStatus(doc.getId(), "PUBLISHED", null, null);
         log.info("[publish][版本 {} 发布完成, 文档 {}]", versionId, doc.getId());
     }
 
