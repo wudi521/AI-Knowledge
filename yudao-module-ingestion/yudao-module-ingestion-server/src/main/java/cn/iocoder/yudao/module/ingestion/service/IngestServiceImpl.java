@@ -123,9 +123,15 @@ public class IngestServiceImpl implements IngestService {
                 @Override
                 public void afterCommit() {
                     // 必须传管线实际使用的 versionId(不能由 knowledge 按最新推断)
-                    CommonResult<Boolean> notifyResult = knowledgeApi.notifyParsed(documentId, versionId);
-                    if (notifyResult.isError()) {
-                        throw new ServiceException(notifyResult.getCode(), notifyResult.getMsg());
+                    try {
+                        // 失败只记日志不抛: 抛错会让 Kafka 重投本消息 -> 重复插 chunk(无幂等兜底)!
+                        // 恢复路径: 文档保持 REVIEW/FAILED, 前端"重试抽取"(retry-extract)可重新触发
+                        CommonResult<Boolean> notifyResult = knowledgeApi.notifyParsed(documentId, versionId);
+                        if (notifyResult.isError()) {
+                            log.error("[ingestDocument][文档 {} 通知审核失败: {}]", documentId, notifyResult.getMsg());
+                        }
+                    } catch (Exception e) {
+                        log.error("[ingestDocument][文档 {} 通知审核异常]", documentId, e);
                     }
                 }
             });
