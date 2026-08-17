@@ -11,6 +11,12 @@ spring:
       config: # 【配置中心】配置项
         namespace: dev
         group: DEFAULT_GROUP
+    openfeign: # Feign 客户端超时(LM Studio CPU 推理较慢, model-server 读超时放宽到 5 分钟)
+      client:
+        config:
+          model-server:
+            connect-timeout: 10000
+            read-timeout: 300000
   datasource: # 数据库: MySQL 8 / 库 ruoyi-vue-pro / root-123456
     druid:
       initial-size: 1

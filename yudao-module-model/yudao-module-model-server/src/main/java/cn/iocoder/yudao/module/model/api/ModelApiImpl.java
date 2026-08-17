@@ -79,6 +79,8 @@ public class ModelApiImpl implements ModelApi {
         messages.add(userMsg);
         body.put("messages", messages);
         body.put("temperature", 0.2);
+        // 限制生成长度: 抽取/判定输出应是小段 JSON, 不设上限时 CPU 推理(qwen3-8b)可能生成长文导致超时
+        body.put("max_tokens", 1024);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);

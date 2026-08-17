@@ -55,7 +55,8 @@ public class ReviewItemServiceImpl implements ReviewItemService {
             3. 必须输出合法 JSON 数组, 不要输出任何其他文字。格式: [{"item_type":"PRICE","title":"换屏一口价","content":"官方换屏一口价 ¥699","confidence":0.95,"risk_level":"HIGH"}]
             """;
 
-    private static final int BATCH_SIZE = 10;
+    /** 每批 chunk 数(CPU 推理慢, 批次小可避免单次调用超时) */
+    private static final int BATCH_SIZE = 5;
 
     /** 置信度低于该值强制人工审核(BR-006) */
     private static final BigDecimal CONFIDENCE_MANUAL_THRESHOLD = new BigDecimal("0.85");
