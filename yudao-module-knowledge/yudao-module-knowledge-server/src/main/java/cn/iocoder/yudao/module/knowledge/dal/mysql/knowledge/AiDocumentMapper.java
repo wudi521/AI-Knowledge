@@ -19,6 +19,7 @@ public interface AiDocumentMapper extends BaseMapperX<AiDocumentDO> {
                 .eqIfPresent(AiDocumentDO::getKbId, reqVO.getKbId())
                 .likeIfPresent(AiDocumentDO::getName, reqVO.getName())
                 .eqIfPresent(AiDocumentDO::getParseStatus, reqVO.getParseStatus())
+                .inIfPresent(AiDocumentDO::getKbId, reqVO.getKbIds())
                 .orderByDesc(AiDocumentDO::getId));
     }
 

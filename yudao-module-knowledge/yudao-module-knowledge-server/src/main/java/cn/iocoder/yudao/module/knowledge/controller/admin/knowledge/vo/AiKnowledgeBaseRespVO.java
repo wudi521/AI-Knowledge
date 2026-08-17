@@ -27,6 +27,12 @@ public class AiKnowledgeBaseRespVO {
     @Schema(description = "备注", example = "核心知识库")
     private String remark;
 
+    @Schema(description = "可见角色 code, 逗号分隔; 空=全部可见")
+    private String visibleRoles;
+
+    @Schema(description = "有效期至(空=永久)")
+    private LocalDateTime effectiveTo;
+
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 

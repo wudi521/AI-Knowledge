@@ -4,6 +4,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotEmpty;
 import lombok.Data;
 
+import java.time.LocalDateTime;
+
 @Schema(description = "管理后台 - 知识库 新增/修改 Request VO")
 @Data
 public class AiKnowledgeBaseSaveReqVO {
@@ -26,5 +28,11 @@ public class AiKnowledgeBaseSaveReqVO {
 
     @Schema(description = "备注", example = "核心知识库")
     private String remark;
+
+    @Schema(description = "可见角色 code, 逗号分隔; 空=全部可见")
+    private String visibleRoles;
+
+    @Schema(description = "有效期至(空=永久)")
+    private LocalDateTime effectiveTo;
 
 }

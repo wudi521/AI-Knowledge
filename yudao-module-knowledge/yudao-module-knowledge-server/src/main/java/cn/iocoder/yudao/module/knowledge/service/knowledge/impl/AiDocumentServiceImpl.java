@@ -5,15 +5,19 @@ import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
+import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentPageReqVO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumentSaveReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.mq.KnowledgeIngestProducer;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
+import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.service.review.ReviewItemService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -26,6 +30,7 @@ import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
@@ -41,6 +46,12 @@ public class AiDocumentServiceImpl implements AiDocumentService {
 
     @Resource
     private AiDocumentMapper aiDocumentMapper;
+
+    @Resource
+    private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
+
+    @Resource
+    private KnowledgePermissionHelper knowledgePermissionHelper;
 
     @Resource
     private KnowledgeIngestProducer knowledgeIngestProducer;
@@ -93,6 +104,28 @@ public class AiDocumentServiceImpl implements AiDocumentService {
 
     @Override
     public PageResult<AiDocumentDO> getAiDocumentPage(AiDocumentPageReqVO pageReqVO) {
+        // 权限边界: 非超管用户仅能查看其可见知识库下的文档
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        if (userId != null && !knowledgePermissionHelper.isSuperAdmin(userId)) {
+            // 查询可见知识库 id 集合
+            List<AiKnowledgeBaseDO> kbs = aiKnowledgeBaseMapper.selectList();
+            Set<String> candidateCodes = kbs.stream()
+                    .map(AiKnowledgeBaseDO::getVisibleRoles)
+                    .filter(StrUtil::isNotBlank)
+                    .flatMap(s -> StrUtil.split(s, ',').stream())
+                    .map(String::trim).collect(Collectors.toSet());
+            Set<String> myRoles = knowledgePermissionHelper.resolveUserRoles(userId, candidateCodes);
+            Set<Long> visibleKbIds = kbs.stream()
+                    .filter(kb -> knowledgePermissionHelper.visibleToUser(kb, myRoles))
+                    .map(AiKnowledgeBaseDO::getId)
+                    .collect(Collectors.toSet());
+            // 无任何可见知识库时直接返回空页(inIfPresent 对空集合不追加条件, 否则会泄露全量文档)
+            if (visibleKbIds.isEmpty()) {
+                return PageResult.empty();
+            }
+            // 文档分页加 kbId 过滤
+            pageReqVO.setKbIds(visibleKbIds);
+        }
         PageResult<AiDocumentDO> pageResult = aiDocumentMapper.selectPage(pageReqVO);
         // 填充当前版本号/状态(批量查版本)
         List<Long> docIds = pageResult.getList().stream().map(AiDocumentDO::getId).toList();

@@ -6,6 +6,8 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.*;
 
+import java.time.LocalDateTime;
+
 /**
  * 知识库 DO
  */
@@ -32,5 +34,9 @@ public class AiKnowledgeBaseDO extends BaseDO {
     private Integer status;
     /** 备注 */
     private String remark;
+    /** 可见角色 code, 逗号分隔; 空=全部可见 */
+    private String visibleRoles;
+    /** 有效期至(空=永久) */
+    private LocalDateTime effectiveTo;
 
 }
