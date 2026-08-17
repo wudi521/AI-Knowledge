@@ -11,12 +11,16 @@ import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
+import cn.iocoder.yudao.module.knowledge.service.conflict.ConflictService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -38,6 +42,10 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     private ReviewItemMapper reviewItemMapper;
     @Resource
     private IngestionApi ingestionApi;
+    @Resource
+    private ConflictService conflictService;
+    @Resource
+    private PlatformTransactionManager transactionManager;
 
     @Override
     public AiDocVersionDO createVersion(Long docId) {
@@ -125,6 +133,20 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         if (reviewItemMapper.existsUnfinishedRequired(versionId)
                 || reviewItemMapper.existsPriceWithoutDoubleReview(versionId)) {
             throw new ServiceException(VERSION_PUBLISH_BLOCKED);
+        }
+        // 门禁 3: 无待裁决冲突(先查存量, 再增量检测, 再复查)
+        // 独立 REQUIRES_NEW 事务: 检测出的 PENDING 冲突必须落库供人工裁决, 不受本发布事务回滚影响
+        TransactionTemplate conflictTx = new TransactionTemplate(transactionManager);
+        conflictTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        Boolean pendingConflict = conflictTx.execute(status -> {
+            if (conflictService.hasPendingConflicts(versionId)) {
+                return true;
+            }
+            conflictService.detectConflicts(versionId);
+            return conflictService.hasPendingConflicts(versionId);
+        });
+        if (Boolean.TRUE.equals(pendingConflict)) {
+            throw new ServiceException(CONFLICT_PENDING_EXISTS);
         }
         AiDocumentDO doc = aiDocumentService.getAiDocument(version.getDocId());
         if (doc == null) {

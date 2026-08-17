@@ -21,5 +21,9 @@ public interface ErrorCodeConstants {
     ErrorCode REVIEW_REASON_REQUIRED = new ErrorCode(1_004_000_009, "驳回原因不能为空");
     ErrorCode VERSION_DOC_MISMATCH = new ErrorCode(1_004_000_012, "版本与文档不匹配");
     ErrorCode REVIEW_EXTRACT_FAILED = new ErrorCode(1_004_000_013, "审核条目抽取失败(LLM 输出无法解析), 请重试");
+    // 注意: 1_004_000_009 已被 REVIEW_REASON_REQUIRED 占用, 冲突错误码顺延 014/015/016
+    ErrorCode CONFLICT_NOT_EXISTS = new ErrorCode(1_004_000_014, "冲突记录不存在");
+    ErrorCode CONFLICT_STATUS_ERROR = new ErrorCode(1_004_000_015, "冲突记录状态不允许该操作");
+    ErrorCode CONFLICT_PENDING_EXISTS = new ErrorCode(1_004_000_016, "存在待裁决冲突, 无法发布");
 
 }
