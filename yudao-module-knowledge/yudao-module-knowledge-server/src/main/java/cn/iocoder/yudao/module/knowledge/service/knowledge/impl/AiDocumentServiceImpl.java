@@ -107,18 +107,8 @@ public class AiDocumentServiceImpl implements AiDocumentService {
         // 权限边界: 非超管用户仅能查看其可见知识库下的文档
         Long userId = SecurityFrameworkUtils.getLoginUserId();
         if (userId != null && !knowledgePermissionHelper.isSuperAdmin(userId)) {
-            // 查询可见知识库 id 集合
-            List<AiKnowledgeBaseDO> kbs = aiKnowledgeBaseMapper.selectList();
-            Set<String> candidateCodes = kbs.stream()
-                    .map(AiKnowledgeBaseDO::getVisibleRoles)
-                    .filter(StrUtil::isNotBlank)
-                    .flatMap(s -> StrUtil.split(s, ',').stream())
-                    .map(String::trim).collect(Collectors.toSet());
-            Set<String> myRoles = knowledgePermissionHelper.resolveUserRoles(userId, candidateCodes);
-            Set<Long> visibleKbIds = kbs.stream()
-                    .filter(kb -> knowledgePermissionHelper.visibleToUser(kb, myRoles))
-                    .map(AiKnowledgeBaseDO::getId)
-                    .collect(Collectors.toSet());
+            List<AiKnowledgeBaseDO> visible = knowledgePermissionHelper.filterVisibleKbs(userId, aiKnowledgeBaseMapper.selectList());
+            Set<Long> visibleKbIds = visible.stream().map(AiKnowledgeBaseDO::getId).collect(Collectors.toSet());
             // 无任何可见知识库时直接返回空页(inIfPresent 对空集合不追加条件, 否则会泄露全量文档)
             if (visibleKbIds.isEmpty()) {
                 return PageResult.empty();

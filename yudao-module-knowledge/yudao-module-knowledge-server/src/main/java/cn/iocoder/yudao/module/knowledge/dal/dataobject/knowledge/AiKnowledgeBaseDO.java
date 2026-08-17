@@ -1,6 +1,6 @@
 package cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge;
 
-import cn.iocoder.yudao.framework.mybatis.core.dataobject.BaseDO;
+import cn.iocoder.yudao.framework.tenant.core.db.TenantBaseDO;
 import com.baomidou.mybatisplus.annotation.KeySequence;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -9,7 +9,7 @@ import lombok.*;
 import java.time.LocalDateTime;
 
 /**
- * 知识库 DO
+ * 知识库 DO(租户隔离: 与 ai_document 一致, 多租户下互不可见)
  */
 @TableName("ai_knowledge_base")
 @KeySequence("ai_knowledge_base_seq")
@@ -19,7 +19,7 @@ import java.time.LocalDateTime;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class AiKnowledgeBaseDO extends BaseDO {
+public class AiKnowledgeBaseDO extends TenantBaseDO {
 
     /** 编号 */
     @TableId

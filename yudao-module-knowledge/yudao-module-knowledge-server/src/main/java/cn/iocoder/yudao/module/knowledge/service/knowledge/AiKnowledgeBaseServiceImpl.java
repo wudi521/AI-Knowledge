@@ -58,22 +58,18 @@ public class AiKnowledgeBaseServiceImpl implements AiKnowledgeBaseService {
 
     @Override
     public PageResult<AiKnowledgeBaseDO> getAiKnowledgeBasePage(AiKnowledgeBasePageReqVO pageReqVO) {
-        PageResult<AiKnowledgeBaseDO> pageResult = aiKnowledgeBaseMapper.selectPage(pageReqVO);
         Long userId = SecurityFrameworkUtils.getLoginUserId();
         if (userId == null || knowledgePermissionHelper.isSuperAdmin(userId)) {
-            return pageResult; // 内部调用/超管直通
+            return aiKnowledgeBaseMapper.selectPage(pageReqVO); // 内部调用/超管直通
         }
-        // 收集本页所有可见角色 code 去重
-        Set<String> candidateCodes = pageResult.getList().stream()
-                .map(AiKnowledgeBaseDO::getVisibleRoles)
-                .filter(StrUtil::isNotBlank)
-                .flatMap(s -> StrUtil.split(s, ',').stream())
-                .map(String::trim).collect(Collectors.toSet());
-        Set<String> myRoles = knowledgePermissionHelper.resolveUserRoles(userId, candidateCodes);
-        List<AiKnowledgeBaseDO> filtered = pageResult.getList().stream()
-                .filter(kb -> knowledgePermissionHelper.visibleToUser(kb, myRoles))
+        // 非超管: 全量查 -> 角色/有效期过滤 -> 内存分页(保证 total 为真实可见数, 避免深分页空页)
+        List<AiKnowledgeBaseDO> visible = knowledgePermissionHelper.filterVisibleKbs(userId, aiKnowledgeBaseMapper.selectList());
+        int from = (pageReqVO.getPageNo() - 1) * pageReqVO.getPageSize();
+        List<AiKnowledgeBaseDO> pageList = visible.stream()
+                .skip(Math.max(from, 0))
+                .limit(pageReqVO.getPageSize())
                 .toList();
-        return new PageResult<>(filtered, (long) filtered.size());
+        return new PageResult<>(pageList, (long) visible.size());
     }
 
 }
