@@ -19,6 +19,8 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -113,14 +115,21 @@ public class IngestServiceImpl implements IngestService {
                 chunkIds.add(chunkDO.getId());
             }
 
-            // 8. 置为 REVIEW(管线完成, 待审核)并通知 knowledge 处理审核
+            // 8. 置为 REVIEW(管线完成, 待审核); 通知 knowledge 处理审核放到事务提交后
             updateStatus(documentId, "REVIEW", chunks.size(), null);
-            // 必须传管线实际使用的 versionId(不能由 knowledge 按最新推断)
-            CommonResult<Boolean> notifyResult = knowledgeApi.notifyParsed(documentId, versionId);
-            if (notifyResult.isError()) {
-                throw new ServiceException(notifyResult.getCode(), notifyResult.getMsg());
-            }
-            log.info("[ingestDocument][文档 {} 落库完成(REVIEW), {} 个片段, 已通知审核]", documentId, chunks.size());
+            // ⚠️ 必须在事务提交后再调 notifyParsed: knowledge 会回读本版本 chunk(新连接新事务),
+            //    事务内调用会读到 0 行 -> 空抽取 -> 误判"无必审条目"自动发布空版本
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    // 必须传管线实际使用的 versionId(不能由 knowledge 按最新推断)
+                    CommonResult<Boolean> notifyResult = knowledgeApi.notifyParsed(documentId, versionId);
+                    if (notifyResult.isError()) {
+                        throw new ServiceException(notifyResult.getCode(), notifyResult.getMsg());
+                    }
+                }
+            });
+            log.info("[ingestDocument][文档 {} 落库完成(REVIEW), {} 个片段, 待事务提交后通知审核]", documentId, chunks.size());
         } catch (Exception e) {
             log.error("[ingestDocument][文档 {} 入库失败]", documentId, e);
             try {

@@ -12,8 +12,10 @@ import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumen
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.conflict.ConflictMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.mq.KnowledgeIngestProducer;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
@@ -25,6 +27,8 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_NOT_VISIBLE;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KNOWLEDGE_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.VERSION_DOC_MISMATCH;
 import org.springframework.validation.annotation.Validated;
 
@@ -67,9 +71,22 @@ public class AiDocumentServiceImpl implements AiDocumentService {
 
     @Resource
     private AiDocVersionMapper aiDocVersionMapper;
+    @Resource
+    private ReviewItemMapper reviewItemMapper;
+    @Resource
+    private ConflictMapper conflictMapper;
 
     @Override
     public Long createAiDocument(AiDocumentSaveReqVO createReqVO) {
+        // 权限边界: 目标知识库须存在且对当前用户可见(含未过期)
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(createReqVO.getKbId());
+        if (kb == null) {
+            throw new ServiceException(KNOWLEDGE_NOT_EXISTS);
+        }
+        if (userId != null && !knowledgePermissionHelper.isKbVisibleToUser(userId, kb)) {
+            throw new ServiceException(KB_NOT_VISIBLE);
+        }
         AiDocumentDO doc = BeanUtils.toBean(createReqVO, AiDocumentDO.class);
         // 初始状态: 待解析
         if (doc.getParseStatus() == null) {
@@ -78,7 +95,7 @@ public class AiDocumentServiceImpl implements AiDocumentService {
         aiDocumentMapper.insert(doc);
         // 创建 DRAFT 版本(版本状态机)
         aiDocVersionService.createVersion(doc.getId());
-        // 发送入库任务消息(Kafka), ingestion-server 异步解析/切分/向量化/三写
+        // 发送入库任务消息(Kafka), ingestion-server 异步解析/切分/向量化
         knowledgeIngestProducer.sendDocumentIngest(doc.getId());
         return doc.getId();
     }
@@ -91,7 +108,12 @@ public class AiDocumentServiceImpl implements AiDocumentService {
         if (result.isError()) {
             throw new ServiceException(result.getCode(), result.getMsg());
         }
-        // 级联删除版本记录
+        // 级联删除审核条目与冲突记录(按版本), 再删版本记录
+        List<AiDocVersionDO> versions = aiDocVersionMapper.selectListByDocId(id);
+        versions.forEach(v -> {
+            reviewItemMapper.deleteByVersionId(v.getId());
+            conflictMapper.deleteByVersionId(v.getId());
+        });
         aiDocVersionMapper.delete(new LambdaQueryWrapper<AiDocVersionDO>().eq(AiDocVersionDO::getDocId, id));
         // 最后删除文档行
         aiDocumentMapper.deleteById(id);
@@ -99,7 +121,19 @@ public class AiDocumentServiceImpl implements AiDocumentService {
 
     @Override
     public AiDocumentDO getAiDocument(Long id) {
-        return aiDocumentMapper.selectById(id);
+        AiDocumentDO doc = aiDocumentMapper.selectById(id);
+        if (doc == null) {
+            return null;
+        }
+        // 权限边界: 管理端按 id 详情也须在可见知识库内(Feign 内部调用无登录用户时直通)
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        if (userId != null) {
+            AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(doc.getKbId());
+            if (!knowledgePermissionHelper.isKbVisibleToUser(userId, kb)) {
+                return null;
+            }
+        }
+        return doc;
     }
 
     @Override

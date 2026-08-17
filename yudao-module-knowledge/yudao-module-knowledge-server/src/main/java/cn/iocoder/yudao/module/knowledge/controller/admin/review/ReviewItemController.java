@@ -13,6 +13,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
 import jakarta.validation.Valid;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -41,6 +42,7 @@ public class ReviewItemController {
 
     @GetMapping("/page")
     @Operation(summary = "审核条目分页(审核台四 tab 共用)")
+    @PreAuthorize("@ss.hasPermission('knowledge:review:query')")
     public CommonResult<PageResult<ReviewItemRespVO>> getReviewItemPage(@Valid ReviewItemPageReqVO pageReqVO) {
         PageResult<ReviewItemDO> pageResult = reviewItemService.getReviewItemPage(pageReqVO);
         PageResult<ReviewItemRespVO> voPageResult = toBean(pageResult, ReviewItemRespVO.class);
@@ -63,6 +65,7 @@ public class ReviewItemController {
 
     @PostMapping("/approve")
     @Operation(summary = "通过条目(PRICE 类型待双人复核)")
+    @PreAuthorize("@ss.hasPermission('knowledge:review:update')")
     public CommonResult<Boolean> approve(@RequestParam("id") Long id) {
         reviewItemService.approve(id);
         return success(true);
@@ -70,13 +73,23 @@ public class ReviewItemController {
 
     @PostMapping("/approve-second")
     @Operation(summary = "价格类双人复核")
+    @PreAuthorize("@ss.hasPermission('knowledge:review:update')")
     public CommonResult<Boolean> approveSecond(@RequestParam("id") Long id) {
         reviewItemService.approveSecond(id);
         return success(true);
     }
 
+    @PostMapping("/retry-extract")
+    @Operation(summary = "按文档重试 LLM 抽取(抽取失败后的恢复入口)")
+    @PreAuthorize("@ss.hasPermission('knowledge:review:update')")
+    public CommonResult<Boolean> retryExtract(@RequestParam("docId") Long docId) {
+        reviewItemService.retryExtractByDocId(docId);
+        return success(true);
+    }
+
     @PostMapping("/reject")
     @Operation(summary = "驳回条目")
+    @PreAuthorize("@ss.hasPermission('knowledge:review:update')")
     public CommonResult<Boolean> reject(@RequestParam("id") Long id, @RequestParam("reason") String reason) {
         reviewItemService.reject(id, reason);
         return success(true);

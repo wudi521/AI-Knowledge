@@ -51,6 +51,22 @@ public class KnowledgePermissionHelper {
         return userRoles.stream().anyMatch(kbRoles::contains);
     }
 
+    /** 单知识库对当前用户可见性(详情/上传等单点校验用; userId 为 null 时视为内部调用直通) */
+    public boolean isKbVisibleToUser(Long userId, AiKnowledgeBaseDO kb) {
+        if (kb == null) {
+            return false;
+        }
+        if (userId == null || isSuperAdmin(userId)) {
+            return true;
+        }
+        Set<String> codes = splitRoles(kb.getVisibleRoles());
+        if (codes.isEmpty()) {
+            return kb.getEffectiveTo() == null || !kb.getEffectiveTo().isBefore(LocalDateTime.now());
+        }
+        Set<String> myRoles = resolveUserRoles(userId, codes);
+        return visibleToUser(kb, myRoles);
+    }
+
     /** 从知识库列表过滤出当前用户可见的子集(角色解析按全集一次完成) */
     public List<AiKnowledgeBaseDO> filterVisibleKbs(Long userId, List<AiKnowledgeBaseDO> kbs) {
         Set<String> candidateCodes = kbs.stream()

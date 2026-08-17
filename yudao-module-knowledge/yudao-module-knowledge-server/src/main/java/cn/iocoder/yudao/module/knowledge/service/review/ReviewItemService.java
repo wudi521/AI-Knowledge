@@ -26,6 +26,9 @@ public interface ReviewItemService {
      */
     void retryExtract(Long versionId);
 
+    /** 按文档重试抽取(取其最新版本, 抽取失败后的人工恢复入口) */
+    void retryExtractByDocId(Long docId);
+
     /**
      * LLM 抽取该版本的审核条目(幂等: 先清后插)
      *

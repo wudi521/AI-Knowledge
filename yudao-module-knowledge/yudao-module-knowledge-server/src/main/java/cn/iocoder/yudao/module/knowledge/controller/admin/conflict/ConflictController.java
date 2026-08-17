@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.knowledge.service.conflict.ConflictService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
@@ -24,6 +25,7 @@ public class ConflictController {
 
     @GetMapping("/list")
     @Operation(summary = "冲突列表(按文档/状态)")
+    @PreAuthorize("@ss.hasPermission('knowledge:conflict:query')")
     public CommonResult<List<ConflictDO>> getConflictList(@RequestParam("docId") Long docId,
                                                           @RequestParam(value = "status", required = false) String status) {
         return success(conflictService.getConflictList(docId, status));
@@ -31,12 +33,14 @@ public class ConflictController {
 
     @PostMapping("/detect")
     @Operation(summary = "触发冲突检测(发布前自动调用, 也可手动)")
+    @PreAuthorize("@ss.hasPermission('knowledge:conflict:update')")
     public CommonResult<Integer> detect(@RequestParam("versionId") Long versionId) {
         return success(conflictService.detectConflicts(versionId));
     }
 
     @PostMapping("/resolve")
     @Operation(summary = "裁决冲突(RESOLVED_NEW=以新版为准 / RESOLVED_OLD=以旧版为准)")
+    @PreAuthorize("@ss.hasPermission('knowledge:conflict:update')")
     public CommonResult<Boolean> resolve(@RequestParam("id") Long id,
                                          @RequestParam("resolveType") String resolveType,
                                          @RequestParam(value = "comment", required = false) String comment) {

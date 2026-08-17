@@ -15,6 +15,11 @@ public interface ConflictMapper extends BaseMapperX<ConflictDO> {
                 .eq(ConflictDO::getVersionId, versionId));
     }
 
+    /** 删除版本下的全部冲突记录(文档级联删除用) */
+    default int deleteByVersionId(Long versionId) {
+        return delete(new LambdaQueryWrapperX<ConflictDO>().eq(ConflictDO::getVersionId, versionId));
+    }
+
     /** 只清待裁决记录(保留已裁决审计历史, 防止"裁决以新版为准"后被重建的死循环) */
     default int deletePendingByVersionId(Long versionId) {
         return delete(new LambdaQueryWrapperX<ConflictDO>()

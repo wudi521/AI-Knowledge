@@ -13,8 +13,10 @@ import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.review.vo.ReviewItemPageReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.enums.review.ReviewItemStatusEnum;
+import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
 import cn.iocoder.yudao.module.knowledge.service.review.ReviewItemService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import cn.iocoder.yudao.module.model.api.ModelApi;
@@ -31,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_EXTRACT_FAILED;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.VERSION_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_STATUS_ERROR;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_PRICE_DOUBLE_REQUIRED;
@@ -62,6 +65,8 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     @Resource
     private AiDocVersionService aiDocVersionService;
     @Resource
+    private AiDocumentService aiDocumentService;
+    @Resource
     private IngestionApi ingestionApi;
     @Resource
     private ModelApi modelApi;
@@ -71,9 +76,11 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     public void processAfterParsed(Long versionId) {
         List<ReviewItemDO> items = extractItems(versionId);
         boolean hasRequired = items.stream().anyMatch(item -> Boolean.TRUE.equals(item.getMustReview()));
+        Long docId = aiDocVersionService.getVersion(versionId).getDocId();
         if (hasRequired) {
-            // 有必审条目 -> 提交审核, 文档状态保持 REVIEW(ingestion 已置)
+            // 有必审条目 -> 提交审核; 文档状态回 REVIEW(重试场景下此前可能为 FAILED)
             aiDocVersionService.submitForReview(versionId);
+            aiDocumentService.updateParseStatus(docId, "REVIEW", null, null);
             log.info("[processAfterParsed][版本 {} 含必审条目 {} 条, 进入审核]", versionId,
                     items.stream().filter(i -> Boolean.TRUE.equals(i.getMustReview())).count());
         } else {
@@ -87,6 +94,16 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     @Transactional
     public void retryExtract(Long versionId) {
         processAfterParsed(versionId);
+    }
+
+    @Override
+    @Transactional
+    public void retryExtractByDocId(Long docId) {
+        AiDocVersionDO version = aiDocVersionService.getLatestVersion(docId);
+        if (version == null) {
+            throw new ServiceException(VERSION_NOT_EXISTS);
+        }
+        retryExtract(version.getId());
     }
 
     @Override
