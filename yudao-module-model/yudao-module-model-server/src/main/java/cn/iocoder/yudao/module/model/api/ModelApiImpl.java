@@ -80,7 +80,7 @@ public class ModelApiImpl implements ModelApi {
         body.put("messages", messages);
         body.put("temperature", 0.2);
         // 限制生成长度: 抽取/判定输出应是小段 JSON, 不设上限时 CPU 推理(qwen3-8b)可能生成长文导致超时
-        body.put("max_tokens", 1024);
+        body.put("max_tokens", 2048);
         // qwen3 默认开思考模式(thinking): token 全耗在推理上导致 0 输出 + 极慢, 显式关闭
         body.put("chat_template_kwargs", Map.of("enable_thinking", false));
         body.put("thinking", Map.of("type", "disabled"));

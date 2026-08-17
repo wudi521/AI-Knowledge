@@ -141,6 +141,15 @@ public class ReviewItemServiceImpl implements ReviewItemService {
         req.setSystem(EXTRACT_SYSTEM_PROMPT);
         req.setUser(sb.toString());
         String resp = modelApi.chat(req).getCheckedData();
+        if (StrUtil.isBlank(resp)) {
+            // LM Studio 偶发空响应: 重试一次; 仍空则跳过该批(不拖垮整篇抽取)
+            log.warn("[extractBatch][批次响应为空, 重试一次]");
+            resp = modelApi.chat(req).getCheckedData();
+        }
+        if (StrUtil.isBlank(resp)) {
+            log.warn("[extractBatch][重试仍为空, 跳过该批, chunk 数 {}]", batch.size());
+            return List.of();
+        }
         JSONArray array = parseExtractJson(resp);
         List<ReviewItemDO> items = new ArrayList<>();
         for (Object o : array) {

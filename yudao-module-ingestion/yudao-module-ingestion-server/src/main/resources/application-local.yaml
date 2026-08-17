@@ -1,6 +1,12 @@
 # 入库管线 本地开发配置(与《8-中间件清单-本机Docker.md》对应, 实测 9/9 healthy)
 spring:
   cloud:
+    openfeign: # 通知审核(notifyParsed)为同步长调用(多批次LLM抽取), 读超时放宽到 5 分钟
+      client:
+        config:
+          knowledge-server:
+            connect-timeout: 10000
+            read-timeout: 300000
     nacos:
       server-addr: 127.0.0.1:8848 # Nacos 服务器地址
       username: # Nacos 账号
