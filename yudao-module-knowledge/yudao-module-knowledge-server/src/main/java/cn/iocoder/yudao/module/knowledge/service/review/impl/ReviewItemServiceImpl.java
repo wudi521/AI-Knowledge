@@ -153,8 +153,17 @@ public class ReviewItemServiceImpl implements ReviewItemService {
             // 归一化为全大写, 保证与 mustReview/PRICE 双人复核等比较一致(LLM 可能输出小写)
             String type = StrUtil.nullToEmpty(obj.getStr("item_type", "POLICY")).toUpperCase();
             item.setItemType(type);
-            item.setTitle(StrUtil.sub(obj.getStr("title", "未命名条目"), 0, 255));
-            item.setContent(StrUtil.sub(obj.getStr("content", ""), 0, 2000));
+            String content = StrUtil.nullToEmpty(obj.getStr("content", ""));
+            String title = obj.getStr("title");
+            if (StrUtil.isBlank(title)) {
+                // LLM 常只回 content 缺 title: 取内容前 20 字兜底, 保证审核台可读
+                title = StrUtil.sub(StrUtil.cleanBlank(content), 0, 20);
+            }
+            if (StrUtil.isBlank(title)) {
+                title = "未命名条目";
+            }
+            item.setTitle(StrUtil.sub(title, 0, 255));
+            item.setContent(StrUtil.sub(content, 0, 2000));
             item.setRiskLevel(StrUtil.nullToDefault(obj.getStr("risk_level", "MED"), "MED").toUpperCase());
             BigDecimal confidence = obj.getBigDecimal("confidence");
             // 置信度归一化到 [0,1](防止模型输出越界导致 decimal(4,3) 落库失败)
