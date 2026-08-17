@@ -71,13 +71,6 @@ public class ReviewItemController {
         return success(true);
     }
 
-    @PostMapping("/approve-second")
-    @Operation(summary = "价格类双人复核")
-    @PreAuthorize("@ss.hasPermission('knowledge:review:update')")
-    public CommonResult<Boolean> approveSecond(@RequestParam("id") Long id) {
-        reviewItemService.approveSecond(id);
-        return success(true);
-    }
 
     @PostMapping("/retry-extract")
     @Operation(summary = "按文档重试 LLM 抽取(抽取失败后的恢复入口)")

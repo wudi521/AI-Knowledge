@@ -30,14 +30,5 @@ public interface ReviewItemMapper extends BaseMapperX<ReviewItemDO> {
                         ReviewItemStatusEnum.PENDING.getStatus(), ReviewItemStatusEnum.REJECTED.getStatus())) > 0;
     }
 
-    /** 是否存在未完成双人复核的已通过价格条目(reviewer2 为空或与 reviewer 相同, 发布门禁用) */
-    default boolean existsPriceWithoutDoubleReview(Long versionId) {
-        return selectCount(new LambdaQueryWrapperX<ReviewItemDO>()
-                .eq(ReviewItemDO::getVersionId, versionId)
-                .eq(ReviewItemDO::getItemType, "PRICE")
-                .eq(ReviewItemDO::getStatus, ReviewItemStatusEnum.APPROVED.getStatus())
-                .and(w -> w.isNull(ReviewItemDO::getReviewer2)
-                        .or().apply("reviewer = reviewer2"))) > 0;
-    }
 
 }

@@ -124,9 +124,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
                 && !VersionStatusEnum.DRAFT.getStatus().equals(version.getStatus())) {
             throw new ServiceException(VERSION_STATUS_ERROR);
         }
-        // 门禁 2: 必审条目全部处理完(无 PENDING/REJECTED; 价格类双人复核完成)
-        if (reviewItemMapper.existsUnfinishedRequired(versionId)
-                || reviewItemMapper.existsPriceWithoutDoubleReview(versionId)) {
+        // 门禁 2: 必审条目全部处理完(无 PENDING/REJECTED; 一人审核制, 无双人复核)
+        if (reviewItemMapper.existsUnfinishedRequired(versionId)) {
             throw new ServiceException(VERSION_PUBLISH_BLOCKED);
         }
         // 门禁 3: 无待裁决冲突(先查存量, 再增量检测, 再复查)

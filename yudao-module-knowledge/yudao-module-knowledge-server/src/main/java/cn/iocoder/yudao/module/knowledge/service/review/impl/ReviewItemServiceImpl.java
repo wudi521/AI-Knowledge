@@ -36,8 +36,6 @@ import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.VERSION_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_STATUS_ERROR;
-import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_PRICE_DOUBLE_REQUIRED;
-import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_PRICE_SAME_REVIEWER;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_REASON_REQUIRED;
 
 /**
@@ -241,29 +239,6 @@ public class ReviewItemServiceImpl implements ReviewItemService {
         log.info("[approve][条目 {} 通过]", id);
     }
 
-    @Override
-    public void approveSecond(Long id) {
-        ReviewItemDO item = getItem(id);
-        if (!"PRICE".equals(item.getItemType())) {
-            throw new ServiceException(REVIEW_PRICE_DOUBLE_REQUIRED);
-        }
-        // 原子条件更新防并发(TOCTOU): 校验并入 WHERE, 以影响行数为准
-        String reviewer = currentNickname();
-        int rows = reviewItemMapper.update(null, new LambdaUpdateWrapper<ReviewItemDO>()
-                .eq(ReviewItemDO::getId, id)
-                .eq(ReviewItemDO::getStatus, ReviewItemStatusEnum.APPROVED.getStatus())
-                .isNull(ReviewItemDO::getReviewer2)
-                .ne(ReviewItemDO::getReviewer, reviewer)
-                .set(ReviewItemDO::getReviewer2, reviewer));
-        if (rows == 0) {
-            // 未更新: 状态不对/已双人复核/同人复核
-            if (StrUtil.equals(item.getReviewer(), reviewer)) {
-                throw new ServiceException(REVIEW_PRICE_SAME_REVIEWER);
-            }
-            throw new ServiceException(REVIEW_ITEM_STATUS_ERROR);
-        }
-        log.info("[approveSecond][条目 {} 双人复核完成]", id);
-    }
 
     @Override
     public void reject(Long id, String reason) {

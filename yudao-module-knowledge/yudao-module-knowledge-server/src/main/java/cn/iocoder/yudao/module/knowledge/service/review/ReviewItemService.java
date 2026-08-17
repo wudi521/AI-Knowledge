@@ -46,18 +46,11 @@ public interface ReviewItemService {
     PageResult<ReviewItemDO> getReviewItemPage(ReviewItemPageReqVO pageReqVO);
 
     /**
-     * 通过条目(PRICE 类型仅完成单人, 需双人复核)
+     * 通过条目(一人审核制)
      *
      * @param id 条目编号
      */
     void approve(Long id);
-
-    /**
-     * 价格类双人复核(第二人)
-     *
-     * @param id 条目编号
-     */
-    void approveSecond(Long id);
 
     /**
      * 驳回条目(必填原因)
