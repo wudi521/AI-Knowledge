@@ -76,7 +76,7 @@ public class SearchService {
     /**
      * 检索(显式租户/用户版本, 供 RPC 调用: 无登录态, 租户/权限由调用方传递; 支持多轮上下文)
      *
-     * @param history 上下文轮次(可选, 空/ null = 单轮; T1 仅接收存储, Task 2 接入查询分析)
+     * @param history 上下文轮次(可选, 空/ null = 单轮; 已接入查询分析做历史消歧)
      */
     public RetrievalRespVO search(String query, List<Long> reqKbIds, Integer topK, Long tenantId, Long userId,
                                   List<ChatTurnDTO> history) {
@@ -101,7 +101,7 @@ public class SearchService {
         }
 
         // 3. 语义理解/改写/拆解: 变体 = 原句 + (改写 + 子问题), 去重限 6
-        //    T1 仅透传 history 参数(提示词未接入), Task 2 将其融入查询分析/改写
+        //    Task 2: history 融入查询分析(指代展开/实体继承); LLM 失败时规则兜底改写仍参与召回
         QueryAnalysis analysis = queryAnalysisService.analyze(query, history);
         List<String> variants = new ArrayList<>();
         variants.add(query);
@@ -112,6 +112,9 @@ public class SearchService {
             if (analysis.getSubQuestions() != null) {
                 variants.addAll(analysis.getSubQuestions());
             }
+        } else if (analysis.getRewrites() != null && !analysis.getRewrites().isEmpty()) {
+            // 规则兜底(LLM 失败 + 历史合并): 仅补充改写参与召回, 无实体/子问题, 不提升 success
+            variants.addAll(analysis.getRewrites());
         }
         variants = variants.stream().distinct().limit(VARIANT_LIMIT).collect(Collectors.toList());
 
