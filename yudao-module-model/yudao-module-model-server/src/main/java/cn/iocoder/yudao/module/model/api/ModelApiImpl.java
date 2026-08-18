@@ -1,7 +1,9 @@
 package cn.iocoder.yudao.module.model.api;
 
+import cn.iocoder.yudao.framework.common.exception.enums.GlobalErrorCodeConstants;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
+import cn.iocoder.yudao.module.model.api.dto.ModelRerankReqDTO;
 import jakarta.annotation.Resource;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpEntity;
@@ -93,6 +95,42 @@ public class ModelApiImpl implements ModelApi {
         List<Map<String, Object>> choices = (List<Map<String, Object>>) response.getBody().get("choices");
         Map<String, Object> message = (Map<String, Object>) choices.get(0).get("message");
         return success((String) message.get("content"));
+    }
+
+    @Override
+    public CommonResult<List<Float>> rerank(ModelRerankReqDTO req) {
+        // 读取本地配置的重排服务(LM Studio, OpenAI 兼容接口)
+        String baseUrl = environment.getProperty("yudao.model.rerank.base-url", "http://127.0.0.1:1234/v1");
+        String modelName = environment.getProperty("yudao.model.rerank.model", "text-embedding-bge-reranker-v2-m3");
+        String url = baseUrl + "/rerank";
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("model", modelName);
+        body.put("query", req.getQuery());
+        body.put("documents", req.getDocuments());
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, headers);
+        ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
+        Map responseBody = response.getBody();
+        // 后端(如旧版 LM Studio)可能返回 HTTP 200 + {"error": ...} 而非 results, 此时避免 NPE, 返回明确错误
+        if (responseBody == null || responseBody.get("results") == null) {
+            return CommonResult.error(GlobalErrorCodeConstants.INTERNAL_SERVER_ERROR.getCode(),
+                    "重排服务调用失败: " + (responseBody == null ? "响应为空" : responseBody.get("error")));
+        }
+        List<Map<String, Object>> results = (List<Map<String, Object>>) responseBody.get("results");
+        // results 按相关性降序: [{index, relevance_score}, ...] -> 还原为与 documents 对齐的分数数组
+        Float[] scores = new Float[req.getDocuments().size()];
+        for (Map<String, Object> r : results) {
+            int idx = ((Number) r.get("index")).intValue();
+            scores[idx] = ((Number) r.get("relevance_score")).floatValue();
+        }
+        List<Float> list = new ArrayList<>();
+        for (Float s : scores) {
+            list.add(s == null ? 0F : s);
+        }
+        return success(list);
     }
 
 }

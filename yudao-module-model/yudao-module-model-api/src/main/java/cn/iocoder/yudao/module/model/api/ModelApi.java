@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.model.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
+import cn.iocoder.yudao.module.model.api.dto.ModelRerankReqDTO;
 import cn.iocoder.yudao.module.model.enums.ApiConstants;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,5 +34,14 @@ public interface ModelApi {
      */
     @PostMapping(ApiConstants.PREFIX + "/chat")
     CommonResult<String> chat(@RequestBody ModelChatReqDTO req);
+
+    /**
+     * 文本重排(相关性打分, 供检索平台重排候选)
+     *
+     * @param req 查询 + 候选文本列表
+     * @return 与 documents 一一对应的相关性分(越高越相关)
+     */
+    @PostMapping(ApiConstants.PREFIX + "/rerank")
+    CommonResult<List<Float>> rerank(@RequestBody ModelRerankReqDTO req);
 
 }
