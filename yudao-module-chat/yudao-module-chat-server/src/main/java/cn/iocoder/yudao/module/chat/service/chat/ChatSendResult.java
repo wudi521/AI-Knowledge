@@ -12,7 +12,8 @@ import java.util.List;
  * <ul>
  *     <li><b>可作答</b>: {@code answerable=true}, {@code reply} 为 AI 回答, 已落库 AI 消息;</li>
  *     <li><b>转人工</b>: {@code transferRequired=true}, {@code reply=null}, 携带 {@code transferReason} 与
- *     {@code summary} 草稿 —— 实际状态迁移 + SYSTEM 消息由 Task 4 TransferHandler 完成, T3 仅输出决策。</li>
+ *     {@code summary} —— 由 {@code ChatPipeline} 内 {@code TransferHandler.handleTransfer} 完成
+ *     状态迁移(ACTIVE→TRANSFERRED) + SYSTEM 交接摘要落库后返回。</li>
  * </ul>
  */
 @Data
@@ -43,7 +44,7 @@ public class ChatSendResult {
     /** 转人工原因(transferRequired=true 时填充) */
     private String transferReason;
 
-    /** 会话摘要草稿(转人工时填充, Task 4 TransferHandler 落库前可再提炼) */
+    /** 会话摘要(转人工时填充; 已由 TransferHandler 落库到 ai_conversation.summary 与 SYSTEM 消息) */
     private String summary;
 
 }
