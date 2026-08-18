@@ -170,8 +170,8 @@ public class IngestServiceImpl implements IngestService {
     }
 
     private String getKnowledgeBaseStrategy(Long kbId) {
-        // TODO: 知识库详情 Feign 后续接入; 先返回默认 ParentChild
-        return "ParentChild";
+        // 按知识库配置的切分策略(Feign 调 knowledge-server); 缺失时默认 ParentChild
+        return knowledgeApi.getKnowledgeBaseStrategy(kbId).getCheckedData();
     }
 
     private String downloadFromMinio(String storagePath) {

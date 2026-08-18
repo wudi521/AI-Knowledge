@@ -80,4 +80,13 @@ public interface KnowledgeApi {
     @PostMapping(ApiConstants.PREFIX + "/get-version-map")
     CommonResult<Map<Long, KnowledgeVersionRespDTO>> getVersionMap(@RequestBody List<Long> versionIds);
 
+    /**
+     * 查询知识库切分策略(ingestion 按知识库配置切分; 不存在返回默认 ParentChild)
+     *
+     * @param kbId 知识库编号
+     * @return 切分策略: Semantic/ParentChild/Table/FAQ/Policy
+     */
+    @GetMapping(ApiConstants.PREFIX + "/get-kb-strategy")
+    CommonResult<String> getKnowledgeBaseStrategy(@RequestParam("kbId") Long kbId);
+
 }

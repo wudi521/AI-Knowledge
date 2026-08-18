@@ -4,6 +4,8 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
@@ -30,6 +32,8 @@ public class KnowledgeApiImpl implements KnowledgeApi {
 
     @Resource
     private AiDocVersionService aiDocVersionService;
+    @Resource
+    private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
 
     @Override
     public Boolean checkKnowledgePermission(Long chunkId, Long userId) {
@@ -67,6 +71,12 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     public CommonResult<Boolean> notifyParsed(Long documentId, Long versionId) {
         aiDocumentService.notifyParsed(documentId, versionId);
         return success(true);
+    }
+
+    @Override
+    public CommonResult<String> getKnowledgeBaseStrategy(Long kbId) {
+        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(kbId);
+        return success(kb == null || kb.getChunkStrategy() == null ? "ParentChild" : kb.getChunkStrategy());
     }
 
     @Override
