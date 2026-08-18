@@ -25,5 +25,7 @@ public interface ErrorCodeConstants {
     ErrorCode CONFLICT_STATUS_ERROR = new ErrorCode(1_004_000_015, "冲突记录状态不允许该操作");
     ErrorCode CONFLICT_PENDING_EXISTS = new ErrorCode(1_004_000_016, "存在待裁决冲突, 无法发布");
     ErrorCode KB_NOT_VISIBLE = new ErrorCode(1_004_000_017, "知识库不可见或已过期");
+    ErrorCode INTENT_NOT_EXISTS = new ErrorCode(1_004_000_018, "意图不存在");
+    ErrorCode INTENT_KB_NOT_EXISTS = new ErrorCode(1_004_000_019, "知识库不存在");
 
 }
