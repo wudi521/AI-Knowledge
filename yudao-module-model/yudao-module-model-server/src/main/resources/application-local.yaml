@@ -54,5 +54,5 @@ yudao:
       base-url: http://127.0.0.1:1234/v1   # LM Studio
       model: qwen/qwen3-8b                  # 已确认加载; 备选 qwen/qwen3-14b
     rerank:
-      base-url: http://127.0.0.1:1234/v1   # LM Studio
-      model: text-embedding-bge-reranker-v2-m3
+      base-url: http://127.0.0.1:1236/v1   # llama.cpp server(bge-reranker-v2-m3 Q8_0, 见 deploy/llama-rerank.sh)
+      model: bge-reranker-v2-m3
