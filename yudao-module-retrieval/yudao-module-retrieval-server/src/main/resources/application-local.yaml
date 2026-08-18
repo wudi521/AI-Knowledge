@@ -5,7 +5,7 @@ yudao:
       index: ai_chunk_bm25        # ES BM25 索引(别名, 指向 ai_chunk_bm25_v2)
     milvus:
       collection: ai_chunk_vector
-      vector-field: embedding     # Milvus 向量字段名(实测为 embedding)(与《8-中间件清单-本机Docker.md》对应, 实测 9/9 healthy)
+      vector-field: embedding     # Milvus 向量字段名(实测为 embedding)
 spring:
   cloud:
     nacos:
