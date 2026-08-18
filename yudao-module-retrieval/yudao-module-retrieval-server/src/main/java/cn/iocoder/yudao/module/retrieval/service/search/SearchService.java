@@ -39,7 +39,8 @@ public class SearchService {
             1. 只能依据证据内容作答, 不得编造事实;
             2. 回答中在关键结论句后标注证据编号 [C1][C2](编号对应证据列表顺序);
             3. 证据不足时, 直接说明"根据现有资料无法确定", 并列出已确认的信息;
-            4. 语言简洁口语化, 先给结论再给依据。
+            4. 语言简洁口语化, 先给结论再给依据;
+            5. **产品/品牌一致性校验(强制)**: 若问题明确指出具体产品(如"苹果13"、"iPhone")或品牌, 而证据片段中没有任何该产品的条款(证据属于其他产品, 如 X100 Pro), 则必须回答"现有资料中未收录{该产品}的售后政策, 无法确认其政策", 并说明现有资料覆盖的产品范围, 严禁把其他产品的条款套用到该产品上; 仅当证据中确实包含该产品/品牌的条款时才可正常作答。
             """;
 
     @Resource
@@ -160,13 +161,13 @@ public class SearchService {
             results.add(buildResult(chunkId, contentsMap, docInfoMap, rrfMap, r.getValue(), bm25HitIds, vectorHitIds));
         }
         resp.setResults(results);
-        // 12. 大模型总结回答(基于 TopN 证据, 带 [C1][C2] 引用; 失败置 null 不阻断)
-        resp.setAnswer(generateAnswer(req.getQuery(), results));
+        // 12. 大模型总结回答(基于 TopN 证据 + 问题实体, 带 [C1][C2] 引用; 失败置 null 不阻断)
+        resp.setAnswer(generateAnswer(req.getQuery(), analysis.getEntities(), results));
         return resp;
     }
 
     /** 基于检索结果生成总结回答(LLM; 引用编号 C1.. 对应 results 顺序; 失败返回 null) */
-    private String generateAnswer(String query, List<RetrievalRespVO.ResultVO> results) {
+    private String generateAnswer(String query, List<String> entities, List<RetrievalRespVO.ResultVO> results) {
         if (results.isEmpty()) {
             return null;
         }
@@ -177,7 +178,12 @@ public class SearchService {
             }
             ModelChatReqDTO req = new ModelChatReqDTO();
             req.setSystem(ANSWER_SYSTEM_PROMPT);
-            req.setUser("问题: " + query + "\n\n证据片段:\n" + evidence);
+            String user = "问题: " + query;
+            if (entities != null && !entities.isEmpty()) {
+                user += "\n\n问题实体(用于品牌/产品一致性校验): " + String.join("、", entities);
+            }
+            user += "\n\n证据片段:\n" + evidence;
+            req.setUser(user);
             String answer = modelApi.chat(req).getCheckedData();
             return StrUtil.isBlank(answer) ? null : answer;
         } catch (Exception e) {
