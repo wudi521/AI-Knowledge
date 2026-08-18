@@ -187,6 +187,9 @@ public class AiDocumentServiceImpl implements AiDocumentService {
         if (!documentId.equals(version.getDocId())) {
             throw new ServiceException(VERSION_DOC_MISMATCH);
         }
+        // ⚠️ 先落 EXTRACTING(独立事务立刻可见): processAfterParsed 内部是长事务(LLM 抽取 1~3 分钟),
+        //    在事务内更新状态要等提交才可见, 前端就看不到"抽取中"
+        updateParseStatus(documentId, "EXTRACTING", null, null);
         // 抽取失败由 reviewItemService 内部兜底: 置文档 FAILED, 不向上抛(ingestion 无需感知)
         try {
             reviewItemService.processAfterParsed(version.getId());

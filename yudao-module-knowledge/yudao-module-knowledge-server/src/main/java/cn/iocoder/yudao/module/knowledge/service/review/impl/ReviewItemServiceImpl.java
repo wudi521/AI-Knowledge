@@ -76,8 +76,7 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     @Transactional
     public void processAfterParsed(Long versionId) {
         Long docId = aiDocVersionService.getVersion(versionId).getDocId();
-        // 抽取阶段: 文档状态置 EXTRACTING(前端展示"抽取中"), 完成后置 REVIEW/PUBLISHED/FAILED
-        aiDocumentMapper.updateParseStatus(docId, "EXTRACTING", null, null);
+        // EXTRACTING 已由入口(notifyParsed/retryExtractByDocId)在事务外落库, 此处不再设置(事务内不可见)
         List<ReviewItemDO> items = extractItems(versionId);
         boolean hasRequired = items.stream().anyMatch(item -> Boolean.TRUE.equals(item.getMustReview()));
         if (hasRequired) {
@@ -94,13 +93,14 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     }
 
     @Override
-    @Transactional
     public void retryExtract(Long versionId) {
+        // 无事务: EXTRACTING 状态先落库(事务外立即可见), 再进 processAfterParsed 自己的事务
+        Long docId = aiDocVersionService.getVersion(versionId).getDocId();
+        aiDocumentMapper.updateParseStatus(docId, "EXTRACTING", null, null);
         processAfterParsed(versionId);
     }
 
     @Override
-    @Transactional
     public void retryExtractByDocId(Long docId) {
         AiDocVersionDO version = aiDocVersionService.getLatestVersion(docId);
         if (version == null) {
