@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.stream.Collectors;
 import java.util.Map;
 
 /**
@@ -100,7 +101,7 @@ public class VectorSearcher {
                 log.error("[search][Milvus 检索失败: {}]", resp.getMessage());
                 return List.of();
             }
-            // 结果按每条查询向量分组; 合并时同 chunk 保留最高分
+            // 结果按每条查询向量分组; 合并时同 chunk 保留最相似的一条
             SearchResultData data = resp.getData().getResults();
             SearchResultsWrapper wrapper = new SearchResultsWrapper(data);
             Map<Long, Double> best = new HashMap<>();
@@ -108,11 +109,15 @@ public class VectorSearcher {
                 List<SearchResultsWrapper.IDScore> scores = wrapper.getIDScore(i);
                 for (SearchResultsWrapper.IDScore s : scores) {
                     double similarity = s.getScore(); // COSINE: 越大越相似
-                    double score = 1 - similarity;    // 距离转相关性(RRF 仅需单调)
-                    best.merge(s.getLongID(), score, Math::max);
+                    // 转"相关性"单调值; 合并取最相似(即该值最小)
+                    double score = 1 - similarity;
+                    best.merge(s.getLongID(), score, Math::min);
                 }
             }
-            return new ArrayList<>(best.entrySet());
+            // 返回按相关性降序(score 小=相似度高), RRF 依赖有序输入
+            return best.entrySet().stream()
+                    .sorted(Map.Entry.comparingByValue())
+                    .collect(Collectors.toList());
         } catch (Exception e) {
             log.error("[vector][检索失败]", e);
             return List.of();

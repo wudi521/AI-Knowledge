@@ -69,6 +69,17 @@ public class SearchService {
         List<Long> kbIds = req.getKbIds() != null && !req.getKbIds().isEmpty()
                 ? req.getKbIds().stream().filter(visibleKbIds::contains).distinct().collect(Collectors.toList())
                 : new ArrayList<>(visibleKbIds);
+        // ⚠️ 权限边界: 交集为空(请求只含不可见知识库 / 可见集获取失败)必须短路返回空,
+        //    否则双检索器把空 kbIds 当"不限", 泄露不可见知识库内容(越权 0 容忍)
+        if (kbIds.isEmpty()) {
+            log.warn("[search][query={} 无可见知识库, 返回空]", req.getQuery());
+            RetrievalRespVO empty = new RetrievalRespVO();
+            empty.setQuery(req.getQuery());
+            empty.setAnalysis(buildAnalysis(analysis));
+            empty.setChannels(new RetrievalRespVO.ChannelStatVO());
+            empty.setResults(List.of());
+            return empty;
+        }
 
         // 4. BM25 通道: 逐变体召回, 去重取最高分
         List<Map.Entry<Long, Double>> bm25Hits = new ArrayList<>();
