@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.ingestion.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.ingestion.enums.ApiConstants;
 import feign.FeignIgnore;
@@ -74,5 +75,14 @@ public interface IngestionApi {
      */
     @PostMapping(ApiConstants.PREFIX + "/get-chunk-contents")
     CommonResult<Map<Long, String>> getChunkContents(@RequestBody List<Long> chunkIds);
+
+    /**
+     * 批量查询片段所属文档信息(检索结果补全: 文档名/版本号)
+     *
+     * @param chunkIds 片段编号列表
+     * @return chunkId -> 文档信息(documentId/documentName/versionNo)
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-chunk-doc-info")
+    CommonResult<Map<Long, ChunkDocInfoDTO>> getChunkDocInfo(@RequestBody List<Long> chunkIds);
 
 }

@@ -2,13 +2,17 @@ package cn.iocoder.yudao.module.ingestion.api;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.ingestion.dal.dataobject.ChunkDO;
 import cn.iocoder.yudao.module.ingestion.dal.mysql.ChunkMapper;
 import cn.iocoder.yudao.module.ingestion.store.EsChunkStore;
 import cn.iocoder.yudao.module.ingestion.store.MilvusChunkStore;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -16,12 +20,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
 /**
  * 入库管线 对外 RPC 实现
  */
+@Slf4j
 @RestController // 提供 RESTful API 接口，给 Feign 调用
 @Validated
 public class IngestionApiImpl implements IngestionApi {
@@ -121,6 +127,58 @@ public class IngestionApiImpl implements IngestionApi {
         Map<Long, String> map = new HashMap<>();
         for (ChunkDO c : chunks) {
             map.put(c.getId(), c.getContent());
+        }
+        return success(map);
+    }
+
+    @Override
+    public CommonResult<Map<Long, ChunkDocInfoDTO>> getChunkDocInfo(List<Long> chunkIds) {
+        if (CollUtil.isEmpty(chunkIds)) {
+            return success(Map.of());
+        }
+        List<ChunkDO> chunks = chunkMapper.selectBatchIds(chunkIds);
+        if (CollUtil.isEmpty(chunks)) {
+            return success(Map.of());
+        }
+        // 1. chunkId -> versionId(片段表只落版本编号)
+        List<Long> versionIds = chunks.stream().map(ChunkDO::getVersionId)
+                .filter(Objects::nonNull).distinct().toList();
+        // 2. versionId -> 版本信息(docId/versionNo)
+        Map<Long, KnowledgeVersionRespDTO> versionMap = new HashMap<>();
+        if (!versionIds.isEmpty()) {
+            try {
+                versionMap.putAll(knowledgeApi.getVersionMap(versionIds).getCheckedData());
+            } catch (Exception e) {
+                log.warn("[getChunkDocInfo][版本信息查询失败, 文档信息将缺失: {}]", e.getMessage());
+            }
+        }
+        // 3. docId -> 文档名(按文档缓存, 避免重复调用)
+        Map<Long, String> docNameMap = new HashMap<>();
+        for (KnowledgeVersionRespDTO version : versionMap.values()) {
+            if (version.getDocId() == null || docNameMap.containsKey(version.getDocId())) {
+                continue;
+            }
+            try {
+                KnowledgeDocumentRespDTO doc = knowledgeApi.getDocument(version.getDocId()).getCheckedData();
+                if (doc != null) {
+                    docNameMap.put(version.getDocId(), doc.getName());
+                }
+            } catch (Exception e) {
+                log.warn("[getChunkDocInfo][文档查询失败 docId={}: {}]", version.getDocId(), e.getMessage());
+            }
+        }
+        // 4. 组装 chunkId -> 文档信息
+        Map<Long, ChunkDocInfoDTO> map = new HashMap<>();
+        for (ChunkDO chunk : chunks) {
+            ChunkDocInfoDTO dto = new ChunkDocInfoDTO();
+            dto.setChunkId(chunk.getId());
+            KnowledgeVersionRespDTO version = versionMap.get(chunk.getVersionId());
+            if (version != null) {
+                dto.setDocumentId(version.getDocId());
+                dto.setVersionNo(version.getVersionNo());
+                dto.setDocumentName(docNameMap.get(version.getDocId()));
+            }
+            map.put(chunk.getId(), dto);
         }
         return success(map);
     }
