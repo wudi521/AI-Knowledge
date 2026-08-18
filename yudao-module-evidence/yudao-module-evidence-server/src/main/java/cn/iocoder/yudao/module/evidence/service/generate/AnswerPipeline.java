@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.evidence.service.generate;
 
+import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.domain.ClaimResult;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
@@ -47,7 +48,7 @@ public class AnswerPipeline {
     }
 
     /**
-     * 生成带引用的回答并逐句验证(含重试)
+     * 生成带引用的回答并逐句验证(含重试; 无历史上下文)
      *
      * @param query     用户问题
      * @param evidences 证据列表(去重后、按得分降序)
@@ -56,13 +57,28 @@ public class AnswerPipeline {
      *         claims=最后一次验证结果(无有效结果时为空列表)
      */
     public GenerationResult generateWithClaims(String query, List<Evidence> evidences) {
+        return generateWithClaims(query, evidences, null);
+    }
+
+    /**
+     * 生成带引用的回答并逐句验证(含重试; 支持历史上下文: 历史仅透传生成/验证提示词用于指代理解,
+     * 判定与检索不消费历史)
+     *
+     * @param query     用户问题
+     * @param evidences 证据列表(去重后、按得分降序)
+     * @param history   上下文轮次(可选, null/空 = 单轮行为; 重试轮同样透传, 保证指代一致)
+     * @return 验证通过: answer=最终回答, claims=全部断言, claimFail=false;
+     *         失败(生成异常/验证解析失败/重试耗尽): answer=null, claimFail=true,
+     *         claims=最后一次验证结果(无有效结果时为空列表)
+     */
+    public GenerationResult generateWithClaims(String query, List<Evidence> evidences, List<ChatTurnDTO> history) {
         int maxRetry = maxRetry();
         int attempts = 0;
         String feedback = null;
         List<ClaimResult> lastClaims = List.of();
         while (true) {
-            // 1. 生成(首轮无反馈; 重试轮附带无据断言反馈)
-            String answer = generator.generate(query, evidences, feedback);
+            // 1. 生成(首轮无反馈; 重试轮附带无据断言反馈; 历史全程透传)
+            String answer = generator.generate(query, evidences, history, feedback);
             if (answer == null) {
                 log.warn("[generateWithClaims][回答生成失败(第 {} 次尝试), claimFail=true]", attempts + 1);
                 return GenerationResult.builder()
@@ -72,7 +88,7 @@ public class AnswerPipeline {
                         .build();
             }
             // 2. 逐句断言验证
-            List<ClaimResult> claims = verifier.verify(query, answer, evidences);
+            List<ClaimResult> claims = verifier.verify(query, answer, evidences, history);
             if (claims == null) {
                 // 3a. 验证解析失败: 计为一次失败尝试, 重试时要求重新生成
                 attempts++;

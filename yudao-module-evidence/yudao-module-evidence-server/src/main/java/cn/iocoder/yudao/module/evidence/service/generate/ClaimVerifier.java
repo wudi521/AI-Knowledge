@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.domain.ClaimResult;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
@@ -42,7 +43,8 @@ public class ClaimVerifier {
                回答中的引用 [C1] 对应 evidenceIndex=0, [C2] 对应 evidenceIndex=1, 依此类推;
             4. 若句子是"根据现有资料无法确定"这类如实说明证据不足的结论, 且证据确实无法回答该问题, 判定为 SUPPORTED;
             5. 衔接/过渡短语(如"您可以选择以下两种方式之一:""具体如下:""综上:"等不陈述事实的引导句)不算断言, 直接判定为 SUPPORTED;
-            6. 只有携带具体事实的断言(如价格/期限/次数/政策条款)才需要证据支撑, 无支撑才判 UNSUPPORTED。
+            6. 只有携带具体事实的断言(如价格/期限/次数/政策条款)才需要证据支撑, 无支撑才判 UNSUPPORTED;
+            7. 若提供历史对话, 仅用于理解指代, 断言支撑判定只看证据列表。
             """;
 
     /** 证据内容截断长度(字) */
@@ -61,7 +63,7 @@ public class ClaimVerifier {
     }
 
     /**
-     * 逐句断言验证(单次 LLM 调用)
+     * 逐句断言验证(单次 LLM 调用; 无历史上下文)
      *
      * @param query     用户问题(供"证据确实无法回答"类判定参考)
      * @param answer    待核查的回答(LLM 生成, 含 [C1]..[CN] 引用)
@@ -69,6 +71,19 @@ public class ClaimVerifier {
      * @return 断言列表; 回答空白/调用异常/解析失败 → null
      */
     public List<ClaimResult> verify(String query, String answer, List<Evidence> evidences) {
+        return verify(query, answer, evidences, null);
+    }
+
+    /**
+     * 逐句断言验证(单次 LLM 调用; 支持历史上下文: 历史仅用于理解指代, 支撑判定只看证据列表)
+     *
+     * @param query     用户问题(供"证据确实无法回答"类判定参考)
+     * @param answer    待核查的回答(LLM 生成, 含 [C1]..[CN] 引用)
+     * @param evidences 证据列表(与生成器入参一致; evidenceIndex 为 0 起位置)
+     * @param history   上下文轮次(可选, null/空 = 单轮行为)
+     * @return 断言列表; 回答空白/调用异常/解析失败 → null
+     */
+    public List<ClaimResult> verify(String query, String answer, List<Evidence> evidences, List<ChatTurnDTO> history) {
         try {
             if (StrUtil.isBlank(answer)) {
                 log.warn("[verify][回答为空, 无法验证, 返回 null]");
@@ -76,7 +91,7 @@ public class ClaimVerifier {
             }
             ModelChatReqDTO req = new ModelChatReqDTO();
             req.setSystem(SYSTEM_PROMPT);
-            req.setUser(buildUserPrompt(query, answer, evidences));
+            req.setUser(buildUserPrompt(query, answer, evidences, history));
             String resp = modelApi.chat(req).getCheckedData();
             List<ClaimResult> claims = parseClaims(resp);
             if (claims == null) {
@@ -144,9 +159,13 @@ public class ClaimVerifier {
                 || text.matches(".*(元|次|天|年|月|日|小时|分钟|工作日).*");
     }
 
-    /** 组装用户提示词: 问题 + 待核查回答 + 证据列表(格式与生成器完全一致, 保证 [Ci] 编号对应) */
-    private String buildUserPrompt(String query, String answer, List<Evidence> evidences) {
+    /** 组装用户提示词: (可选历史对话块) + 问题 + 待核查回答 + 证据列表(格式与生成器完全一致, 保证 [Ci] 编号对应) */
+    private String buildUserPrompt(String query, String answer, List<Evidence> evidences, List<ChatTurnDTO> history) {
         StringBuilder sb = new StringBuilder();
+        String historyText = ContextFormatter.formatHistory(history);
+        if (StrUtil.isNotBlank(historyText)) {
+            sb.append(historyText).append("\n\n");
+        }
         sb.append("问题: ").append(query).append("\n\n待核查回答:\n").append(answer).append("\n\n证据列表:\n");
         if (evidences != null) {
             for (int i = 0; i < evidences.size(); i++) {

@@ -125,8 +125,9 @@ public class EvidenceService {
                 judgement = sufficiencyJudge.judge(deduped, conflicts, assembled.getQuestionProducts(),
                         Boolean.TRUE.equals(assembled.getAnswerBlocked()) ? assembled.getAnswerReason() : null);
                 // 4. 可作答 → 生成 + Claim 逐句验证(claimFail=true 时 answer 恒为 null, 管线保证)
+                //    历史仅透传生成/验证提示词(指代理解), 判定与检索不消费
                 if (Boolean.TRUE.equals(judgement.getAnswerable())) {
-                    generation = answerPipeline.generateWithClaims(query, deduped);
+                    generation = answerPipeline.generateWithClaims(query, deduped, history);
                 }
             }
         } catch (Exception e) {
