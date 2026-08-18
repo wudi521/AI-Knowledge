@@ -7,9 +7,11 @@ import feign.FeignIgnore;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.List;
+import java.util.Map;
 /**
  * 入库管线 对外 RPC 接口(Feign)
  * 其他模块通过 Feign 调用本接口, 实现位于 ingestion-server
@@ -54,5 +56,23 @@ public interface IngestionApi {
      */
     @GetMapping(ApiConstants.PREFIX + "/get-chunks-by-version")
     CommonResult<List<ChunkRespDTO>> getChunksByVersion(@RequestParam("versionId") Long versionId);
+
+    /**
+     * 批量查询 chunk 是否已发布(检索结果状态过滤用)
+     *
+     * @param chunkIds 片段编号列表
+     * @return chunkId -> 是否 PUBLISHED
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-chunk-publish-map")
+    CommonResult<Map<Long, Boolean>> getChunkPublishMap(@RequestBody List<Long> chunkIds);
+
+    /**
+     * 批量查询 chunk 内容(检索结果展示用)
+     *
+     * @param chunkIds 片段编号列表
+     * @return chunkId -> 片段内容
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-chunk-contents")
+    CommonResult<Map<Long, String>> getChunkContents(@RequestBody List<Long> chunkIds);
 
 }

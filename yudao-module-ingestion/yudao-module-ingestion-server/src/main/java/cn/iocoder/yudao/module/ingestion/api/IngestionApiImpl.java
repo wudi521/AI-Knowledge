@@ -13,7 +13,9 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
@@ -95,6 +97,32 @@ public class IngestionApiImpl implements IngestionApi {
             return dto;
         }).toList();
         return success(result);
+    }
+
+    @Override
+    public CommonResult<Map<Long, Boolean>> getChunkPublishMap(List<Long> chunkIds) {
+        if (CollUtil.isEmpty(chunkIds)) {
+            return success(Map.of());
+        }
+        List<ChunkDO> chunks = chunkMapper.selectBatchIds(chunkIds);
+        Map<Long, Boolean> map = new HashMap<>();
+        for (ChunkDO c : chunks) {
+            map.put(c.getId(), "PUBLISHED".equals(c.getStatus()));
+        }
+        return success(map);
+    }
+
+    @Override
+    public CommonResult<Map<Long, String>> getChunkContents(List<Long> chunkIds) {
+        if (CollUtil.isEmpty(chunkIds)) {
+            return success(Map.of());
+        }
+        List<ChunkDO> chunks = chunkMapper.selectBatchIds(chunkIds);
+        Map<Long, String> map = new HashMap<>();
+        for (ChunkDO c : chunks) {
+            map.put(c.getId(), c.getContent());
+        }
+        return success(map);
     }
 
 }

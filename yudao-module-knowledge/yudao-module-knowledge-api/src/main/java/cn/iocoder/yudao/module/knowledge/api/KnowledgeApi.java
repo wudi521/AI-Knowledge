@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 /**
  * 知识平台 对外 RPC 接口(Feign)
  * 其他模块通过 Feign 调用本接口, 实现位于 knowledge-server
@@ -88,5 +89,14 @@ public interface KnowledgeApi {
      */
     @GetMapping(ApiConstants.PREFIX + "/get-kb-strategy")
     CommonResult<String> getKnowledgeBaseStrategy(@RequestParam("kbId") Long kbId);
+
+    /**
+     * 查询用户可见的知识库编号集合(检索权限过滤用; super_admin 返回全部)
+     *
+     * @param userId 用户编号
+     * @return 可见知识库编号集合
+     */
+    @GetMapping(ApiConstants.PREFIX + "/get-visible-kb-ids")
+    CommonResult<Set<Long>> getVisibleKbIds(@RequestParam("userId") Long userId);
 
 }

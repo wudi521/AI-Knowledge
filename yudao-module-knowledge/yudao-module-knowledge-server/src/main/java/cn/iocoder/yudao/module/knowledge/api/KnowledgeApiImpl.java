@@ -8,6 +8,7 @@ import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBas
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
+import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import cn.hutool.core.collection.CollUtil;
 import jakarta.annotation.Resource;
@@ -17,6 +18,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
@@ -34,6 +37,8 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     private AiDocVersionService aiDocVersionService;
     @Resource
     private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
+    @Resource
+    private KnowledgePermissionHelper knowledgePermissionHelper;
 
     @Override
     public Boolean checkKnowledgePermission(Long chunkId, Long userId) {
@@ -100,6 +105,16 @@ public class KnowledgeApiImpl implements KnowledgeApi {
             map.put(v.getId(), dto);
         }
         return success(map);
+    }
+
+    @Override
+    public CommonResult<Set<Long>> getVisibleKbIds(Long userId) {
+        if (userId == null || knowledgePermissionHelper.isSuperAdmin(userId)) {
+            return success(aiKnowledgeBaseMapper.selectList().stream()
+                    .map(AiKnowledgeBaseDO::getId).collect(Collectors.toSet()));
+        }
+        List<AiKnowledgeBaseDO> visible = knowledgePermissionHelper.filterVisibleKbs(userId, aiKnowledgeBaseMapper.selectList());
+        return success(visible.stream().map(AiKnowledgeBaseDO::getId).collect(Collectors.toSet()));
     }
 
 }
