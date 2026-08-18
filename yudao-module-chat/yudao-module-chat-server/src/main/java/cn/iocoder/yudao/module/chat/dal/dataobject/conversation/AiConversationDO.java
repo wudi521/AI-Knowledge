@@ -48,4 +48,7 @@ public class AiConversationDO extends TenantBaseDO {
     /** 接单客服编号(人工接单后记录) */
     private Long operatorId;
 
+    /** 消息计数(USER/AI/SYSTEM 全角色消息数, 每条消息落库时自增) */
+    private Integer messageCount;
+
 }

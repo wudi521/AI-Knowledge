@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.chat.service.chat;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
@@ -7,11 +8,14 @@ import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.chat.channel.ChannelAdapter;
 import cn.iocoder.yudao.module.chat.dal.dataobject.conversation.AiConversationDO;
+import cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageDO;
 import cn.iocoder.yudao.module.chat.enums.conversation.ConversationStatusEnum;
+import cn.iocoder.yudao.module.chat.framework.chat.ChatProperties;
 import cn.iocoder.yudao.module.chat.service.conversation.ConversationService;
 import cn.iocoder.yudao.module.chat.service.evidence.EvidenceRpcAdapter;
 import cn.iocoder.yudao.module.chat.service.message.MessageService;
 import cn.iocoder.yudao.module.chat.service.transfer.TransferHandler;
+import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceClaimDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO;
@@ -37,6 +41,8 @@ import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION
  *     <li><b>会话解析</b>: conversationId 为空 → 新建 ACTIVE 会话; 非空 → 校验存在(不存在抛
  *     {@link ServiceException} CONVERSATION_NOT_EXISTS); CLOSED 终态 → 告警并返回"会话已关闭"决策
  *     (不落库、不调评估); TRANSFERRED → 继续走 AI(机器人仍可尝试作答, 见 {@link #send} 决策说明);</li>
+ *     <li><b>历史上下文读取</b>: USER 落库前读取最近 maxContextMessages 条 USER/AI 消息
+ *     (排除 SYSTEM 交接, 天然不含当前轮), 构造 List&lt;ChatTurnDTO&gt; 注入证据评估;</li>
  *     <li><b>USER 消息落库</b>: 无论后续判定结果如何, 客户消息一律先落库;</li>
  *     <li><b>转人工早检</b>: {@link TransferHandler#detectTransferReason} 结构化关键词(情绪激烈/客户要求)
  *     命中 → 跳过证据评估直接转人工(省 LLM 成本);</li>
@@ -78,6 +84,8 @@ public class ChatPipeline {
     @Resource
     private TransferHandler transferHandler;
     @Resource
+    private ChatProperties chatProperties;
+    @Resource
     private List<ChannelAdapter> channelAdapters;
 
     /**
@@ -111,6 +119,11 @@ public class ChatPipeline {
             }
         }
 
+        // 2.5 历史上下文读取(USER 落库前, 天然排除当前轮): 最近 maxContextMessages 条 USER/AI 消息(不含 SYSTEM 交接),
+        //     构造 List<ChatTurnDTO> 注入证据评估(检索消歧 + 生成带历史, 截断在证据侧 ContextFormatter)
+        List<ChatTurnDTO> history = buildHistory(messageService.getRecentMessages(
+                conversationId, chatProperties.getMaxContextMessages()));
+
         // 3. USER 消息落库(无论判定结果如何都必须持久化)
         messageService.addMessage(conversationId, "USER", message, null, null, null, null, null);
 
@@ -125,7 +138,7 @@ public class ChatPipeline {
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
         Long userId = loginUser != null ? loginUser.getId() : null;
-        EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null);
+        EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null, history);
 
         // 5. 分流: 可作答 → 回答; 否则 → 转人工决策(TransferHandler 落库 SYSTEM + 状态迁移)
         if (isAnswerable(resp)) {
@@ -235,6 +248,35 @@ public class ChatPipeline {
                 .transferReason(TransferHandler.REASON_CLOSED)
                 .summary(null)
                 .build();
+    }
+
+    // ========== 历史上下文 ==========
+
+    /**
+     * 历史上下文构造: 最近消息 → ChatTurnDTO 列表(USER/AI; SYSTEM 交接消息已由
+     * {@link MessageService#getRecentMessages} 排除, 这里按角色二次过滤兜底)。
+     * 空历史返回空列表(单轮兼容)。
+     */
+    private List<ChatTurnDTO> buildHistory(List<AiMessageDO> recent) {
+        if (CollUtil.isEmpty(recent)) {
+            return List.of();
+        }
+        List<ChatTurnDTO> history = new ArrayList<>(recent.size());
+        for (AiMessageDO message : recent) {
+            if ("USER".equals(message.getRole())) {
+                history.add(buildTurn("USER", message.getContent()));
+            } else if ("AI".equals(message.getRole())) {
+                history.add(buildTurn("AI", message.getContent()));
+            }
+        }
+        return history;
+    }
+
+    private ChatTurnDTO buildTurn(String role, String content) {
+        ChatTurnDTO turn = new ChatTurnDTO();
+        turn.setRole(role);
+        turn.setContent(content);
+        return turn;
     }
 
     // ========== 引用证据(citations) ==========

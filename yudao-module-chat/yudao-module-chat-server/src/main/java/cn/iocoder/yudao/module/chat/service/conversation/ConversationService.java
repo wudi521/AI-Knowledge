@@ -116,6 +116,21 @@ public class ConversationService {
     }
 
     /**
+     * 会话消息计数自增(原子 SQL: message_count = message_count + 1)
+     * <p>
+     * 由 {@code MessageService.addMessage} 每条消息落库后调用(USER/AI/SYSTEM 全角色计数);
+     * id 为空时忽略(消息落库时会话必已存在, 防御性兜底)。
+     */
+    public void incrementMessageCount(Long id) {
+        if (id == null) {
+            return;
+        }
+        aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversationDO>()
+                .eq(AiConversationDO::getId, id)
+                .setSql("message_count = message_count + 1"));
+    }
+
+    /**
      * 会话分页(租户由框架自动过滤; 排序见 {@link AiConversationMapper#selectPage})
      */
     public PageResult<AiConversationDO> getConversationPage(ConversationPageReqVO reqVO) {

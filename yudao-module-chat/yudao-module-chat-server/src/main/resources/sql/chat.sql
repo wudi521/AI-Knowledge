@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS `ai_conversation`  (
   `summary` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '转人工交接摘要',
   `transfer_reason` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '转人工原因',
   `operator_id` bigint NULL DEFAULT NULL COMMENT '接管坐席编号',
+  `message_count` int NOT NULL DEFAULT 0 COMMENT '消息计数',
   `creator` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '创建者',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updater` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '更新者',

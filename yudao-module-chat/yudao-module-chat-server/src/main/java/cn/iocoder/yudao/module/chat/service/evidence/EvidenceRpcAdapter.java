@@ -4,11 +4,14 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.evidence.api.EvidenceApi;
+import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateReqDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 /**
  * 证据评估 RPC 适配器: 对话模块 → evidence-server 证据评估
@@ -29,15 +32,26 @@ public class EvidenceRpcAdapter {
     private EvidenceApi evidenceApi;
 
     /**
+     * 证据评估(单轮, 无历史上下文)
+     * <p>
+     * 向后兼容委托: 历史为空, 行为与旧版本一致。供未接入多轮上下文的调用方使用。
+     */
+    public EvidenceEvaluateRespDTO evaluate(String query, Long tenantId, Long userId, Integer topK) {
+        return evaluate(query, tenantId, userId, topK, null);
+    }
+
+    /**
      * 证据评估
      *
      * @param query    评估问题(必填)
      * @param tenantId 租户编号(为空时从登录态补齐)
      * @param userId   用户编号(为空时从登录态补齐)
      * @param topK     证据条数(空则默认 8)
+     * @param history  历史上下文轮次(USER/AI, 可为空 = 单轮; SYSTEM 交接消息由调用方排除)
      * @return 评估结果; 任何失败均返回 null, 永不抛出
      */
-    public EvidenceEvaluateRespDTO evaluate(String query, Long tenantId, Long userId, Integer topK) {
+    public EvidenceEvaluateRespDTO evaluate(String query, Long tenantId, Long userId, Integer topK,
+                                            List<ChatTurnDTO> history) {
         // 登录态兜底: 调用方未显式传租户/用户时, 从安全上下文补齐
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         if (tenantId == null && loginUser != null) {
@@ -52,6 +66,7 @@ public class EvidenceRpcAdapter {
         req.setTopK(topK != null ? topK : DEFAULT_TOP_K);
         req.setTenantId(tenantId);
         req.setUserId(userId);
+        req.setHistory(history);
         CommonResult<EvidenceEvaluateRespDTO> resp;
         try {
             resp = evidenceApi.evaluate(req);
