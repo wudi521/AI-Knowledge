@@ -92,6 +92,21 @@ public class ConversationService {
     }
 
     /**
+     * 更新会话上下文摘要(context_summary, 近轮对话要点)
+     * <p>
+     * 由 {@code TransferHandler} 转人工/手动转人工时写入(与 transferInfo 解耦: 上下文摘要是附加信息,
+     * 不依赖状态迁移是否成功)。id 为空直接忽略; 会话不存在时更新 0 行静默返回, 永不抛出。
+     */
+    public void updateContextSummary(Long id, String summary) {
+        if (id == null) {
+            return;
+        }
+        aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversationDO>()
+                .eq(AiConversationDO::getId, id)
+                .set(AiConversationDO::getContextSummary, summary));
+    }
+
+    /**
      * 人工接单: 状态迁移到 CLOSED 并记录接单客服(仅 TRANSFERRED 可接单)
      */
     public void takeOver(Long id, Long operatorId) {

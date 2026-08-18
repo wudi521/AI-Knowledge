@@ -8,6 +8,7 @@ import cn.iocoder.yudao.module.chat.framework.chat.TransferProperties;
 import cn.iocoder.yudao.module.chat.service.chat.ChatSendResult;
 import cn.iocoder.yudao.module.chat.service.conversation.ConversationService;
 import cn.iocoder.yudao.module.chat.service.message.MessageService;
+import cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageDO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -23,6 +24,8 @@ import java.util.List;
  *     <li><b>交接摘要</b>: {@link #buildSummary} 组装 "客户问题 | 原因 | AI建议(前100字) | 相关证据(前3条)" 摘要;</li>
  *     <li><b>转人工落地</b>: {@link #handleTransfer} 落库 SYSTEM 交接摘要消息 + 状态迁移 ACTIVE→TRANSFERRED
  *     (并发已 TRANSFERRED 时守卫返回 0 行, 仅告警不报错);</li>
+ *     <li><b>上下文摘要</b>: {@link #buildRecentContext} 规则组装最近 3 条 USER/AI 消息为 "近轮对话要点"
+ *     (非 LLM), 转人工/手动转人工时写入 ai_conversation.context_summary, 与交接摘要(summary)互补;</li>
  *     <li><b>手动转人工/接单</b>: {@link #manualTransfer} / {@link #takeOver} 供 Task 5 控制器接线,
  *     同样完成状态迁移 + SYSTEM 留痕。</li>
  * </ul>
@@ -47,6 +50,10 @@ public class TransferHandler {
     private static final int AI_SUGGESTION_MAX_LENGTH = 100;
     /** 摘要中相关证据最多条数(前 3 条文档名) */
     private static final int EVIDENCE_MAX_COUNT = 3;
+    /** 近轮对话要点最多轮数(最近 3 条 USER/AI 消息, 排除 SYSTEM 交接) */
+    private static final int RECENT_CONTEXT_MAX_TURNS = 3;
+    /** 近轮对话要点中单条消息内容最大长度(前 60 字) */
+    private static final int RECENT_CONTEXT_CONTENT_MAX_LENGTH = 60;
 
     @Resource
     private ConversationService conversationService;
@@ -76,6 +83,8 @@ public class TransferHandler {
                 null, null, null, null, decision.getTraceId());
         // 2. 状态迁移 + 摘要/原因(ACTIVE→TRANSFERRED; 并发已 TRANSFERRED 时守卫返回 0 行, 内部已 warn)
         conversationService.updateTransferInfo(conversationId, decision.getSummary(), decision.getTransferReason());
+        // 3. 写入会话上下文摘要(近轮对话要点, 规则组装非 LLM; 与 decision.summary 的交接摘要互补)
+        conversationService.updateContextSummary(conversationId, buildRecentContext(conversationId));
         return decision;
     }
 
@@ -147,6 +156,8 @@ public class TransferHandler {
         String summary = "坐席手动转人工: " + transferReason;
         // 状态迁移 + 摘要/原因(ACTIVE→TRANSFERRED; 非 ACTIVE 时守卫失败仅 warn)
         conversationService.updateTransferInfo(conversationId, summary, transferReason);
+        // 写入会话上下文摘要(近轮对话要点, 规则组装非 LLM)
+        conversationService.updateContextSummary(conversationId, buildRecentContext(conversationId));
         // SYSTEM 留痕
         messageService.addMessage(conversationId, "SYSTEM", "会话已转人工: " + transferReason,
                 null, null, null, null, null);
@@ -172,6 +183,55 @@ public class TransferHandler {
     }
 
     // ========== 工具 ==========
+
+    /**
+     * 近轮对话要点(规则组装, 非 LLM): 读取会话最近 3 条 USER/AI 消息(排除 SYSTEM 交接),
+     * 按聊天顺序格式化为 "近轮对话要点: [用户] X / [客服] Y / [用户] Z", 供坐席在无 LLM 成本下
+     * 快速掌握转人工前的对话上下文。
+     * <p>
+     * 角色映射: USER → 用户, AI → 客服(其余角色兜底原样输出); 每条内容换行折叠为空格后取前 60 字
+     * (中文安全截断, 与 {@link #buildSummary} 一致); 无消息返回空串(不输出空占位)。
+     *
+     * @param conversationId 会话编号
+     * @return 近轮对话要点; 无消息/会话不存在时返回空串
+     */
+    public String buildRecentContext(Long conversationId) {
+        List<AiMessageDO> recent = messageService.getRecentMessages(conversationId, RECENT_CONTEXT_MAX_TURNS);
+        if (CollUtil.isEmpty(recent)) {
+            return "";
+        }
+        StringBuilder context = new StringBuilder("近轮对话要点: ");
+        for (int i = 0; i < recent.size(); i++) {
+            AiMessageDO message = recent.get(i);
+            if (i > 0) {
+                context.append(" / ");
+            }
+            context.append("[").append(roleLabel(message.getRole())).append("] ")
+                    .append(normalizeContent(message.getContent()));
+        }
+        return context.toString();
+    }
+
+    /**
+     * 角色中文标签: USER → 用户, AI → 客服; 其余原样输出(防御性兜底)
+     */
+    private String roleLabel(String role) {
+        if ("USER".equals(role)) {
+            return "用户";
+        }
+        if ("AI".equals(role)) {
+            return "客服";
+        }
+        return StrUtil.nullToEmpty(role);
+    }
+
+    /**
+     * 消息内容规整: 换行折叠为空格 → 去首尾空白 → 取前 60 字(中文安全截断)
+     */
+    private String normalizeContent(String content) {
+        String text = StrUtil.nullToEmpty(content).replaceAll("[\\r\\n]+", " ").trim();
+        return StrUtil.maxLength(text, RECENT_CONTEXT_CONTENT_MAX_LENGTH);
+    }
 
     private boolean containsAny(String message, List<String> keywords) {
         if (CollUtil.isEmpty(keywords)) {

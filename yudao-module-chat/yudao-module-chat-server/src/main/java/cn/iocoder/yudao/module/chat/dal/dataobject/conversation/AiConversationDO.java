@@ -45,6 +45,9 @@ public class AiConversationDO extends TenantBaseDO {
     /** 转人工原因 */
     private String transferReason;
 
+    /** 会话上下文摘要(近轮对话要点, 转人工时由 TransferHandler 写入) */
+    private String contextSummary;
+
     /** 接单客服编号(人工接单后记录) */
     private Long operatorId;
 
