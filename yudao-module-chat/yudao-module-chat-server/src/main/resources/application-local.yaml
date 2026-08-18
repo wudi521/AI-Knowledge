@@ -11,6 +11,15 @@ spring:
       config: # 【配置中心】配置项
         namespace: dev
         group: DEFAULT_GROUP
+    openfeign: # Feign 客户端超时(证据评估链路含多次 LLM 调用, CPU 推理 20~60s, 读超时放宽到 5 分钟, 对齐 knowledge 模块)
+      client:
+        config:
+          evidence-server:
+            connect-timeout: 10000
+            read-timeout: 300000
+          model-server:
+            connect-timeout: 10000
+            read-timeout: 300000
   datasource: # 数据库: MySQL 8 / 库 ruoyi-vue-pro / root-123456
     druid:
       initial-size: 1
