@@ -9,5 +9,6 @@ import cn.iocoder.yudao.framework.common.exception.ErrorCode;
 public interface ErrorCodeConstants {
 
     ErrorCode CHAT_NOT_EXISTS = new ErrorCode(1_003_000_001, "对话工作台数据不存在");
+    ErrorCode CONVERSATION_NOT_EXISTS = new ErrorCode(1_003_000_002, "会话不存在");
 
 }
