@@ -66,12 +66,27 @@ public class EvidenceService {
      * @return 评估结果(永不抛异常)
      */
     public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK) {
-        long start = System.currentTimeMillis();
-        String traceId = newTraceId();
         // 登录态: 经网关有登录用户; 缺失(如本地直连无 token)时透传 null
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
         Long userId = loginUser != null ? loginUser.getId() : null;
+        return evaluate(query, kbIds, topK, tenantId, userId);
+    }
+
+    /**
+     * 证据评估(Feign RPC 场景: 无登录态, 租户/用户由调用方显式传递)
+     *
+     * @param query    评估问题
+     * @param kbIds    限定知识库编号列表(空 = 全部可见知识库)
+     * @param topK     证据条数(空则默认 8)
+     * @param tenantId 租户编号(可为 null, 由检索 RPC 自行降级)
+     * @param userId   用户编号(可为 null, 权限过滤失效时降级)
+     * @return 评估结果(永不抛异常)
+     */
+    public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
+                                           Long tenantId, Long userId) {
+        long start = System.currentTimeMillis();
+        String traceId = newTraceId();
 
         // 管线各环节产物(异常兜底时保留已产出部分)
         List<Evidence> deduped = Collections.emptyList();

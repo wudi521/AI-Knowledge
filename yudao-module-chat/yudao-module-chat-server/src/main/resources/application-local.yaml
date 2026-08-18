@@ -45,3 +45,25 @@ xxl:
     enabled: false # 是否开启调度中心，默认为 true 开启
     admin:
       addresses: http://127.0.0.1:9090/xxl-job-admin # 调度中心部署跟地址
+
+# 对话工作台业务配置(接线任务 T1 落盘, 供后续任务读取)
+yudao:
+  chat:
+    transfer:
+      keywords:
+        - 人工
+        - 客服
+        - 转人工
+        - 投诉
+        - 赔偿
+        - 举报
+      emotion-keywords:
+        - 太差
+        - 垃圾
+        - 滚
+        - 差评
+        - 起诉
+    channels:
+      web:
+        enabled: true
+    max-context-messages: 6
