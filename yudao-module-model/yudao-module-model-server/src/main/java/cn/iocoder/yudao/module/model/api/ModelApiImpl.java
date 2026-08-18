@@ -86,6 +86,7 @@ public class ModelApiImpl implements ModelApi {
         // qwen3 默认开思考模式(thinking): token 全耗在推理上导致 0 输出 + 极慢, 显式关闭
         body.put("chat_template_kwargs", Map.of("enable_thinking", false));
         body.put("thinking", Map.of("type", "disabled"));
+        body.put("reasoning_effort", "none"); // 实测 LM Studio 唯一生效的关闭推理参数(避免长推理耗尽 max_tokens)
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
