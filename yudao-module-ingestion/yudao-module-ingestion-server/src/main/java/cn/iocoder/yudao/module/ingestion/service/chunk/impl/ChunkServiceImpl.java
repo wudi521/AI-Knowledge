@@ -49,6 +49,11 @@ public class ChunkServiceImpl implements ChunkService {
     }
 
     @Override
+    public ChunkDO getChunk(Long id) {
+        return chunkMapper.selectById(id);
+    }
+
+    @Override
     public void updateChunk(Long id, String content) {
         // 校验片段存在
         validateChunkExists(id);

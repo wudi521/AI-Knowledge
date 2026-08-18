@@ -84,6 +84,14 @@ public class ChunkController {
         return success(new PageResult<>(list, pageResult.getTotal()));
     }
 
+    @GetMapping("/get")
+    @Operation(summary = "获得 AI 知识片段详情(含内容)")
+    @PreAuthorize("@ss.hasPermission('ai:knowledge:query')")
+    public CommonResult<ChunkRespVO> getChunk(@RequestParam("id") Long id) {
+        ChunkDO chunk = chunkService.getChunk(id);
+        return success(chunk == null ? null : BeanUtils.toBean(chunk, ChunkRespVO.class));
+    }
+
     @PutMapping("/update")
     @Operation(summary = "编辑 AI 知识片段内容")
     @PreAuthorize("@ss.hasPermission('ai:knowledge:update')")

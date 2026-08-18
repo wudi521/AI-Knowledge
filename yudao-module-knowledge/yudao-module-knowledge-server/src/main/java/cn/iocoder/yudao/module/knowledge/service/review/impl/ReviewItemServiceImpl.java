@@ -30,7 +30,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_EXTRACT_FAILED;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.VERSION_NOT_EXISTS;
@@ -171,6 +173,8 @@ public class ReviewItemServiceImpl implements ReviewItemService {
             }
             item.setTitle(StrUtil.sub(title, 0, 255));
             item.setContent(StrUtil.sub(content, 0, 2000));
+            // 回填来源 chunk: 条目内容与片段做字符重叠匹配(条目内容通常摘自片段原文)
+            item.setChunkId(matchChunkId(content, batch));
             item.setRiskLevel(StrUtil.nullToDefault(obj.getStr("risk_level", "MED"), "MED").toUpperCase());
             BigDecimal confidence = obj.getBigDecimal("confidence");
             // 置信度归一化到 [0,1](防止模型输出越界导致 decimal(4,3) 落库失败)
@@ -190,6 +194,39 @@ public class ReviewItemServiceImpl implements ReviewItemService {
             items.add(item);
         }
         return items;
+    }
+
+    /** 回填来源片段: 取与条目内容字符重叠度最高的 chunk; 重叠比例过低(阈值 0.25)则留空 */
+    private Long matchChunkId(String itemContent, List<ChunkRespDTO> batch) {
+        if (StrUtil.isBlank(itemContent) || CollUtil.isEmpty(batch)) {
+            return null;
+        }
+        Set<Character> itemChars = new HashSet<>();
+        for (char c : itemContent.toCharArray()) {
+            itemChars.add(c);
+        }
+        if (itemChars.isEmpty()) {
+            return null;
+        }
+        Long bestId = null;
+        double bestRatio = 0;
+        for (ChunkRespDTO chunk : batch) {
+            Set<Character> chunkChars = new HashSet<>();
+            for (char c : StrUtil.nullToEmpty(chunk.getContent()).toCharArray()) {
+                chunkChars.add(c);
+            }
+            if (chunkChars.isEmpty()) {
+                continue;
+            }
+            Set<Character> inter = new HashSet<>(itemChars);
+            inter.retainAll(chunkChars);
+            double ratio = (double) inter.size() / itemChars.size();
+            if (ratio > bestRatio) {
+                bestRatio = ratio;
+                bestId = chunk.getId();
+            }
+        }
+        return bestRatio >= 0.25 ? bestId : null;
     }
 
     private JSONArray parseExtractJson(String resp) {

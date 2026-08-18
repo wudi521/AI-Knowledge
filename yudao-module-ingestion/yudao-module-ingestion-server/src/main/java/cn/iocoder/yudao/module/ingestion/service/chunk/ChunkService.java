@@ -20,6 +20,14 @@ public interface ChunkService {
     PageResult<ChunkDO> getChunkPage(ChunkPageReqVO pageReqVO);
 
     /**
+     * 获得 AI 知识片段详情(审核台展示来源片段用)
+     *
+     * @param id 片段编号
+     * @return 片段(不存在返回 null)
+     */
+    ChunkDO getChunk(Long id);
+
+    /**
      * 编辑 AI 知识片段内容(仅更新 content)
      *
      * @param id      片段编号
