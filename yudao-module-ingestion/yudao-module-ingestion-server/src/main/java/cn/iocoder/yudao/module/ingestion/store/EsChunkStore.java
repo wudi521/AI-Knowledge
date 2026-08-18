@@ -93,11 +93,11 @@ public class EsChunkStore {
         try {
             Map<String, Object> mapping = new HashMap<>();
             mapping.put("mappings", Map.of("properties", Map.of(
-                    "chunk_id", Map.of("type", "keyword"),
-                    "tenant_id", Map.of("type", "keyword"),
-                    "kb_id", Map.of("type", "keyword"),
+                    "chunk_id", Map.of("type", "long"),
+                    "tenant_id", Map.of("type", "long"),
+                    "kb_id", Map.of("type", "long"),
                     "status", Map.of("type", "keyword"),
-                    "content", Map.of("type", "text")
+                    "content", Map.of("type", "text", "analyzer", "ik_max_word", "search_analyzer", "ik_smart")
             )));
             Request create = new Request("PUT", "/" + index);
             create.setJsonEntity(objectMapper.writeValueAsString(mapping));
@@ -114,9 +114,9 @@ public class EsChunkStore {
     public void insertChunk(Long chunkId, Long tenantId, Long kbId, String content) {
         try {
             Map<String, Object> doc = new HashMap<>();
-            doc.put("chunk_id", String.valueOf(chunkId));
-            doc.put("tenant_id", String.valueOf(tenantId));
-            doc.put("kb_id", String.valueOf(kbId));
+            doc.put("chunk_id", chunkId);
+            doc.put("tenant_id", tenantId);
+            doc.put("kb_id", kbId);
             doc.put("status", "PUBLISHED");
             doc.put("content", content);
             Request request = new Request("PUT", "/" + index + "/_doc/" + chunkId);
