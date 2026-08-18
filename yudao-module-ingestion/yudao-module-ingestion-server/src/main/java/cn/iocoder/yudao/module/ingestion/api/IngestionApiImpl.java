@@ -152,18 +152,13 @@ public class IngestionApiImpl implements IngestionApi {
                 log.warn("[getChunkDocInfo][版本信息查询失败, 文档信息将缺失: {}]", e.getMessage());
             }
         }
-        // 3. docId -> 文档名(批量查询, 避免逐条 Feign N+1)
-        Map<Long, String> docNameMap = new HashMap<>();
+        // 3. docId -> 文档信息(名称/产品, 批量查询避免逐条 Feign N+1)
+        Map<Long, KnowledgeDocumentRespDTO> docInfoMap = new HashMap<>();
         List<Long> docIds = versionMap.values().stream().map(KnowledgeVersionRespDTO::getDocId)
                 .filter(Objects::nonNull).distinct().toList();
         if (!docIds.isEmpty()) {
             try {
-                Map<Long, KnowledgeDocumentRespDTO> docMap = knowledgeApi.getDocumentMap(docIds).getCheckedData();
-                for (KnowledgeDocumentRespDTO doc : docMap.values()) {
-                    if (doc != null && doc.getName() != null) {
-                        docNameMap.put(doc.getId(), doc.getName());
-                    }
-                }
+                docInfoMap.putAll(knowledgeApi.getDocumentMap(docIds).getCheckedData());
             } catch (Exception e) {
                 log.warn("[getChunkDocInfo][文档信息批量查询失败: {}]", e.getMessage());
             }
@@ -177,7 +172,11 @@ public class IngestionApiImpl implements IngestionApi {
             if (version != null) {
                 dto.setDocumentId(version.getDocId());
                 dto.setVersionNo(version.getVersionNo());
-                dto.setDocumentName(docNameMap.get(version.getDocId()));
+                KnowledgeDocumentRespDTO doc = docInfoMap.get(version.getDocId());
+                if (doc != null) {
+                    dto.setDocumentName(doc.getName());
+                    dto.setProducts(doc.getProducts());
+                }
             }
             map.put(chunk.getId(), dto);
         }

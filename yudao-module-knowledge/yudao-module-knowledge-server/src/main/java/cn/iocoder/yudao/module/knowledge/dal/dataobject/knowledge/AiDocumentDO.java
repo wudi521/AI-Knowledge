@@ -40,6 +40,8 @@ public class AiDocumentDO extends TenantBaseDO {
 
     /** 切分片段数(解析结果) */
     private Integer chunkCount;
+    /** 涉及产品/品牌(逗号分隔, 入库时 LLM 提取, 检索品牌一致性校验用) */
+    private String products;
     /** 上传人 */
     private String owner;
 

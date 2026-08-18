@@ -20,4 +20,7 @@ public class ChunkDocInfoDTO {
     /** 版本号: V1/V2/... */
     private String versionNo;
 
+    /** 文档涉及产品/品牌(逗号分隔, 品牌一致性校验用) */
+    private String products;
+
 }

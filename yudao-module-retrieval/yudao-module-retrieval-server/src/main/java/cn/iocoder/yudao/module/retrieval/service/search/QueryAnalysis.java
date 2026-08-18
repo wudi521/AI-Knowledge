@@ -16,6 +16,9 @@ public class QueryAnalysis {
     /** 关键实体 */
     private List<String> entities;
 
+    /** 涉及的产品/品牌(如 苹果13/X100 Pro; 品牌一致性校验用, 无则空) */
+    private List<String> products;
+
     /** 改写变体(不含原句) */
     private List<String> rewrites;
 

@@ -24,9 +24,10 @@ public class QueryAnalysisService {
             你是企业客服知识库的"查询分析器"。给定客户问题, 输出 JSON:
             {"intent": "意图分类(WARRANTY/REFUND/LOGISTICS/REPAIR/PRICE/OTHER)",
              "entities": ["关键实体, 如产品名/部件/时间"],
+             "products": ["问题明确涉及的产品/品牌名, 如 苹果13/iPhone 13/X100 Pro; 未提及给空数组"],
              "rewrites": ["2~3条改写变体, 覆盖同义词/口语/省略, 用于召回更多相关片段"],
              "sub_questions": ["若问题是复合问题则拆成子问题; 简单问题给空数组"]}
-            只输出合法 JSON, 不要其他文字。例: {"intent":"WARRANTY","entities":["碎屏","X100 Pro"],"rewrites":["碎屏 免费 维修","屏幕碎裂 保修政策"],"sub_questions":[]}
+            只输出合法 JSON, 不要其他文字。例: {"intent":"WARRANTY","entities":["碎屏","X100 Pro"],"products":["X100 Pro"],"rewrites":["碎屏 免费 维修","屏幕碎裂 保修政策"],"sub_questions":[]}
             """;
 
     @Resource
@@ -52,6 +53,7 @@ public class QueryAnalysisService {
             }
             result.setIntent(json.getStr("intent", "OTHER"));
             result.setEntities(strList(json.getJSONArray("entities")));
+            result.setProducts(strList(json.getJSONArray("products")));
             result.setRewrites(strList(json.getJSONArray("rewrites")));
             result.setSubQuestions(strList(json.getJSONArray("sub_questions")));
             result.setSuccess(true);

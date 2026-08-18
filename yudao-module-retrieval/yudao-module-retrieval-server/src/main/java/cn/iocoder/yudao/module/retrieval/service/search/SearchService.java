@@ -13,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -161,9 +162,41 @@ public class SearchService {
             results.add(buildResult(chunkId, contentsMap, docInfoMap, rrfMap, r.getValue(), bm25HitIds, vectorHitIds));
         }
         resp.setResults(results);
-        // 12. 大模型总结回答(基于 TopN 证据 + 问题实体, 带 [C1][C2] 引用; 失败置 null 不阻断)
-        resp.setAnswer(generateAnswer(req.getQuery(), analysis.getEntities(), results));
+        // 12. 产品/品牌一致性门禁(结构化代码判定, 不依赖 LLM 提示词):
+        //     问题明确涉及产品而证据文档均不覆盖该产品 -> 拒绝作答, 明示原因
+        List<String> questionProducts = analysis.getProducts() == null ? List.of() : analysis.getProducts();
+        Set<String> docProducts = collectDocProducts(results, docInfoMap);
+        boolean productMatch = questionProducts.isEmpty()
+                || questionProducts.stream().anyMatch(p ->
+                        docProducts.stream().anyMatch(dp -> dp.contains(p) || p.contains(dp)));
+        if (!productMatch) {
+            resp.setAnswerBlocked(true);
+            resp.setAnswerReason("问题涉及产品「" + String.join("、", questionProducts)
+                    + "」, 现有资料仅覆盖「" + (docProducts.isEmpty() ? "无" : String.join("、", docProducts))
+                    + "」, 无法确认其政策, 拒绝作答");
+            resp.setAnswer(null);
+        } else {
+            // 13. 大模型总结回答(基于 TopN 证据 + 问题实体, 带 [C1][C2] 引用; 失败置 null 不阻断)
+            resp.setAnswer(generateAnswer(req.getQuery(), analysis.getEntities(), results));
+        }
         return resp;
+    }
+
+    /** 收集结果涉及的全部文档产品(逗号分隔字段展开) */
+    private Set<String> collectDocProducts(List<RetrievalRespVO.ResultVO> results,
+                                           Map<Long, ChunkDocInfoDTO> docInfoMap) {
+        Set<String> products = new HashSet<>();
+        for (RetrievalRespVO.ResultVO r : results) {
+            ChunkDocInfoDTO info = docInfoMap.get(r.getChunkId());
+            if (info != null && StrUtil.isNotBlank(info.getProducts())) {
+                for (String p : StrUtil.split(info.getProducts(), ',')) {
+                    if (StrUtil.isNotBlank(p)) {
+                        products.add(p.trim());
+                    }
+                }
+            }
+        }
+        return products;
     }
 
     /** 基于检索结果生成总结回答(LLM; 引用编号 C1.. 对应 results 顺序; 失败返回 null) */

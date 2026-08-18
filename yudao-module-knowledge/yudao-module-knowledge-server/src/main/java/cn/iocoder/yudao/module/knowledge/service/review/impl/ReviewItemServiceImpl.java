@@ -12,6 +12,7 @@ import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.review.vo.ReviewItemPageReqVO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
@@ -78,6 +79,8 @@ public class ReviewItemServiceImpl implements ReviewItemService {
         Long docId = aiDocVersionService.getVersion(versionId).getDocId();
         // EXTRACTING 已由入口(notifyParsed/retryExtractByDocId)在事务外落库, 此处不再设置(事务内不可见)
         List<ReviewItemDO> items = extractItems(versionId);
+        // 提取文档涉及的产品/品牌(结构化元数据, 检索品牌一致性校验用; 失败不影响主流程)
+        extractAndStoreProducts(docId, versionId);
         boolean hasRequired = items.stream().anyMatch(item -> Boolean.TRUE.equals(item.getMustReview()));
         if (hasRequired) {
             // 有必审条目 -> 提交审核; 文档状态回 REVIEW(重试场景下此前可能为 FAILED)
@@ -132,6 +135,59 @@ public class ReviewItemServiceImpl implements ReviewItemService {
         }
         log.info("[extractItems][版本 {} 抽取条目 {} 条]", versionId, items.size());
         return items;
+    }
+
+    private static final String PRODUCT_SYSTEM_PROMPT = """
+            你是客服知识库的"产品识别器"。给定文档片段, 提取该文档涉及的产品/品牌名称列表。
+            输出 JSON: {"products": ["X100 Pro"]}; 没有明确产品输出 {"products": []}。
+            只输出合法 JSON, 不要其他文字。
+            """;
+
+    /** 提取文档产品并落库 ai_document.products(逗号分隔); 失败仅告警 */
+    private void extractAndStoreProducts(Long docId, Long versionId) {
+        try {
+            List<ChunkRespDTO> chunks = ingestionApi.getChunksByVersion(versionId).getCheckedData();
+            StringBuilder sb = new StringBuilder();
+            int count = 0;
+            for (ChunkRespDTO c : chunks) {
+                if (count++ >= 10) {
+                    break; // 取前 10 个片段足够识别产品
+                }
+                sb.append(c.getContent()).append("\n\n");
+            }
+            if (sb.length() > 4000) {
+                sb.setLength(4000);
+            }
+            ModelChatReqDTO req = new ModelChatReqDTO();
+            req.setSystem(PRODUCT_SYSTEM_PROMPT);
+            req.setUser(sb.toString());
+            String resp = modelApi.chat(req).getCheckedData();
+            int start = resp.indexOf('{');
+            int end = resp.lastIndexOf('}');
+            if (start < 0 || end <= start) {
+                return;
+            }
+            JSONObject json = JSONUtil.parseObj(resp.substring(start, end + 1));
+            JSONArray arr = json.getJSONArray("products");
+            if (arr == null || arr.isEmpty()) {
+                return;
+            }
+            List<String> products = new ArrayList<>();
+            for (Object o : arr) {
+                if (o != null && StrUtil.isNotBlank(o.toString())) {
+                    products.add(o.toString().trim());
+                }
+            }
+            if (!products.isEmpty()) {
+                AiDocumentDO update = new AiDocumentDO();
+                update.setId(docId);
+                update.setProducts(String.join(",", products));
+                aiDocumentMapper.updateById(update);
+                log.info("[extractProducts][文档 {} 产品: {}]", docId, products);
+            }
+        } catch (Exception e) {
+            log.warn("[extractProducts][文档 {} 产品提取失败: {}]", docId, e.getMessage());
+        }
     }
 
     private List<ReviewItemDO> extractBatch(Long docId, Long versionId, List<ChunkRespDTO> batch) {

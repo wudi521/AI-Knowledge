@@ -19,8 +19,14 @@ public class RetrievalRespVO {
     /** 各通道召回数 */
     private ChannelStatVO channels;
 
-    /** 大模型总结回答(基于 TopN 证据生成, 带 [C1][C2] 引用; 生成失败为 null) */
+    /** 大模型总结回答(基于 TopN 证据生成, 带 [C1][C2] 引用; 生成失败或产品不匹配为 null) */
     private String answer;
+
+    /** 产品/品牌一致性门禁: true=拒绝作答(代码判定, 不依赖 LLM 提示词) */
+    private Boolean answerBlocked;
+
+    /** 拒绝作答原因(产品不匹配时) */
+    private String answerReason;
 
     /** TopN 结果 */
     private List<ResultVO> results;

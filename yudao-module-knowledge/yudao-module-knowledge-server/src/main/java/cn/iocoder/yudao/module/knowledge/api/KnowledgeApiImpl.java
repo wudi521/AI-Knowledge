@@ -95,6 +95,7 @@ public class KnowledgeApiImpl implements KnowledgeApi {
             dto.setStoragePath(doc.getStoragePath());
             dto.setParseStatus(doc.getParseStatus());
             dto.setTenantId(doc.getTenantId());
+            dto.setProducts(doc.getProducts());
             map.put(doc.getId(), dto);
         }
         return success(map);
