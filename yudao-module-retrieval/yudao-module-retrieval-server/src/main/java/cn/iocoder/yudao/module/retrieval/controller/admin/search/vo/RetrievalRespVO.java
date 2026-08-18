@@ -40,6 +40,9 @@ public class RetrievalRespVO {
         /** 关键实体 */
         private List<String> entities;
 
+        /** 涉及的产品/品牌(品牌一致性校验用, 无则空) */
+        private List<String> products;
+
         /** 改写变体 */
         private List<String> rewrites;
 

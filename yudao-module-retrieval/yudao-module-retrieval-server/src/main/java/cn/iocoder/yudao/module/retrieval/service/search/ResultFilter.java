@@ -1,6 +1,5 @@
 package cn.iocoder.yudao.module.retrieval.service.search;
 
-import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
@@ -28,9 +27,8 @@ public class ResultFilter {
     @Resource
     private IngestionApi ingestionApi;
 
-    /** 返回当前用户可见的知识库编号集合(失败返回空) */
-    public Set<Long> getVisibleKbIds() {
-        Long userId = SecurityFrameworkUtils.getLoginUserId();
+    /** 返回指定用户可见的知识库编号集合(失败返回空; RPC 无登录态, 用户显式传递) */
+    public Set<Long> getVisibleKbIds(Long userId) {
         try {
             return knowledgeApi.getVisibleKbIds(userId).getCheckedData();
         } catch (Exception e) {

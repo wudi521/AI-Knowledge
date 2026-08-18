@@ -43,3 +43,21 @@ xxl:
     enabled: false # 是否开启调度中心，默认为 true 开启
     admin:
       addresses: http://127.0.0.1:9090/xxl-job-admin # 调度中心部署跟地址
+
+# 证据平台业务配置(接线任务 T1 落盘, 供后续任务读取)
+yudao:
+  evidence:
+    sufficiency:
+      answer-threshold: 0.75 # 可作答判定: 证据充分度得分阈值(得分在 0~1)
+      consult-threshold: 0.5  # 需转人工咨询: 得分阈值
+      min-evidence-count: 2   # 最少证据条数
+      entity-consistency: true # 实体一致性校验开关
+      conflict-block: true     # 冲突时阻断作答
+      weights:
+        top-score: 0.5        # 权重: 最高证据分
+        evidence-count: 0.3   # 权重: 证据条数
+        entity-coverage: 0.2  # 权重: 实体覆盖率
+    dedup:
+      similarity-threshold: 0.85 # 证据去重相似度阈值
+    claim:
+      max-retry: 2              # Claim 验证最大重试次数

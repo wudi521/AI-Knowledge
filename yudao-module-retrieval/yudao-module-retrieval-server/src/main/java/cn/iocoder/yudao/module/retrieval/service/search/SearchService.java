@@ -60,21 +60,29 @@ public class SearchService {
     private ModelApi modelApi;
 
     public RetrievalRespVO search(RetrievalReqVO req) {
-        // 1. 参数归一: topK 默认 5, 上限 20; 租户
-        int topK = req.getTopK() == null || req.getTopK() <= 0 ? 5 : Math.min(req.getTopK(), RECALL_TOP_K);
-        Long tenantId = SecurityFrameworkUtils.getLoginUser().getTenantId();
+        return search(req.getQuery(), req.getKbIds(), req.getTopK(),
+                SecurityFrameworkUtils.getLoginUser().getTenantId(),
+                SecurityFrameworkUtils.getLoginUserId());
+    }
+
+    /**
+     * 检索(显式租户/用户版本, 供 RPC 调用: 无登录态, 租户/权限由调用方传递)
+     */
+    public RetrievalRespVO search(String query, List<Long> reqKbIds, Integer topK, Long tenantId, Long userId) {
+        // 1. 参数归一: topK 默认 5, 上限 20
+        int topKFinal = topK == null || topK <= 0 ? 5 : Math.min(topK, RECALL_TOP_K);
 
         // 2. 权限前置: 可见知识库计算 + 空集短路(在 LLM 调用之前, 避免无效消耗且防越权泄露)
-        Set<Long> visibleKbIds = resultFilter.getVisibleKbIds();
-        List<Long> kbIds = req.getKbIds() != null && !req.getKbIds().isEmpty()
-                ? req.getKbIds().stream().filter(visibleKbIds::contains).distinct().collect(Collectors.toList())
+        Set<Long> visibleKbIds = resultFilter.getVisibleKbIds(userId);
+        List<Long> kbIds = reqKbIds != null && !reqKbIds.isEmpty()
+                ? reqKbIds.stream().filter(visibleKbIds::contains).distinct().collect(Collectors.toList())
                 : new ArrayList<>(visibleKbIds);
         // ⚠️ 权限边界: 交集为空(请求只含不可见知识库 / 可见集获取失败)必须短路返回空,
         //    否则双检索器把空 kbIds 当"不限", 泄露不可见知识库内容(越权 0 容忍)
         if (kbIds.isEmpty()) {
-            log.warn("[search][query={} 无可见知识库, 返回空]", req.getQuery());
+            log.warn("[search][query={} 无可见知识库, 返回空]", query);
             RetrievalRespVO empty = new RetrievalRespVO();
-            empty.setQuery(req.getQuery());
+            empty.setQuery(query);
             empty.setAnalysis(new RetrievalRespVO.AnalysisVO());
             empty.setChannels(new RetrievalRespVO.ChannelStatVO());
             empty.setResults(List.of());
@@ -82,9 +90,9 @@ public class SearchService {
         }
 
         // 3. 语义理解/改写/拆解: 变体 = 原句 + (改写 + 子问题), 去重限 6
-        QueryAnalysis analysis = queryAnalysisService.analyze(req.getQuery());
+        QueryAnalysis analysis = queryAnalysisService.analyze(query);
         List<String> variants = new ArrayList<>();
-        variants.add(req.getQuery());
+        variants.add(query);
         if (analysis.isSuccess()) {
             if (analysis.getRewrites() != null) {
                 variants.addAll(analysis.getRewrites());
@@ -136,12 +144,12 @@ public class SearchService {
                 reranked.add(Map.entry(i, 0F)); // 保持 RRF 顺序
             }
         } else {
-            reranked = reranker.rerank(req.getQuery(), contents);
+            reranked = reranker.rerank(query, contents);
         }
 
         // 11. 组装响应
         RetrievalRespVO resp = new RetrievalRespVO();
-        resp.setQuery(req.getQuery());
+        resp.setQuery(query);
         resp.setAnalysis(buildAnalysis(analysis));
         RetrievalRespVO.ChannelStatVO stat = new RetrievalRespVO.ChannelStatVO();
         stat.setBm25(bm25Hits.size());
@@ -151,7 +159,7 @@ public class SearchService {
 
         List<RetrievalRespVO.ResultVO> results = new ArrayList<>();
         for (Map.Entry<Integer, Float> r : reranked) {
-            if (results.size() >= topK) {
+            if (results.size() >= topKFinal) {
                 break;
             }
             int idx = r.getKey();
@@ -177,7 +185,7 @@ public class SearchService {
             resp.setAnswer(null);
         } else {
             // 13. 大模型总结回答(基于 TopN 证据 + 问题实体, 带 [C1][C2] 引用; 失败置 null 不阻断)
-            resp.setAnswer(generateAnswer(req.getQuery(), analysis.getEntities(), results));
+            resp.setAnswer(generateAnswer(query, analysis.getEntities(), results));
         }
         return resp;
     }
@@ -252,6 +260,7 @@ public class SearchService {
         RetrievalRespVO.AnalysisVO vo = new RetrievalRespVO.AnalysisVO();
         vo.setIntent(analysis.getIntent());
         vo.setEntities(analysis.getEntities());
+        vo.setProducts(analysis.getProducts());
         vo.setRewrites(analysis.getRewrites());
         vo.setSubQuestions(analysis.getSubQuestions());
         vo.setSuccess(analysis.isSuccess());
