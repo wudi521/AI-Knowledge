@@ -75,9 +75,11 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     @Override
     @Transactional
     public void processAfterParsed(Long versionId) {
+        Long docId = aiDocVersionService.getVersion(versionId).getDocId();
+        // 抽取阶段: 文档状态置 EXTRACTING(前端展示"抽取中"), 完成后置 REVIEW/PUBLISHED/FAILED
+        aiDocumentMapper.updateParseStatus(docId, "EXTRACTING", null, null);
         List<ReviewItemDO> items = extractItems(versionId);
         boolean hasRequired = items.stream().anyMatch(item -> Boolean.TRUE.equals(item.getMustReview()));
-        Long docId = aiDocVersionService.getVersion(versionId).getDocId();
         if (hasRequired) {
             // 有必审条目 -> 提交审核; 文档状态回 REVIEW(重试场景下此前可能为 FAILED)
             aiDocVersionService.submitForReview(versionId);
