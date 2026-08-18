@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO;
@@ -19,6 +20,9 @@ import java.util.List;
  * <p>
  * Task 2 多轮消歧: 提示词融入历史对话(指代展开 + 实体/产品继承);
  * LLM 失败且带历史时规则兜底合并最近用户消息与当前问题为改写, 保证降级也有基本消歧召回。
+ * <p>
+ * Task 3 动态意图: 传入知识库意图集时, 意图段替换为知识库意图列表(不匹配钳制 OUT_OF_SCOPE);
+ * 未传意图集时保持固定 6 枚举(WARRANTY/REFUND/LOGISTICS/REPAIR/PRICE/OTHER), 完全兼容旧行为。
  */
 @Slf4j
 @Service
@@ -47,6 +51,36 @@ public class QueryAnalysisService {
     /** 规则兜底触发阈值: 当前问题不超过该字数且带历史时, LLM 失败则合并最近用户消息为改写 */
     private static final int FALLBACK_QUERY_MAX_LEN = 15;
 
+    /** 动态意图提示词: 意图段占位符(构建时替换为知识库意图列表) */
+    private static final String INTENT_LIST_MARKER = "__INTENT_LIST__";
+
+    /**
+     * 动态意图系统提示词(知识库意图集分类): 与 SYSTEM_PROMPT 结构一致, 仅意图段不同——
+     * 从知识库意图列表中选择最匹配的一项, 都不匹配则输出 OUT_OF_SCOPE。
+     */
+    private static final String DYNAMIC_SYSTEM_PROMPT = """
+            你是企业客服知识库的"查询分析器"。给定客户问题(可能附带历史对话), 输出 JSON:
+            {"intent": "意图分类(从以下知识库意图中选择最匹配的一项; 都不匹配则输出 "OUT_OF_SCOPE")",
+             "entities": ["关键实体, 如产品名/部件/时间"],
+             "products": ["问题明确涉及的产品/品牌名, 如 苹果13/iPhone 13/X100 Pro; 未提及给空数组"],
+             "rewrites": ["2~3条改写变体, 覆盖同义词/口语/省略, 用于召回更多相关片段"],
+             "sub_questions": ["若问题是复合问题则拆成子问题; 简单问题给空数组"]}
+            只输出合法 JSON, 不要其他文字。例: {"intent":"保修","entities":["碎屏","X100 Pro"],"products":["X100 Pro"],"rewrites":["碎屏 免费 维修","屏幕碎裂 保修政策"],"sub_questions":[]}
+            
+            意图分类(从以下知识库意图中选择最匹配的一项; 都不匹配则输出 "OUT_OF_SCOPE"):
+            __INTENT_LIST__
+            
+            【上下文消歧(仅当输入含"历史对话"时执行)】
+            1. 输入由"历史对话"与"当前问题"两部分组成: 历史对话按时间从早到晚排列, 当前问题是客户最新的一问。
+            2. 当前问题含指代词或省略(那/它/这个/这些/多少钱/怎么修/能修吗 等)时, 必须结合历史对话展开为完整语义,
+               不得孤立理解当前问题。
+            3. rewrites 中至少包含一条"结合历史展开后的完整问法": 如历史提及"X100 Pro", 当前问"那换屏多少钱",
+               rewrites 必须含 "X100 Pro 换屏多少钱"; 同时保留当前问题自身的独立变体。
+            4. products/entities 继承: 当前问题未提及但历史对话明确涉及的(如历史提"X100 Pro", 当前问"那换屏多少钱"
+               → products=["X100 Pro"]), 必须从历史继承, 不得遗漏。
+            5. 无历史对话或历史与当前问题无关时, 按单轮问题正常分析, 不得强行编造上下文。
+            """;
+
     @Resource
     private ModelApi modelApi;
 
@@ -62,17 +96,31 @@ public class QueryAnalysisService {
 
     /**
      * 分析查询: 意图/实体/改写/子问题(支持多轮上下文消歧)
+     * <p>
+     * 兼容旧调用方: 无知识库意图集 → 固定 6 枚举意图, 与 Task 2 行为完全一致。
      *
      * @param query   原始问题
      * @param history 上下文轮次(可选; null/空 = 单轮行为)
      * @return 分析结果(失败时 success=false; 带历史且问题过短时附规则合并改写, 供降级召回)
      */
     public QueryAnalysis analyze(String query, List<ChatTurnDTO> history) {
+        return analyze(query, history, null);
+    }
+
+    /**
+     * 分析查询: 意图/实体/改写/子问题(支持多轮上下文消歧 + 知识库意图集动态分类)
+     *
+     * @param query   原始问题
+     * @param history 上下文轮次(可选; null/空 = 单轮行为)
+     * @param intents 知识库意图集(可选; null/空 = 固定 6 枚举意图, 无 OUT_OF_SCOPE, 兼容旧行为)
+     * @return 分析结果(失败时 success=false; 带历史且问题过短时附规则合并改写, 供降级召回)
+     */
+    public QueryAnalysis analyze(String query, List<ChatTurnDTO> history, List<IntentDTO> intents) {
         QueryAnalysis result = new QueryAnalysis();
         result.setSuccess(false);
         try {
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(SYSTEM_PROMPT);
+            req.setSystem(buildSystemPrompt(intents));
             req.setUser(buildUserPrompt(query, history));
             String resp = modelApi.chat(req).getCheckedData();
             JSONObject json = parseJson(resp);
@@ -80,7 +128,7 @@ public class QueryAnalysisService {
                 // LLM 输出非 JSON: 视为分析失败, 走规则兜底
                 return fallbackDisambiguate(result, query, history);
             }
-            result.setIntent(json.getStr("intent", "OTHER"));
+            result.setIntent(clampIntent(json.getStr("intent", "OTHER"), intents));
             result.setEntities(strList(json.getJSONArray("entities")));
             result.setProducts(strList(json.getJSONArray("products")));
             result.setRewrites(strList(json.getJSONArray("rewrites")));
@@ -93,6 +141,52 @@ public class QueryAnalysisService {
             return fallbackDisambiguate(result, query, history);
         }
         return result;
+    }
+
+    /**
+     * 系统提示词: 有知识库意图集 → 动态意图段(知识库意图列表, 不匹配钳制 OUT_OF_SCOPE);
+     * 无意图集 → 固定 6 枚举提示词(兼容旧行为)。模板异常时防御性回退固定提示词。
+     */
+    private String buildSystemPrompt(List<IntentDTO> intents) {
+        if (intents == null || intents.isEmpty()) {
+            return SYSTEM_PROMPT;
+        }
+        int marker = DYNAMIC_SYSTEM_PROMPT.indexOf(INTENT_LIST_MARKER);
+        if (marker < 0) {
+            log.warn("[buildSystemPrompt][动态意图模板缺占位符, 回退固定提示词]");
+            return SYSTEM_PROMPT;
+        }
+        StringBuilder sb = new StringBuilder(DYNAMIC_SYSTEM_PROMPT.length() + 256);
+        sb.append(DYNAMIC_SYSTEM_PROMPT, 0, marker);
+        for (IntentDTO intent : intents) {
+            sb.append("- ").append(intent.getName());
+            if (StrUtil.isNotBlank(intent.getDescription())) {
+                sb.append(": ").append(StrUtil.trim(intent.getDescription()));
+            }
+            sb.append('\n');
+        }
+        sb.append(DYNAMIC_SYSTEM_PROMPT, marker + INTENT_LIST_MARKER.length(), DYNAMIC_SYSTEM_PROMPT.length());
+        return sb.toString();
+    }
+
+    /**
+     * 意图钳制(结构化校验, 不信任 LLM 自由发挥): LLM 返回的意图名必须在提供的意图集中,
+     * 否则钳制为 OUT_OF_SCOPE。intents 为空时返回 LLM 原值(固定枚举兼容, 缺省 OTHER)。
+     */
+    private String clampIntent(String rawIntent, List<IntentDTO> intents) {
+        if (intents == null || intents.isEmpty()) {
+            return StrUtil.isBlank(rawIntent) ? "OTHER" : rawIntent;
+        }
+        if (StrUtil.isBlank(rawIntent)) {
+            return "OUT_OF_SCOPE";
+        }
+        String trimmed = StrUtil.trim(rawIntent);
+        for (IntentDTO intent : intents) {
+            if (intent != null && trimmed.equals(intent.getName())) {
+                return intent.getName();
+            }
+        }
+        return "OUT_OF_SCOPE";
     }
 
     /**

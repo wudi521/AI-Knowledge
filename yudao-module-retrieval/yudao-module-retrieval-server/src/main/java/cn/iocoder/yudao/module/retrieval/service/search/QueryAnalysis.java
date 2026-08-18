@@ -10,7 +10,10 @@ import java.util.List;
 @Data
 public class QueryAnalysis {
 
-    /** 意图: WARRANTY/REFUND/LOGISTICS/REPAIR/PRICE/OTHER */
+    /**
+     * 意图: 固定枚举(WARRANTY/REFUND/LOGISTICS/REPAIR/PRICE/OTHER)或
+     * 知识库意图名/OUT_OF_SCOPE(动态意图: 传入意图集时按知识库意图分类)
+     */
     private String intent;
 
     /** 关键实体 */

@@ -3,7 +3,8 @@ package cn.iocoder.yudao.module.retrieval.service.search;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
-import cn.hutool.core.util.StrUtil;
+import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
+import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO;
@@ -25,6 +26,9 @@ import java.util.stream.Collectors;
  * 检索编排: 语义理解/改写 → 双通道召回(BM25 + 向量) → RRF 融合 → 权限/已发布过滤 → 重排 → 响应
  * <p>
  * 降级原则(业务效果优先): 单环节失败不阻断主链路, 允许"空手而归"的最小集是空结果而非报错
+ * <p>
+ * Task 3 动态意图: 检索前按 kbIds 拉取知识库意图集注入查询分析(意图 = 知识库意图名 | OUT_OF_SCOPE);
+ * RPC 失败/无意图时回退固定枚举, 不阻断主链路。
  */
 @Slf4j
 @Service
@@ -47,6 +51,8 @@ public class SearchService {
 
     @Resource
     private QueryAnalysisService queryAnalysisService;
+    @Resource
+    private KnowledgeApi knowledgeApi;
     @Resource
     private Bm25Searcher bm25Searcher;
     @Resource
@@ -102,7 +108,9 @@ public class SearchService {
 
         // 3. 语义理解/改写/拆解: 变体 = 原句 + (改写 + 子问题), 去重限 6
         //    Task 2: history 融入查询分析(指代展开/实体继承); LLM 失败时规则兜底改写仍参与召回
-        QueryAnalysis analysis = queryAnalysisService.analyze(query, history);
+        //    Task 3: 按 kbIds 解析知识库意图集注入动态分类; 意图为空(RPC 失败/知识库无意图)回退固定枚举
+        List<IntentDTO> intents = resolveIntents(kbIds, userId);
+        QueryAnalysis analysis = queryAnalysisService.analyze(query, history, intents);
         List<String> variants = new ArrayList<>();
         variants.add(query);
         if (analysis.isSuccess()) {
@@ -203,6 +211,57 @@ public class SearchService {
             resp.setAnswer(generateAnswer(query, analysis.getEntities(), results));
         }
         return resp;
+    }
+
+    /**
+     * 解析知识库意图集(动态意图分类参考): kbIds 为空时回退用户可见知识库(需登录态)。
+     *
+     * @param kbIds 限定知识库编号列表(空 = 全部可见)
+     * @return 意图集(按名称去重; 解析失败/无意图返回空, 调用方回退固定枚举)
+     */
+    List<IntentDTO> resolveIntents(List<Long> kbIds) {
+        return resolveIntents(kbIds, SecurityFrameworkUtils.getLoginUserId());
+    }
+
+    /**
+     * 解析知识库意图集(动态意图分类参考): 逐知识库拉取启用中意图, 按意图名跨库去重合并。
+     * <p>
+     * kbIds 为空时回退用户可见知识库(需 userId, 供 RPC 无登录态路径显式传递);
+     * 单库 RPC 失败仅跳过该库, 全部失败/无意图返回空列表 → 调用方回退固定枚举, 不阻断主链路。
+     * <p>
+     * 注意: 在 search() 流程中 kbIds 已在步骤 2 按可见集过滤且非空, 此处直接逐库拉取,
+     * 不会触发可见集回退, 避免重复 RPC。
+     *
+     * @param kbIds  限定知识库编号列表(空 = 全部可见)
+     * @param userId 用户编号(仅 kbIds 为空时用于回退可见集; RPC 路径显式传递)
+     * @return 意图集(按名称去重合并, 保持首次出现顺序)
+     */
+    List<IntentDTO> resolveIntents(List<Long> kbIds, Long userId) {
+        List<Long> ids = (kbIds != null && !kbIds.isEmpty()) ? kbIds
+                : (userId == null ? List.of() : new ArrayList<>(resultFilter.getVisibleKbIds(userId)));
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        // 去重: 同一知识库重复传入不重复 RPC
+        List<Long> distinctIds = ids.stream().distinct().collect(Collectors.toList());
+        Map<String, IntentDTO> byName = new LinkedHashMap<>();
+        for (Long kbId : distinctIds) {
+            try {
+                List<IntentDTO> intents = knowledgeApi.getKbIntents(kbId).getCheckedData();
+                if (intents == null) {
+                    continue;
+                }
+                for (IntentDTO intent : intents) {
+                    // 按名称去重合并(跨库同名意图视为同一意图; 名称/说明已足够分类, kbId 可不参与)
+                    if (intent != null && StrUtil.isNotBlank(intent.getName())) {
+                        byName.putIfAbsent(intent.getName(), intent);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("[resolveIntents][知识库 {} 意图获取失败, 跳过该库: {}]", kbId, e.getMessage());
+            }
+        }
+        return new ArrayList<>(byName.values());
     }
 
     /** 收集结果涉及的全部文档产品(逗号分隔字段展开) */
