@@ -19,6 +19,9 @@ public class RetrievalRespVO {
     /** 各通道召回数 */
     private ChannelStatVO channels;
 
+    /** 大模型总结回答(基于 TopN 证据生成, 带 [C1][C2] 引用; 生成失败为 null) */
+    private String answer;
+
     /** TopN 结果 */
     private List<ResultVO> results;
 

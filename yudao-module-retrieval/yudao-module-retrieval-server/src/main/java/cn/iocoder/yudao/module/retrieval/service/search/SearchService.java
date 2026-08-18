@@ -3,7 +3,9 @@ package cn.iocoder.yudao.module.retrieval.service.search;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
+import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.module.model.api.ModelApi;
+import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import cn.iocoder.yudao.module.retrieval.controller.admin.search.vo.RetrievalReqVO;
 import cn.iocoder.yudao.module.retrieval.controller.admin.search.vo.RetrievalRespVO;
 import jakarta.annotation.Resource;
@@ -30,6 +32,15 @@ public class SearchService {
     private static final int RECALL_TOP_K = 20;
     /** 检索变体上限 */
     private static final int VARIANT_LIMIT = 6;
+
+    /** 总结回答系统提示词: 只依据证据作答, 标注引用, 证据不足明说 */
+    private static final String ANSWER_SYSTEM_PROMPT = """
+            你是企业客服助手。基于给定的"证据片段"回答用户问题:
+            1. 只能依据证据内容作答, 不得编造事实;
+            2. 回答中在关键结论句后标注证据编号 [C1][C2](编号对应证据列表顺序);
+            3. 证据不足时, 直接说明"根据现有资料无法确定", 并列出已确认的信息;
+            4. 语言简洁口语化, 先给结论再给依据。
+            """;
 
     @Resource
     private QueryAnalysisService queryAnalysisService;
@@ -149,7 +160,30 @@ public class SearchService {
             results.add(buildResult(chunkId, contentsMap, docInfoMap, rrfMap, r.getValue(), bm25HitIds, vectorHitIds));
         }
         resp.setResults(results);
+        // 12. 大模型总结回答(基于 TopN 证据, 带 [C1][C2] 引用; 失败置 null 不阻断)
+        resp.setAnswer(generateAnswer(req.getQuery(), results));
         return resp;
+    }
+
+    /** 基于检索结果生成总结回答(LLM; 引用编号 C1.. 对应 results 顺序; 失败返回 null) */
+    private String generateAnswer(String query, List<RetrievalRespVO.ResultVO> results) {
+        if (results.isEmpty()) {
+            return null;
+        }
+        try {
+            StringBuilder evidence = new StringBuilder();
+            for (int i = 0; i < results.size(); i++) {
+                evidence.append("[C").append(i + 1).append("] ").append(results.get(i).getContent()).append("\n\n");
+            }
+            ModelChatReqDTO req = new ModelChatReqDTO();
+            req.setSystem(ANSWER_SYSTEM_PROMPT);
+            req.setUser("问题: " + query + "\n\n证据片段:\n" + evidence);
+            String answer = modelApi.chat(req).getCheckedData();
+            return StrUtil.isBlank(answer) ? null : answer;
+        } catch (Exception e) {
+            log.warn("[generateAnswer][生成回答失败: {}]", e.getMessage());
+            return null;
+        }
     }
 
     /** 向量通道召回: 变体整体 embedding, 失败跳过该通道(不阻断主链路) */
