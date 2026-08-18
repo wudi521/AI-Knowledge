@@ -56,6 +56,8 @@ public class RetrievalApiImpl implements RetrievalApi {
         dto.setResults(results);
         // 问题涉及的产品/品牌(证据充分性判定用)
         dto.setQuestionProducts(vo.getAnalysis() != null ? vo.getAnalysis().getProducts() : null);
+        // 语义分析意图(OUT_OF_SCOPE 显式透出, 供证据/聊天/前端识别超范围)
+        dto.setIntent(vo.getAnalysis() != null ? vo.getAnalysis().getIntent() : null);
         return success(dto);
     }
 

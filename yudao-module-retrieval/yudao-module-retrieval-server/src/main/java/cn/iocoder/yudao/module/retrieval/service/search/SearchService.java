@@ -126,6 +126,22 @@ public class SearchService {
         }
         variants = variants.stream().distinct().limit(VARIANT_LIMIT).collect(Collectors.toList());
 
+        // 3.5 超范围意图短路(Task 4): 动态意图解析为 OUT_OF_SCOPE 时不检索不硬答, 拒绝作答并转人工。
+        //     仅知识库意图集路径(有 kbIds 意图)会产生 OUT_OF_SCOPE; 无意图集回退路径恒为固定枚举, 不受影响。
+        //     置于所有检索调用(BM25/向量/重排/LLM)之前, 避免无效消耗。
+        if ("OUT_OF_SCOPE".equals(analysis.getIntent())) {
+            log.info("[search][query={} 意图 OUT_OF_SCOPE, 跳过检索并阻断作答, 转人工]", query);
+            RetrievalRespVO blocked = new RetrievalRespVO();
+            blocked.setQuery(query);
+            blocked.setAnalysis(buildAnalysis(analysis));
+            blocked.setChannels(new RetrievalRespVO.ChannelStatVO());
+            blocked.setAnswerBlocked(true);
+            blocked.setAnswerReason("问题超出该知识库服务范围(未匹配到可服务的意图), 已转人工处理");
+            blocked.setResults(List.of());
+            blocked.setAnswer(null);
+            return blocked;
+        }
+
         // 4. BM25 通道: 逐变体召回, 去重取最高分
         List<Map.Entry<Long, Double>> bm25Hits = new ArrayList<>();
         for (String variant : variants) {

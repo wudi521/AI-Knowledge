@@ -70,6 +70,8 @@ public class ChatPipeline {
     private static final String REASON_INSUFFICIENT = "证据不足";
     /** 转人工原因: 检索阻断 */
     private static final String REASON_BLOCKED = "检索阻断";
+    /** 转人工原因: 超出知识库范围(意图 OUT_OF_SCOPE) */
+    private static final String REASON_OUT_OF_SCOPE = "超出知识库范围";
     /** 转人工原因: Claim 验证失败 */
     private static final String REASON_CLAIM_FAIL = "Claim验证失败";
     /** 转人工原因: 证据不充分(兜底) */
@@ -312,6 +314,9 @@ public class ChatPipeline {
     /**
      * 转人工原因推导(配置无关的结构化映射):
      * 评估服务不可用 → "评估服务暂不可用"; refusalReason 关键词映射; claimFail → "Claim验证失败"; 兜底 → "证据不充分"。
+     * <p>
+     * 注意顺序: "超出"(OUT_OF_SCOPE)判定必须先于 "证据不足", 因超范围阻断原因会被充分性判定
+     * 拼接 "证据不足(需至少X条)"(空证据 + 检索阻断原因), 后置会误映射为证据不足。
      */
     private String deriveTransferReason(EvidenceEvaluateRespDTO resp) {
         if (resp == null) {
@@ -319,6 +324,9 @@ public class ChatPipeline {
         }
         String refusalReason = resp.getRefusalReason();
         if (StrUtil.isNotBlank(refusalReason)) {
+            if (refusalReason.contains("超出")) {
+                return REASON_OUT_OF_SCOPE;
+            }
             if (refusalReason.contains("冲突")) {
                 return REASON_CONFLICT;
             }

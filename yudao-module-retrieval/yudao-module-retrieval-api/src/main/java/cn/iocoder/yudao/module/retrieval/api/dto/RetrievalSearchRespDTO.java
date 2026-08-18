@@ -28,4 +28,7 @@ public class RetrievalSearchRespDTO {
     /** 问题涉及的产品/品牌(分析结果, 供证据充分性判定) */
     private List<String> questionProducts;
 
+    /** 语义分析意图(动态意图: 知识库意图名 | OUT_OF_SCOPE; 无意图集回退路径为固定枚举) */
+    private String intent;
+
 }

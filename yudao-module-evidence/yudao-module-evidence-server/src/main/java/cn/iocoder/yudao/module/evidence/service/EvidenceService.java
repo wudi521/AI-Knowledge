@@ -117,7 +117,11 @@ public class EvidenceService {
                     ? assembled.getEvidences() : Collections.emptyList();
             if (evidences.isEmpty()) {
                 // 2. 无证据短路: 不可作答 + 原因, 仍落库(eval 行 evidence_count=0)
-                judgement = buildJudgement(false, 0.0, NO_EVIDENCE_REASON, 0, 0);
+                //    检索阻断原因优先(OUT_OF_SCOPE 超范围短路即返回空结果 + 阻断原因, 此处透传,
+                //    否则会被 "未检索到相关证据" 覆盖而丢失; 品牌门禁有结果不受影响); 无阻断时回退默认原因
+                String blockReason = Boolean.TRUE.equals(assembled.getAnswerBlocked()) ? assembled.getAnswerReason() : null;
+                judgement = buildJudgement(false, 0.0,
+                        StrUtil.isNotBlank(blockReason) ? blockReason : NO_EVIDENCE_REASON, 0, 0);
             } else {
                 // 3. 去重 → 冲突 → 充分性(检索品牌一致性门禁阻断原因透传)
                 deduped = deduplicator.dedupe(evidences).getDeduped();
