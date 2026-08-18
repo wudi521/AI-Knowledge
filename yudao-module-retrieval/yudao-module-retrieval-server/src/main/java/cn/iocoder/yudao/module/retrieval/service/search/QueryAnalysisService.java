@@ -6,6 +6,7 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
+import cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -34,15 +35,27 @@ public class QueryAnalysisService {
     private ModelApi modelApi;
 
     /**
-     * 分析查询: 意图/实体/改写/子问题
+     * 分析查询(单轮, 无上下文; 兼容旧调用方)
      *
      * @param query 原始问题
      * @return 分析结果(失败时 success=false, 字段为空)
      */
     public QueryAnalysis analyze(String query) {
+        return analyze(query, null);
+    }
+
+    /**
+     * 分析查询: 意图/实体/改写/子问题(支持多轮上下文)
+     *
+     * @param query   原始问题
+     * @param history 上下文轮次(可选; T1 仅接收存储, 提示词保持单轮不变, Task 2 融入)
+     * @return 分析结果(失败时 success=false, 字段为空)
+     */
+    public QueryAnalysis analyze(String query, List<ChatTurnDTO> history) {
         QueryAnalysis result = new QueryAnalysis();
         result.setSuccess(false);
         try {
+            // TODO(Task 2): 将 history 融入 SYSTEM_PROMPT/用户消息(多轮消歧改写), T1 保持单轮提示词不变
             ModelChatReqDTO req = new ModelChatReqDTO();
             req.setSystem(SYSTEM_PROMPT);
             req.setUser(query);

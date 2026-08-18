@@ -46,4 +46,7 @@ public class EvidenceEvaluateRespDTO {
     /** 评估耗时(ms, 不含落库) */
     private Integer elapsedMs;
 
+    /** 回显本次使用的上下文(供落库快照/前端展示) */
+    private List<ChatTurnDTO> history;
+
 }

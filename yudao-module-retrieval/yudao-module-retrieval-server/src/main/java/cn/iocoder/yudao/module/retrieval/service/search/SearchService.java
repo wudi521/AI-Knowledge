@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
+import cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.retrieval.controller.admin.search.vo.RetrievalReqVO;
 import cn.iocoder.yudao.module.retrieval.controller.admin.search.vo.RetrievalRespVO;
 import jakarta.annotation.Resource;
@@ -66,9 +67,19 @@ public class SearchService {
     }
 
     /**
-     * 检索(显式租户/用户版本, 供 RPC 调用: 无登录态, 租户/权限由调用方传递)
+     * 检索(显式租户/用户版本, 供 RPC 调用: 无登录态, 租户/权限由调用方传递; 单轮, 无上下文)
      */
     public RetrievalRespVO search(String query, List<Long> reqKbIds, Integer topK, Long tenantId, Long userId) {
+        return search(query, reqKbIds, topK, tenantId, userId, null);
+    }
+
+    /**
+     * 检索(显式租户/用户版本, 供 RPC 调用: 无登录态, 租户/权限由调用方传递; 支持多轮上下文)
+     *
+     * @param history 上下文轮次(可选, 空/ null = 单轮; T1 仅接收存储, Task 2 接入查询分析)
+     */
+    public RetrievalRespVO search(String query, List<Long> reqKbIds, Integer topK, Long tenantId, Long userId,
+                                  List<ChatTurnDTO> history) {
         // 1. 参数归一: topK 默认 5, 上限 20
         int topKFinal = topK == null || topK <= 0 ? 5 : Math.min(topK, RECALL_TOP_K);
 
@@ -90,7 +101,8 @@ public class SearchService {
         }
 
         // 3. 语义理解/改写/拆解: 变体 = 原句 + (改写 + 子问题), 去重限 6
-        QueryAnalysis analysis = queryAnalysisService.analyze(query);
+        //    T1 仅透传 history 参数(提示词未接入), Task 2 将其融入查询分析/改写
+        QueryAnalysis analysis = queryAnalysisService.analyze(query, history);
         List<String> variants = new ArrayList<>();
         variants.add(query);
         if (analysis.isSuccess()) {

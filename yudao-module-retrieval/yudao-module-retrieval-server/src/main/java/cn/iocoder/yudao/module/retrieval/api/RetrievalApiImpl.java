@@ -30,7 +30,7 @@ public class RetrievalApiImpl implements RetrievalApi {
     @Override
     public CommonResult<RetrievalSearchRespDTO> search(RetrievalSearchReqDTO req) {
         RetrievalRespVO vo = searchService.search(req.getQuery(), req.getKbIds(), req.getTopK(),
-                req.getTenantId(), req.getUserId());
+                req.getTenantId(), req.getUserId(), req.getHistory());
         // 映射 RetrievalRespVO -> RetrievalSearchRespDTO
         RetrievalSearchRespDTO dto = new RetrievalSearchRespDTO();
         dto.setQuery(vo.getQuery());

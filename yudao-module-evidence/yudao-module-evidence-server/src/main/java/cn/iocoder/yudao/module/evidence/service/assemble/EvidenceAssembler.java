@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.evidence.service.assemble;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.retrieval.api.RetrievalApi;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalResultDTO;
@@ -31,7 +32,7 @@ public class EvidenceAssembler {
     private RetrievalApi retrievalApi;
 
     /**
-     * 组装证据
+     * 组装证据(单轮, 无上下文; 兼容旧调用方)
      *
      * @param query    检索内容
      * @param kbIds    限定知识库编号列表(空 = 全部可见知识库)
@@ -41,6 +42,22 @@ public class EvidenceAssembler {
      * @return 组装结果(证据按得分降序); 检索失败时返回空证据集, 不抛异常
      */
     public AssembledEvidence assemble(String query, List<Long> kbIds, Integer topK, Long tenantId, Long userId) {
+        return assemble(query, kbIds, topK, tenantId, userId, null);
+    }
+
+    /**
+     * 组装证据(支持多轮上下文)
+     *
+     * @param query    检索内容
+     * @param kbIds    限定知识库编号列表(空 = 全部可见知识库)
+     * @param topK     返回条数(空则默认 8)
+     * @param tenantId 租户编号(RPC 无登录态, 显式传递)
+     * @param userId   用户编号(权限过滤用)
+     * @param history  上下文轮次(可选, 空/ null = 单轮; evidence-api 类型, 在此转 retrieval-api 透传)
+     * @return 组装结果(证据按得分降序); 检索失败时返回空证据集, 不抛异常
+     */
+    public AssembledEvidence assemble(String query, List<Long> kbIds, Integer topK, Long tenantId, Long userId,
+                                      List<ChatTurnDTO> history) {
         // 1. 调用检索 RPC(topK 为空时默认 8)
         RetrievalSearchReqDTO req = new RetrievalSearchReqDTO();
         req.setQuery(query);
@@ -48,6 +65,8 @@ public class EvidenceAssembler {
         req.setTopK(topK != null ? topK : DEFAULT_TOP_K);
         req.setTenantId(tenantId);
         req.setUserId(userId);
+        // 跨模块 DTO 独立(按 spec): 同构字段手动映射到 retrieval-api ChatTurnDTO
+        req.setHistory(toRetrievalHistory(history));
         CommonResult<RetrievalSearchRespDTO> resp;
         try {
             resp = retrievalApi.search(req);
@@ -108,6 +127,23 @@ public class EvidenceAssembler {
             return result.getRerankScore().doubleValue();
         }
         return result.getRrfScore();
+    }
+
+    /**
+     * evidence-api ChatTurnDTO → retrieval-api ChatTurnDTO(跨模块 DTO 独立, 按 spec 重复定义, 需手动映射)
+     */
+    private List<cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO> toRetrievalHistory(List<ChatTurnDTO> history) {
+        if (history == null || history.isEmpty()) {
+            return null;
+        }
+        List<cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO> result = new ArrayList<>(history.size());
+        for (ChatTurnDTO turn : history) {
+            cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO t = new cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO();
+            t.setRole(turn.getRole());
+            t.setContent(turn.getContent());
+            result.add(t);
+        }
+        return result;
     }
 
 }

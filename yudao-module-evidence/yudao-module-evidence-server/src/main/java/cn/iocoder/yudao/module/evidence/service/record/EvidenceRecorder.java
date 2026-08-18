@@ -67,6 +67,9 @@ public class EvidenceRecorder {
             eval.setClaimPass(resp.getAnswer() != null && !Boolean.TRUE.equals(resp.getClaimFail()) ? 1 : 0);
             eval.setClaims(resp.getClaims() != null ? JSONUtil.toJsonStr(resp.getClaims()) : null);
             eval.setConflicts(resp.getConflicts() != null ? JSONUtil.toJsonStr(resp.getConflicts()) : null);
+            // 上下文快照: 非空才落库, 单轮/缺失为 null
+            eval.setHistory(resp.getHistory() != null && !resp.getHistory().isEmpty()
+                    ? JSONUtil.toJsonStr(resp.getHistory()) : null);
             eval.setElapsedMs(resp.getElapsedMs());
             eval.setCreator(creator());
             evalMapper.insert(eval);

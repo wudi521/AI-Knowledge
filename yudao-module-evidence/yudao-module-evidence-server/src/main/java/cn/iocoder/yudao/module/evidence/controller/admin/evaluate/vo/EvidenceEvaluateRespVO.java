@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo;
 
+import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import lombok.Data;
 
 import java.util.List;
@@ -52,6 +53,9 @@ public class EvidenceEvaluateRespVO {
 
     /** 评估耗时(ms, 不含落库) */
     private Integer elapsedMs;
+
+    /** 回显本次使用的上下文(供落库快照/前端展示) */
+    private List<ChatTurnDTO> history;
 
     @Data
     public static class EvidenceItemVO {

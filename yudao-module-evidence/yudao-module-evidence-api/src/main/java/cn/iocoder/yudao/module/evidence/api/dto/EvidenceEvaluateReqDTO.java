@@ -25,4 +25,7 @@ public class EvidenceEvaluateReqDTO {
     /** 用户编号(权限过滤用) */
     private Long userId;
 
+    /** 上下文轮次(可选, 空 = 单轮) */
+    private List<ChatTurnDTO> history;
+
 }

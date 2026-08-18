@@ -62,6 +62,9 @@ public class EvidenceEvalDO extends TenantBaseDO {
     /** 冲突列表(JSON 数组字符串) */
     private String conflicts;
 
+    /** 评估上下文快照(多轮历史 JSON 数组字符串, 单轮为 null) */
+    private String history;
+
     /** 耗时(ms) */
     private Integer elapsedMs;
 

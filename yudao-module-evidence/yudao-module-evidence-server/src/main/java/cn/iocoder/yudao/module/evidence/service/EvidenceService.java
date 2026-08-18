@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.evidence.service;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
+import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
 import cn.iocoder.yudao.module.evidence.domain.ClaimResult;
 import cn.iocoder.yudao.module.evidence.domain.Conflict;
@@ -85,6 +86,22 @@ public class EvidenceService {
      */
     public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
                                            Long tenantId, Long userId) {
+        return evaluate(query, kbIds, topK, tenantId, userId, null);
+    }
+
+    /**
+     * 证据评估(Feign RPC 场景: 无登录态, 租户/用户由调用方显式传递; 支持多轮上下文)
+     *
+     * @param query    评估问题
+     * @param kbIds    限定知识库编号列表(空 = 全部可见知识库)
+     * @param topK     证据条数(空则默认 8)
+     * @param tenantId 租户编号(可为 null, 由检索 RPC 自行降级)
+     * @param userId   用户编号(可为 null, 权限过滤失效时降级)
+     * @param history  上下文轮次(可选, 空/ null = 单轮)
+     * @return 评估结果(永不抛异常)
+     */
+    public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
+                                           Long tenantId, Long userId, List<ChatTurnDTO> history) {
         long start = System.currentTimeMillis();
         String traceId = newTraceId();
 
@@ -95,7 +112,7 @@ public class EvidenceService {
         GenerationResult generation = null;
         try {
             // 1. 组装(检索 RPC → 归一化证据; RPC 失败/无结果返回空集, 不抛出)
-            AssembledEvidence assembled = assembler.assemble(query, kbIds, topK, tenantId, userId);
+            AssembledEvidence assembled = assembler.assemble(query, kbIds, topK, tenantId, userId, history);
             List<Evidence> evidences = assembled.getEvidences() != null
                     ? assembled.getEvidences() : Collections.emptyList();
             if (evidences.isEmpty()) {
@@ -121,7 +138,7 @@ public class EvidenceService {
         }
 
         // 5. 组装响应(elapsed 不含落库耗时)
-        EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, deduped, conflicts, generation);
+        EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, deduped, conflicts, generation, history);
         resp.setElapsedMs((int) (System.currentTimeMillis() - start));
 
         // 6. 落库(内部吞异常, 失败不阻断响应)
@@ -133,7 +150,7 @@ public class EvidenceService {
 
     private EvidenceEvaluateRespVO buildResp(String traceId, String query, Judgement judgement,
                                              List<Evidence> evidences, List<Conflict> conflicts,
-                                             GenerationResult generation) {
+                                             GenerationResult generation, List<ChatTurnDTO> history) {
         EvidenceEvaluateRespVO resp = new EvidenceEvaluateRespVO();
         resp.setTraceId(traceId);
         resp.setQuery(query);
@@ -141,6 +158,7 @@ public class EvidenceService {
         resp.setConfidence(judgement.getConfidence());
         resp.setConsultable(judgement.getConsultable());
         resp.setRefusalReason(Boolean.TRUE.equals(judgement.getAnswerable()) ? null : judgement.getReason());
+        resp.setHistory(history);
         // 证据列表 = 去重后列表(保持顺序, 与 conflicts/claims 索引一一对应)
         resp.setEvidence(evidences.stream().map(this::toEvidenceItem).collect(Collectors.toList()));
         resp.setConflicts(conflicts.stream().map(this::toConflictVO).collect(Collectors.toList()));
