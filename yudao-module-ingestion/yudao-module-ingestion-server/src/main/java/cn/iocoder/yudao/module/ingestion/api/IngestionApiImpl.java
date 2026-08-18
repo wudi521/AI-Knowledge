@@ -152,19 +152,20 @@ public class IngestionApiImpl implements IngestionApi {
                 log.warn("[getChunkDocInfo][版本信息查询失败, 文档信息将缺失: {}]", e.getMessage());
             }
         }
-        // 3. docId -> 文档名(按文档缓存, 避免重复调用)
+        // 3. docId -> 文档名(批量查询, 避免逐条 Feign N+1)
         Map<Long, String> docNameMap = new HashMap<>();
-        for (KnowledgeVersionRespDTO version : versionMap.values()) {
-            if (version.getDocId() == null || docNameMap.containsKey(version.getDocId())) {
-                continue;
-            }
+        List<Long> docIds = versionMap.values().stream().map(KnowledgeVersionRespDTO::getDocId)
+                .filter(Objects::nonNull).distinct().toList();
+        if (!docIds.isEmpty()) {
             try {
-                KnowledgeDocumentRespDTO doc = knowledgeApi.getDocument(version.getDocId()).getCheckedData();
-                if (doc != null) {
-                    docNameMap.put(version.getDocId(), doc.getName());
+                Map<Long, KnowledgeDocumentRespDTO> docMap = knowledgeApi.getDocumentMap(docIds).getCheckedData();
+                for (KnowledgeDocumentRespDTO doc : docMap.values()) {
+                    if (doc != null && doc.getName() != null) {
+                        docNameMap.put(doc.getId(), doc.getName());
+                    }
                 }
             } catch (Exception e) {
-                log.warn("[getChunkDocInfo][文档查询失败 docId={}: {}]", version.getDocId(), e.getMessage());
+                log.warn("[getChunkDocInfo][文档信息批量查询失败: {}]", e.getMessage());
             }
         }
         // 4. 组装 chunkId -> 文档信息

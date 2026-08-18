@@ -82,6 +82,15 @@ public interface KnowledgeApi {
     CommonResult<Map<Long, KnowledgeVersionRespDTO>> getVersionMap(@RequestBody List<Long> versionIds);
 
     /**
+     * 批量查询文档详情(检索结果文档信息补全, 避免逐条 Feign)
+     *
+     * @param ids 文档编号列表
+     * @return 文档编号 -> 文档详情(不存在的自动过滤)
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-document-map")
+    CommonResult<Map<Long, KnowledgeDocumentRespDTO>> getDocumentMap(@RequestBody List<Long> ids);
+
+    /**
      * 查询知识库切分策略(ingestion 按知识库配置切分; 不存在返回默认 ParentChild)
      *
      * @param kbId 知识库编号

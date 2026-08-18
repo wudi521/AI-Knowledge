@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.retrieval.service.search;
 
+import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
 import cn.iocoder.yudao.module.model.api.ModelApi;
@@ -50,7 +51,24 @@ public class SearchService {
         int topK = req.getTopK() == null || req.getTopK() <= 0 ? 5 : Math.min(req.getTopK(), RECALL_TOP_K);
         Long tenantId = SecurityFrameworkUtils.getLoginUser().getTenantId();
 
-        // 2. 语义理解/改写/拆解: 变体 = 原句 + (改写 + 子问题), 去重限 6
+        // 2. 权限前置: 可见知识库计算 + 空集短路(在 LLM 调用之前, 避免无效消耗且防越权泄露)
+        Set<Long> visibleKbIds = resultFilter.getVisibleKbIds();
+        List<Long> kbIds = req.getKbIds() != null && !req.getKbIds().isEmpty()
+                ? req.getKbIds().stream().filter(visibleKbIds::contains).distinct().collect(Collectors.toList())
+                : new ArrayList<>(visibleKbIds);
+        // ⚠️ 权限边界: 交集为空(请求只含不可见知识库 / 可见集获取失败)必须短路返回空,
+        //    否则双检索器把空 kbIds 当"不限", 泄露不可见知识库内容(越权 0 容忍)
+        if (kbIds.isEmpty()) {
+            log.warn("[search][query={} 无可见知识库, 返回空]", req.getQuery());
+            RetrievalRespVO empty = new RetrievalRespVO();
+            empty.setQuery(req.getQuery());
+            empty.setAnalysis(new RetrievalRespVO.AnalysisVO());
+            empty.setChannels(new RetrievalRespVO.ChannelStatVO());
+            empty.setResults(List.of());
+            return empty;
+        }
+
+        // 3. 语义理解/改写/拆解: 变体 = 原句 + (改写 + 子问题), 去重限 6
         QueryAnalysis analysis = queryAnalysisService.analyze(req.getQuery());
         List<String> variants = new ArrayList<>();
         variants.add(req.getQuery());
@@ -63,23 +81,6 @@ public class SearchService {
             }
         }
         variants = variants.stream().distinct().limit(VARIANT_LIMIT).collect(Collectors.toList());
-
-        // 3. 可见知识库: 请求限定 ∩ 可见; 未限定则全部可见
-        Set<Long> visibleKbIds = resultFilter.getVisibleKbIds();
-        List<Long> kbIds = req.getKbIds() != null && !req.getKbIds().isEmpty()
-                ? req.getKbIds().stream().filter(visibleKbIds::contains).distinct().collect(Collectors.toList())
-                : new ArrayList<>(visibleKbIds);
-        // ⚠️ 权限边界: 交集为空(请求只含不可见知识库 / 可见集获取失败)必须短路返回空,
-        //    否则双检索器把空 kbIds 当"不限", 泄露不可见知识库内容(越权 0 容忍)
-        if (kbIds.isEmpty()) {
-            log.warn("[search][query={} 无可见知识库, 返回空]", req.getQuery());
-            RetrievalRespVO empty = new RetrievalRespVO();
-            empty.setQuery(req.getQuery());
-            empty.setAnalysis(buildAnalysis(analysis));
-            empty.setChannels(new RetrievalRespVO.ChannelStatVO());
-            empty.setResults(List.of());
-            return empty;
-        }
 
         // 4. BM25 通道: 逐变体召回, 去重取最高分
         List<Map.Entry<Long, Double>> bm25Hits = new ArrayList<>();
@@ -113,9 +114,17 @@ public class SearchService {
         // 9. 文档信息补全(chunkId -> documentId/documentName/versionNo)
         Map<Long, ChunkDocInfoDTO> docInfoMap = resultFilter.getChunkDocInfo(candidateIds);
 
-        // 10. 重排(候选为空跳过模型调用, 避免无意义开销)
-        List<Map.Entry<Integer, Float>> reranked = contents.isEmpty()
-                ? List.of() : reranker.rerank(req.getQuery(), contents);
+        // 10. 重排(候选为空或全部内容缺失时跳过模型调用, 避免无意义开销)
+        List<Map.Entry<Integer, Float>> reranked;
+        boolean allBlank = contents.isEmpty() || contents.stream().allMatch(StrUtil::isBlank);
+        if (allBlank) {
+            reranked = new ArrayList<>();
+            for (int i = 0; i < contents.size(); i++) {
+                reranked.add(Map.entry(i, 0F)); // 保持 RRF 顺序
+            }
+        } else {
+            reranked = reranker.rerank(req.getQuery(), contents);
+        }
 
         // 11. 组装响应
         RetrievalRespVO resp = new RetrievalRespVO();

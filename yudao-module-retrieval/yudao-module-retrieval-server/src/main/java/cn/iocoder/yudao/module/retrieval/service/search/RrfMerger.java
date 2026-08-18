@@ -31,7 +31,8 @@ public class RrfMerger {
             }
         }
         return scores.entrySet().stream()
-                .sorted(Map.Entry.<Long, Double>comparingByValue().reversed())
+                .sorted(Map.Entry.<Long, Double>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey())) // 分数相同按 chunkId, 保证确定性
                 .limit(topN)
                 .collect(Collectors.toList());
     }

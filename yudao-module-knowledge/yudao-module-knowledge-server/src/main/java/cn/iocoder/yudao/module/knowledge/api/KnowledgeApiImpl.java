@@ -38,6 +38,8 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     @Resource
     private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
     @Resource
+    private cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper aiDocumentMapper;
+    @Resource
     private KnowledgePermissionHelper knowledgePermissionHelper;
 
     @Override
@@ -76,6 +78,26 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     public CommonResult<Boolean> notifyParsed(Long documentId, Long versionId) {
         aiDocumentService.notifyParsed(documentId, versionId);
         return success(true);
+    }
+
+    @Override
+    public CommonResult<Map<Long, KnowledgeDocumentRespDTO>> getDocumentMap(List<Long> ids) {
+        Map<Long, KnowledgeDocumentRespDTO> map = new HashMap<>();
+        if (CollUtil.isEmpty(ids)) {
+            return success(map);
+        }
+        for (AiDocumentDO doc : aiDocumentMapper.selectBatchIds(ids)) {
+            KnowledgeDocumentRespDTO dto = new KnowledgeDocumentRespDTO();
+            dto.setId(doc.getId());
+            dto.setKbId(doc.getKbId());
+            dto.setName(doc.getName());
+            dto.setType(doc.getType());
+            dto.setStoragePath(doc.getStoragePath());
+            dto.setParseStatus(doc.getParseStatus());
+            dto.setTenantId(doc.getTenantId());
+            map.put(doc.getId(), dto);
+        }
+        return success(map);
     }
 
     @Override
