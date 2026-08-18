@@ -24,4 +24,7 @@ public class AiDocumentSaveReqVO {
     @NotEmpty(message = "存储路径不能为空")
     private String storagePath;
 
+    @Schema(description = "文件 SHA-256(前端上传时计算, 用于重复文档拦截)")
+    private String fileHash;
+
 }

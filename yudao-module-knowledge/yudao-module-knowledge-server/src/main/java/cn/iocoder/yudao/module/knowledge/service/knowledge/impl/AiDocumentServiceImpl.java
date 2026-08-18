@@ -38,6 +38,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.DOCUMENT_DUPLICATE;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.DOCUMENT_NOT_EXISTS;
 
 /**
@@ -86,6 +87,15 @@ public class AiDocumentServiceImpl implements AiDocumentService {
         }
         if (userId != null && !knowledgePermissionHelper.isKbVisibleToUser(userId, kb)) {
             throw new ServiceException(KB_NOT_VISIBLE);
+        }
+        // 重复文档拦截(BR-002): 同知识库 + 文件 SHA-256 一致即视为重复, 拒绝重复入库
+        if (StrUtil.isNotBlank(createReqVO.getFileHash())) {
+            boolean duplicate = aiDocumentMapper.selectCount(new LambdaQueryWrapper<AiDocumentDO>()
+                    .eq(AiDocumentDO::getKbId, createReqVO.getKbId())
+                    .eq(AiDocumentDO::getFileHash, createReqVO.getFileHash())) > 0;
+            if (duplicate) {
+                throw new ServiceException(DOCUMENT_DUPLICATE);
+            }
         }
         AiDocumentDO doc = BeanUtils.toBean(createReqVO, AiDocumentDO.class);
         // 初始状态: 待解析
