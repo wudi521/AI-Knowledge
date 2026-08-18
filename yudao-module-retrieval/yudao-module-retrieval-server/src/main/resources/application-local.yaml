@@ -4,6 +4,8 @@ yudao:
     es:
       index: ai_chunk_bm25        # ES BM25 索引(别名, 指向 ai_chunk_bm25_v2)
     milvus:
+      host: 127.0.0.1             # Milvus 2.4.13 :19530(向量召回, 技术方案 5.3)
+      port: 19530
       collection: ai_chunk_vector
       vector-field: embedding     # Milvus 向量字段名(实测为 embedding)
 spring:
@@ -44,13 +46,6 @@ spring:
     database: 0
   elasticsearch: # Elasticsearch 8.13.4 :9200
     uris: http://127.0.0.1:9200
-
-# Milvus 2.4.13 :19530(向量召回, 技术方案 5.3)
-yudao:
-  ai:
-    milvus:
-      host: 127.0.0.1
-      port: 19530
 
 
 # 定时任务(本地环境关闭 xxl-job 调度中心, 对齐芋道)
