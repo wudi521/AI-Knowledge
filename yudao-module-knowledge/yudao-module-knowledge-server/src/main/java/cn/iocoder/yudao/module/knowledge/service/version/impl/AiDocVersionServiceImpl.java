@@ -12,12 +12,15 @@ import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
 import cn.iocoder.yudao.module.knowledge.service.conflict.ConflictService;
+import cn.iocoder.yudao.module.knowledge.service.intent.IntentSummarizer;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -41,6 +44,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     private IngestionApi ingestionApi;
     @Resource
     private ConflictService conflictService;
+    @Resource
+    private IntentSummarizer intentSummarizer;
 
     @Override
     public AiDocVersionDO createVersion(Long docId) {
@@ -157,6 +162,17 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         expireOldVersions(version.getDocId(), versionId);
         // 文档置已发布
         aiDocumentMapper.updateParseStatus(doc.getId(), "PUBLISHED", null, null);
+        // 异步 LLM 意图总结: 等发布事务提交后再触发(保证异步线程能读到 PUBLISHED 版本), 不阻断发布响应; 失败仅告警, 可手动 summarize 重跑
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    intentSummarizer.summarizeByKbAsync(doc.getKbId());
+                }
+            });
+        } else {
+            intentSummarizer.summarizeByKbAsync(doc.getKbId());
+        }
         log.info("[publish][版本 {} 发布完成, 文档 {}]", versionId, doc.getId());
     }
 

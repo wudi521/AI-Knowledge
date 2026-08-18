@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.knowledge.controller.admin.intent.vo.IntentSaveRe
 import cn.iocoder.yudao.module.knowledge.controller.admin.intent.vo.IntentUpdateReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.intent.AiIntentDO;
 import cn.iocoder.yudao.module.knowledge.service.intent.IntentService;
+import cn.iocoder.yudao.module.knowledge.service.intent.IntentSummarizer;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -28,6 +29,9 @@ public class IntentController {
 
     @Resource
     private IntentService intentService;
+
+    @Resource
+    private IntentSummarizer intentSummarizer;
 
     @GetMapping("/list")
     @Operation(summary = "获得知识库下的意图列表(含停用)")
@@ -60,6 +64,14 @@ public class IntentController {
     public CommonResult<Boolean> deleteIntent(@RequestParam("id") Long id) {
         intentService.deleteIntent(id);
         return success(true);
+    }
+
+    @PostMapping("/summarize")
+    @Operation(summary = "LLM 总结知识库意图(覆盖 LLM_AUTO, MANUAL 保留)")
+    @Parameter(name = "kbId", description = "知识库编号", required = true)
+    @PreAuthorize("@ss.hasPermission('knowledge:intent:update')")
+    public CommonResult<Integer> summarize(@RequestParam("kbId") Long kbId) {
+        return success(intentSummarizer.summarizeByKb(kbId));
     }
 
 }

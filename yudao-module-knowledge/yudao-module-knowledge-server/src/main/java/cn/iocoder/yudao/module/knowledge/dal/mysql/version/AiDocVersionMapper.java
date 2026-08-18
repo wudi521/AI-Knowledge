@@ -31,4 +31,16 @@ public interface AiDocVersionMapper extends BaseMapperX<AiDocVersionDO> {
                 .eq(AiDocVersionDO::getDocId, docId)
                 .orderByDesc(AiDocVersionDO::getId));
     }
+
+    /**
+     * 批量查询文档集合下的已发布版本(意图总结取内容用; 空集合返回空列表)
+     */
+    default List<AiDocVersionDO> selectPublishedByDocIds(java.util.Collection<Long> docIds) {
+        if (docIds == null || docIds.isEmpty()) {
+            return List.of();
+        }
+        return selectList(new LambdaQueryWrapperX<AiDocVersionDO>()
+                .in(AiDocVersionDO::getDocId, docIds)
+                .eq(AiDocVersionDO::getStatus, VersionStatusEnum.PUBLISHED.getStatus()));
+    }
 }

@@ -1,12 +1,16 @@
 package cn.iocoder.yudao.module.knowledge.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
+import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.intent.AiIntentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
+import cn.iocoder.yudao.module.knowledge.service.intent.IntentService;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
@@ -41,6 +45,8 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     private cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper aiDocumentMapper;
     @Resource
     private KnowledgePermissionHelper knowledgePermissionHelper;
+    @Resource
+    private IntentService intentService;
 
     @Override
     public Boolean checkKnowledgePermission(Long chunkId, Long userId) {
@@ -138,6 +144,12 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         }
         List<AiKnowledgeBaseDO> visible = knowledgePermissionHelper.filterVisibleKbs(userId, aiKnowledgeBaseMapper.selectList());
         return success(visible.stream().map(AiKnowledgeBaseDO::getId).collect(Collectors.toSet()));
+    }
+
+    @Override
+    public CommonResult<List<IntentDTO>> getKbIntents(Long kbId) {
+        List<AiIntentDO> intents = intentService.listEnabledByKb(kbId);
+        return success(BeanUtils.toBean(intents, IntentDTO.class));
     }
 
 }

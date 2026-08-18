@@ -27,4 +27,13 @@ public interface IntentService {
     /** 删除意图 */
     void deleteIntent(Long id);
 
+    /**
+     * 覆盖式写入 LLM_AUTO 意图(意图总结用): 先逻辑删除该知识库全部 LLM_AUTO, 再批量插入
+     * 事务内执行; MANUAL 意图不受影响
+     *
+     * @param kbId 知识库编号
+     * @param intents 新意图(name/description), 其余字段(kbId/source/status)由本方法强制填充
+     */
+    void replaceAutoIntents(Long kbId, List<AiIntentDO> intents);
+
 }

@@ -32,4 +32,13 @@ public interface AiIntentMapper extends BaseMapperX<AiIntentDO> {
                 .orderByAsc(AiIntentDO::getId));
     }
 
+    /**
+     * 逻辑删除知识库下指定来源的意图(意图总结覆盖 LLM_AUTO 用, MANUAL 不受影响)
+     */
+    default int deleteByKbIdAndSource(Long kbId, String source) {
+        return delete(new LambdaQueryWrapperX<AiIntentDO>()
+                .eq(AiIntentDO::getKbId, kbId)
+                .eq(AiIntentDO::getSource, source));
+    }
+
 }

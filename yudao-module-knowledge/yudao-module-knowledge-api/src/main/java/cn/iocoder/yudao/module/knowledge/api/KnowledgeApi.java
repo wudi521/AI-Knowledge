@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.knowledge.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.enums.ApiConstants;
@@ -107,5 +108,14 @@ public interface KnowledgeApi {
      */
     @GetMapping(ApiConstants.PREFIX + "/get-visible-kb-ids")
     CommonResult<Set<Long>> getVisibleKbIds(@RequestParam("userId") Long userId);
+
+    /**
+     * 查询知识库启用中的意图列表(检索分类参考: LLM_AUTO + MANUAL 合并口径)
+     *
+     * @param kbId 知识库编号
+     * @return 意图列表(启用中, 按 id 升序; 不存在返回空列表)
+     */
+    @GetMapping(ApiConstants.PREFIX + "/intent/list-by-kb")
+    CommonResult<List<IntentDTO>> getKbIntents(@RequestParam("kbId") Long kbId);
 
 }

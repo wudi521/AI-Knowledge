@@ -8,6 +8,8 @@ import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
 
+import java.util.List;
+
 /**
  * AI 文档 Mapper
  */
@@ -29,6 +31,11 @@ public interface AiDocumentMapper extends BaseMapperX<AiDocumentDO> {
                 .set(AiDocumentDO::getParseStatus, parseStatus)
                 .set(chunkCount != null, AiDocumentDO::getChunkCount, chunkCount)
                 .set(errorMsg != null, AiDocumentDO::getErrorMsg, errorMsg));
+    }
+
+    default List<AiDocumentDO> selectListByKbId(Long kbId) {
+        return selectList(new LambdaQueryWrapperX<AiDocumentDO>()
+                .eq(AiDocumentDO::getKbId, kbId));
     }
 
 }

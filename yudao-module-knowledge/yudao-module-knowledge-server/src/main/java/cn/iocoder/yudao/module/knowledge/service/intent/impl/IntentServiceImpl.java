@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.knowledge.service.intent.impl;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.module.knowledge.controller.admin.intent.vo.IntentSaveReqVO;
@@ -10,6 +11,7 @@ import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapp
 import cn.iocoder.yudao.module.knowledge.service.intent.IntentService;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
@@ -69,6 +71,23 @@ public class IntentServiceImpl implements IntentService {
             throw new ServiceException(INTENT_NOT_EXISTS);
         }
         aiIntentMapper.deleteById(id); // 逻辑删除
+    }
+
+    @Override
+    @Transactional
+    public void replaceAutoIntents(Long kbId, List<AiIntentDO> intents) {
+        // 先清旧 LLM_AUTO(逻辑删除), 再插新(MANUAL 不受影响)
+        aiIntentMapper.deleteByKbIdAndSource(kbId, "LLM_AUTO");
+        if (CollUtil.isEmpty(intents)) {
+            return;
+        }
+        for (AiIntentDO intent : intents) {
+            intent.setId(null);
+            intent.setKbId(kbId);
+            intent.setSource("LLM_AUTO"); // 强制来源, 防止外部误传
+            intent.setStatus(0); // 默认启用
+        }
+        aiIntentMapper.insertBatch(intents);
     }
 
 }
