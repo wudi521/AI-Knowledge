@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.retrieval.service.search;
 
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.model.api.ModelApi;
@@ -31,6 +32,9 @@ public class Reranker {
             只输出 JSON 数组, 不要其他文字。例: [0.95, 0.3, 0.1]
             """;
 
+    /** 单条候选截断长度(字): 控制 BGE 输入 token, 防止 llama.cpp physical-batch-size 超限(默认 512) */
+    private static final int CANDIDATE_MAX_LEN = 256;
+
     @Resource
     private ModelApi modelApi;
 
@@ -45,11 +49,16 @@ public class Reranker {
         if (contents == null || contents.isEmpty()) {
             return List.of();
         }
+        // 0. 截断候选内容: 长文档会被 llama.cpp 拒绝(570 tokens > batch 512), 截断到 256 字保语义且不超限
+        List<String> truncated = new ArrayList<>(contents.size());
+        for (String content : contents) {
+            truncated.add(StrUtil.sub(StrUtil.nullToEmpty(content), 0, CANDIDATE_MAX_LEN));
+        }
         // 1. BGE 重排优先
         try {
             ModelRerankReqDTO req = new ModelRerankReqDTO();
             req.setQuery(query);
-            req.setDocuments(contents);
+            req.setDocuments(truncated);
             List<Float> scores = modelApi.rerank(req).getCheckedData();
             if (scores != null && scores.size() == contents.size()) {
                 return sortByScoreDesc(scores);
