@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.evidence.api.dto.EvidenceConflictDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateReqDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO;
+import cn.iocoder.yudao.module.evidence.api.dto.EvidenceSlotValueDTO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
 import cn.iocoder.yudao.module.evidence.service.EvidenceService;
 import jakarta.annotation.Resource;
@@ -83,9 +84,29 @@ public class EvidenceApiImpl implements EvidenceApi {
             }
         }
         dto.setClaims(claims);
+        // 槽位检测结果映射(缺槽位反问: 供对话层展示/后续合并)
+        dto.setSlotKbId(vo.getSlotKbId());
+        dto.setExtractedSlots(toSlotValueDTOList(vo.getExtractedSlots()));
+        dto.setMissingSlots(toSlotValueDTOList(vo.getMissingSlots()));
+        dto.setClarifyQuestion(vo.getClarifyQuestion());
         // 上下文回显(evidence-api ChatTurnDTO, 与 VO 同类型, 直接透传)
         dto.setHistory(vo.getHistory());
         return success(dto);
+    }
+
+    /** 槽位值 VO → DTO 列表映射(null 安全) */
+    private List<EvidenceSlotValueDTO> toSlotValueDTOList(List<EvidenceEvaluateRespVO.SlotValueVO> list) {
+        List<EvidenceSlotValueDTO> result = new ArrayList<>();
+        if (list != null) {
+            for (EvidenceEvaluateRespVO.SlotValueVO vo : list) {
+                EvidenceSlotValueDTO d = new EvidenceSlotValueDTO();
+                d.setCode(vo.getCode());
+                d.setName(vo.getName());
+                d.setValue(vo.getValue());
+                result.add(d);
+            }
+        }
+        return result;
     }
 
 }
