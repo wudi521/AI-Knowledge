@@ -70,4 +70,11 @@ public interface ChunkMapper extends BaseMapperX<ChunkDO> {
                 .set(ChunkDO::getStatus, status));
     }
 
+    /** 版本下是否存在未发布(非 PUBLISHED)片段 */
+    default boolean existsUnpublishedByVersionId(Long versionId, String publishedStatus) {
+        return selectCount(new LambdaQueryWrapper<ChunkDO>()
+                .eq(ChunkDO::getVersionId, versionId)
+                .ne(ChunkDO::getStatus, publishedStatus)) > 0;
+    }
+
 }

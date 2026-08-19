@@ -59,6 +59,18 @@ public interface IngestionApi {
     CommonResult<List<ChunkRespDTO>> getChunksByVersion(@RequestParam("versionId") Long versionId);
 
     /**
+     * 校验版本是否存在未发布(非 PUBLISHED)的片段
+     * <p>
+     * 供知识发布幂等分支使用: 版本已 PUBLISHED 但片段被重新抽取(新片段默认 REVIEW)时,
+     * 需重跑 indexVersion 同步索引; 无未发布片段则正常幂等跳过。
+     *
+     * @param versionId 版本编号
+     * @return 是否存在未发布片段
+     */
+    @GetMapping(ApiConstants.PREFIX + "/has-unpublished-chunks")
+    CommonResult<Boolean> hasUnpublishedChunks(@RequestParam("versionId") Long versionId);
+
+    /**
      * 批量查询 chunk 是否已发布(检索结果状态过滤用)
      *
      * @param chunkIds 片段编号列表

@@ -87,6 +87,13 @@ public class IngestionApiImpl implements IngestionApi {
         return success(true);
     }
 
+    @Override
+    public CommonResult<Boolean> hasUnpublishedChunks(Long versionId) {
+        boolean exists = chunkMapper.existsUnpublishedByVersionId(versionId,
+                cn.iocoder.yudao.module.ingestion.enums.ChunkStatusEnum.PUBLISHED.getStatus());
+        return success(exists);
+    }
+
     private List<Float> parseEmbedding(String embeddingJson) {
         return cn.hutool.json.JSONUtil.toList(embeddingJson, Float.class);
     }

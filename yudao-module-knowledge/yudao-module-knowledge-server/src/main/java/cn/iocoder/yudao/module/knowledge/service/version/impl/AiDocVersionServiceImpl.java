@@ -119,9 +119,21 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     @Transactional
     public void publish(Long versionId) {
         AiDocVersionDO version = getVersion(versionId);
-        // 幂等: 已发布则直接返回(notifyParsed 在 Kafka 重投/重试场景可能重复触发)
+        // 幂等(正常场景): 已发布则直接返回(notifyParsed 在 Kafka 重投/重试场景可能重复触发)
+        // 例外修复: 版本已 PUBLISHED 但片段被重新抽取(新片段默认 REVIEW 未发布)时, 需重跑索引同步,
+        //           否则新片段不进 Milvus/ES 且永远卡 REVIEW(检索不到)。indexVersion 幂等(覆盖式重写)。
         if (VersionStatusEnum.PUBLISHED.getStatus().equals(version.getStatus())) {
-            log.info("[publish][版本 {} 已发布, 幂等跳过]", versionId);
+            AiDocumentDO doc = aiDocumentMapper.selectById(version.getDocId());
+            if (doc != null && hasUnpublishedChunks(versionId)) {
+                log.warn("[publish][版本 {} 已发布但存在未发布片段, 重跑索引同步]", versionId);
+                CommonResult<Boolean> result = ingestionApi.indexVersion(versionId, doc.getKbId(), doc.getTenantId());
+                if (result.isError()) {
+                    throw new ServiceException(result.getCode(), result.getMsg());
+                }
+                aiDocumentMapper.updateParseStatus(doc.getId(), "PUBLISHED", null, null);
+            } else {
+                log.info("[publish][版本 {} 已发布, 幂等跳过]", versionId);
+            }
             return;
         }
         // 门禁 1: 状态必须 DRAFT(自动发布)或 REVIEW
@@ -176,8 +188,17 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         log.info("[publish][版本 {} 发布完成, 文档 {}]", versionId, doc.getId());
     }
 
-    private String currentNickname() {
+    /** 版本下是否存在未发布片段(经 ingestion RPC; 失败保守视为无, 不阻塞幂等跳过) */
+    private boolean hasUnpublishedChunks(Long versionId) {
         try {
+            return Boolean.TRUE.equals(ingestionApi.hasUnpublishedChunks(versionId).getCheckedData());
+        } catch (Exception e) {
+            log.warn("[publish][查询版本 {} 未发布片段失败, 按无处理: {}]", versionId, e.getMessage());
+            return false;
+        }
+    }
+
+    private String currentNickname() {        try {
             return SecurityFrameworkUtils.getLoginUserNickname();
         } catch (Exception e) {
             return null; // 自动发布(无登录上下文)时允许为空
