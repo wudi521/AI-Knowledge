@@ -71,6 +71,9 @@ public class EvidenceRecorder {
             eval.setHistory(resp.getHistory() != null && !resp.getHistory().isEmpty()
                     ? JSONUtil.toJsonStr(resp.getHistory()) : null);
             eval.setElapsedMs(resp.getElapsedMs());
+            eval.setSlots(resp.getExtractedSlots() != null ? JSONUtil.toJsonStr(resp.getExtractedSlots()) : null);
+            eval.setMissingSlots(resp.getMissingSlots() != null ? JSONUtil.toJsonStr(resp.getMissingSlots()) : null);
+            eval.setClarifyQuestion(StrUtil.maxLength(resp.getClarifyQuestion(), 500));
             eval.setCreator(creator());
             evalMapper.insert(eval);
 

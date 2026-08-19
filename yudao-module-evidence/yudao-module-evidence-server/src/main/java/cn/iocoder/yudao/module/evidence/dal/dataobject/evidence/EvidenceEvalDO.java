@@ -68,4 +68,13 @@ public class EvidenceEvalDO extends TenantBaseDO {
     /** 耗时(ms) */
     private Integer elapsedMs;
 
+    /** 抽取的槽位值(JSON 数组字符串) */
+    private String slots;
+
+    /** 缺失必填槽位(JSON 数组字符串) */
+    private String missingSlots;
+
+    /** 反问句 */
+    private String clarifyQuestion;
+
 }

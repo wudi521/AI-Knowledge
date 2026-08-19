@@ -49,4 +49,16 @@ public class EvidenceEvaluateRespDTO {
     /** 回显本次使用的上下文(供落库快照/前端展示) */
     private List<ChatTurnDTO> history;
 
+    /** 槽位检测: 参与检测的知识库编号(多库并集取首个; 未检测为 null) */
+    private Long slotKbId;
+
+    /** 槽位检测: 抽取的槽位值列表(审计/后续合并用) */
+    private List<EvidenceSlotValueDTO> extractedSlots;
+
+    /** 槽位检测: 缺失的必填槽位列表(value 恒为 null) */
+    private List<EvidenceSlotValueDTO> missingSlots;
+
+    /** 槽位检测: 反问句(缺必填槽位时填充) */
+    private String clarifyQuestion;
+
 }

@@ -57,6 +57,32 @@ public class EvidenceEvaluateRespVO {
     /** 回显本次使用的上下文(供落库快照/前端展示) */
     private List<ChatTurnDTO> history;
 
+    /** 槽位检测: 参与检测的知识库编号(多库并集取首个; 未检测为 null) */
+    private Long slotKbId;
+
+    /** 槽位检测: 抽取的槽位值列表(审计/后续合并用) */
+    private List<SlotValueVO> extractedSlots;
+
+    /** 槽位检测: 缺失的必填槽位列表(value 恒为 null) */
+    private List<SlotValueVO> missingSlots;
+
+    /** 槽位检测: 反问句(缺必填槽位时填充; 如 "请补充以下信息:品牌型号、故障性质、购机时间") */
+    private String clarifyQuestion;
+
+    @Data
+    public static class SlotValueVO {
+
+        /** 槽位编码 */
+        private String code;
+
+        /** 槽位名 */
+        private String name;
+
+        /** 抽取到的原文(缺失项恒为 null) */
+        private String value;
+
+    }
+
     @Data
     public static class EvidenceItemVO {
 

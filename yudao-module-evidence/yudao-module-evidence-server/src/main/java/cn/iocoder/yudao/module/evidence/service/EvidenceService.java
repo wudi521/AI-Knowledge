@@ -10,12 +10,15 @@ import cn.iocoder.yudao.module.evidence.domain.Conflict;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
 import cn.iocoder.yudao.module.evidence.domain.Judgement;
+import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.assemble.AssembledEvidence;
 import cn.iocoder.yudao.module.evidence.service.assemble.EvidenceAssembler;
 import cn.iocoder.yudao.module.evidence.service.assemble.EvidenceDeduplicator;
 import cn.iocoder.yudao.module.evidence.service.conflict.ConflictDetector;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
 import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
+import cn.iocoder.yudao.module.evidence.service.slot.SlotDetectionResult;
+import cn.iocoder.yudao.module.evidence.service.slot.SlotDetector;
 import cn.iocoder.yudao.module.evidence.service.sufficiency.SufficiencyJudge;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +27,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -57,6 +61,10 @@ public class EvidenceService {
     private AnswerPipeline answerPipeline;
     @Resource
     private EvidenceRecorder recorder;
+    @Resource
+    private SlotDetector slotDetector;
+    @Resource
+    private EvidenceProperties properties;
 
     /**
      * 证据评估(Controller 直连场景; 租户/用户取自登录态, 缺失时透传 null 由检索 RPC 自行降级)
@@ -110,6 +118,28 @@ public class EvidenceService {
         List<Conflict> conflicts = Collections.emptyList();
         Judgement judgement = null;
         GenerationResult generation = null;
+
+        // 0. 槽位检测(检索之前; 缺必填槽位 → 反问短路, 不检索; 检测失败/无定义 → 走原流程)
+        SlotDetectionResult slotResult = null;
+        if (Boolean.TRUE.equals(properties.getSlot().getEnabled())
+                && kbIds != null && !kbIds.isEmpty()) {
+            slotResult = slotDetector.detect(query, kbIds);
+            if (slotResult != null && slotResult.isApplicable() && !slotResult.getMissing().isEmpty()) {
+                String names = slotResult.getMissing().stream()
+                        .map(SlotDetectionResult.MissingSlot::getName)
+                        .collect(Collectors.joining("、"));
+                judgement = buildJudgement(false, 0.0, "需补充信息:" + names, 0, 0);
+                EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
+                resp.setSlotKbId(kbIds.get(0));
+                resp.setExtractedSlots(toSlotValueList(slotResult.getExtracted()));
+                resp.setMissingSlots(slotResult.getMissing().stream()
+                        .map(m -> toMissingSlotValue(m)).collect(Collectors.toList()));
+                resp.setClarifyQuestion("请补充以下信息:" + names);
+                resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+                recorder.record(resp, List.of(), List.of());
+                return resp;
+            }
+        }
         try {
             // 1. 组装(检索 RPC → 归一化证据; RPC 失败/无结果返回空集, 不抛出)
             AssembledEvidence assembled = assembler.assemble(query, kbIds, topK, tenantId, userId, history);
@@ -144,6 +174,19 @@ public class EvidenceService {
 
         // 5. 组装响应(elapsed 不含落库耗时)
         EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, deduped, conflicts, generation, history);
+        // 槽位检测结果回显(槽位完整时也回显, 供审计/后续合并用)
+        if (slotResult != null) {
+            resp.setSlotKbId(kbIds.get(0));
+            resp.setExtractedSlots(toSlotValueList(slotResult.getExtracted()));
+            if (!slotResult.getMissing().isEmpty()) {
+                String names = slotResult.getMissing().stream()
+                        .map(SlotDetectionResult.MissingSlot::getName)
+                        .collect(Collectors.joining("、"));
+                resp.setMissingSlots(slotResult.getMissing().stream()
+                        .map(m -> toMissingSlotValue(m)).collect(Collectors.toList()));
+                resp.setClarifyQuestion("请补充以下信息:" + names);
+            }
+        }
         resp.setElapsedMs((int) (System.currentTimeMillis() - start));
 
         // 6. 落库(内部吞异常, 失败不阻断响应)
@@ -220,6 +263,30 @@ public class EvidenceService {
     /** 追踪号: ev- + 12 位 UUID 短串(对齐 ai_evidence_eval.trace_id varchar(64)) */
     private String newTraceId() {
         return "ev-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+    }
+
+    /** 抽取 Map → SlotValueVO 列表(保序) */
+    private List<EvidenceEvaluateRespVO.SlotValueVO> toSlotValueList(Map<String, String> extracted) {
+        List<EvidenceEvaluateRespVO.SlotValueVO> list = new ArrayList<>();
+        if (extracted != null) {
+            extracted.forEach((code, value) -> {
+                EvidenceEvaluateRespVO.SlotValueVO vo = new EvidenceEvaluateRespVO.SlotValueVO();
+                vo.setCode(code);
+                vo.setName(code); // 抽取阶段无 name, 展示兜底用 code
+                vo.setValue(StrUtil.isBlank(value) ? null : value);
+                list.add(vo);
+            });
+        }
+        return list;
+    }
+
+    /** 缺失槽位 → SlotValueVO(value=null) */
+    private EvidenceEvaluateRespVO.SlotValueVO toMissingSlotValue(SlotDetectionResult.MissingSlot m) {
+        EvidenceEvaluateRespVO.SlotValueVO vo = new EvidenceEvaluateRespVO.SlotValueVO();
+        vo.setCode(m.getCode());
+        vo.setName(m.getName());
+        vo.setValue(null);
+        return vo;
     }
 
 }
