@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.knowledge.api;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeSlotDefinitionDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.enums.ApiConstants;
 import feign.FeignIgnore;
@@ -117,5 +118,14 @@ public interface KnowledgeApi {
      */
     @GetMapping(ApiConstants.PREFIX + "/intent/list-by-kb")
     CommonResult<List<IntentDTO>> getKbIntents(@RequestParam("kbId") Long kbId);
+
+    /**
+     * 批量查询知识库槽位定义(evidence 槽位检测用; 仅启用行, 按 kb_id+sort 升序; 无定义返回空列表)
+     *
+     * @param kbIds 知识库编号列表
+     * @return 槽位定义列表(可能为空)
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-kb-slots")
+    CommonResult<List<KnowledgeSlotDefinitionDTO>> getSlotDefinitions(@RequestBody List<Long> kbIds);
 
 }
