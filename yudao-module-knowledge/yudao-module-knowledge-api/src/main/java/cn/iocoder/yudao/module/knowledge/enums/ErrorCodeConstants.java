@@ -28,5 +28,6 @@ public interface ErrorCodeConstants {
     ErrorCode INTENT_NOT_EXISTS = new ErrorCode(1_004_000_018, "意图不存在");
     ErrorCode INTENT_KB_NOT_EXISTS = new ErrorCode(1_004_000_019, "知识库不存在");
     ErrorCode KB_SLOT_NOT_EXISTS = new ErrorCode(1_004_000_020, "知识库槽位定义不存在");
+    ErrorCode KB_SLOT_CODE_EXISTS = new ErrorCode(1_004_000_022, "该知识库下槽位编码已存在");
 
 }

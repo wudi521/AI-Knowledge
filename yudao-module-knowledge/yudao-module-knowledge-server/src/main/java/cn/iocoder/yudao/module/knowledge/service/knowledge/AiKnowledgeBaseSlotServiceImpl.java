@@ -8,13 +8,17 @@ import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowledgeBaseSlotPageReqVO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowledgeBaseSlotSaveReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseSlotDO;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseSlotMapper;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
+import java.util.Objects;
 
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.INTENT_KB_NOT_EXISTS;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_SLOT_CODE_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_SLOT_NOT_EXISTS;
 
 /**
@@ -27,8 +31,21 @@ public class AiKnowledgeBaseSlotServiceImpl implements AiKnowledgeBaseSlotServic
     @Resource
     private AiKnowledgeBaseSlotMapper mapper;
 
+    @Resource
+    private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
+
     @Override
     public Long createAiKnowledgeBaseSlot(AiKnowledgeBaseSlotSaveReqVO createReqVO) {
+        // 校验知识库存在
+        if (aiKnowledgeBaseMapper.selectById(createReqVO.getKbId()) == null) {
+            throw new ServiceException(INTENT_KB_NOT_EXISTS);
+        }
+        // 校验 (kbId, slotCode) 唯一
+        if (mapper.selectCount(new LambdaQueryWrapperX<AiKnowledgeBaseSlotDO>()
+                .eq(AiKnowledgeBaseSlotDO::getKbId, createReqVO.getKbId())
+                .eq(AiKnowledgeBaseSlotDO::getSlotCode, createReqVO.getSlotCode())) > 0) {
+            throw new ServiceException(KB_SLOT_CODE_EXISTS);
+        }
         AiKnowledgeBaseSlotDO slot = BeanUtils.toBean(createReqVO, AiKnowledgeBaseSlotDO.class);
         mapper.insert(slot);
         return slot.getId();
@@ -36,8 +53,20 @@ public class AiKnowledgeBaseSlotServiceImpl implements AiKnowledgeBaseSlotServic
 
     @Override
     public void updateAiKnowledgeBaseSlot(AiKnowledgeBaseSlotSaveReqVO updateReqVO) {
-        if (mapper.selectById(updateReqVO.getId()) == null) {
+        // 校验槽位存在
+        AiKnowledgeBaseSlotDO slot = mapper.selectById(updateReqVO.getId());
+        if (slot == null) {
             throw new ServiceException(KB_SLOT_NOT_EXISTS);
+        }
+        // kbId 或 slotCode 变更时, 校验 (kbId, slotCode) 唯一(排除自身)
+        if (!Objects.equals(slot.getKbId(), updateReqVO.getKbId())
+                || !Objects.equals(slot.getSlotCode(), updateReqVO.getSlotCode())) {
+            if (mapper.selectCount(new LambdaQueryWrapperX<AiKnowledgeBaseSlotDO>()
+                    .eq(AiKnowledgeBaseSlotDO::getKbId, updateReqVO.getKbId())
+                    .eq(AiKnowledgeBaseSlotDO::getSlotCode, updateReqVO.getSlotCode())
+                    .ne(AiKnowledgeBaseSlotDO::getId, updateReqVO.getId())) > 0) {
+                throw new ServiceException(KB_SLOT_CODE_EXISTS);
+            }
         }
         mapper.updateById(BeanUtils.toBean(updateReqVO, AiKnowledgeBaseSlotDO.class));
     }
