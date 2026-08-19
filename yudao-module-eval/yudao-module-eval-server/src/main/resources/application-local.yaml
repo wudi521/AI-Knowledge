@@ -47,3 +47,18 @@ xxl:
     enabled: false # 是否开启调度中心，默认为 true 开启
     admin:
       addresses: http://127.0.0.1:9090/xxl-job-admin # 调度中心部署跟地址
+
+# 评测平台业务配置
+yudao:
+  eval:
+    gate:
+      enabled: true
+      recall-at-5: 0.9
+      mrr: 0.8
+      ndcg: 0.8
+      faithfulness: 0.95
+      hallucination: 0.02
+      citation-accuracy: 0.97
+    runner:
+      max-parallel: 2
+      timeout-ms: 300000
