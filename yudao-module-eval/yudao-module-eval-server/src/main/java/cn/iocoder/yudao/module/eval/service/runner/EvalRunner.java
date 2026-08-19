@@ -13,6 +13,7 @@ import cn.iocoder.yudao.module.eval.dal.dataobject.task.EvalTaskDO;
 import cn.iocoder.yudao.module.eval.dal.mysql.cases.EvalCaseMapper;
 import cn.iocoder.yudao.module.eval.dal.mysql.result.EvalResultMapper;
 import cn.iocoder.yudao.module.eval.dal.mysql.task.EvalTaskMapper;
+import cn.iocoder.yudao.module.eval.service.metric.EvalMetricService;
 import cn.iocoder.yudao.module.evidence.api.EvidenceApi;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateReqDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
@@ -38,8 +39,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * 3. 异步非阻塞: {@link #runTaskAsync} 立即返回, 由守护线程池执行, 不阻塞 HTTP 调用方;
  * 4. 租户: 异步线程无租户上下文, 先忽略租户读取任务行取得 tenant_id, 再以该租户执行
  * (TtlRunnable 透传调度线程租户作为兜底);
- * 5. 指标(Recall/MRR/NDCG/忠实度等)由 MetricCalculator(任务 4)基于 {@code resultChunks} 与标准证据计算,
- * 本执行器仅持久化检索结果顺序(evidence[] 按得分降序 → chunkId 有序列表)供其使用;
+ * 5. 指标(Recall/MRR/NDCG/忠实度等)由 MetricCalculator(任务 4)基于 {@code resultChunks}/{@code claims} 与
+ * 标准证据计算: 本执行器仅持久化原始数据(检索结果顺序 + 断言验证结果), 全部用例落库后调用
+ * {@link EvalMetricService#fillMetrics} 回填指标并判定逐题达标, 再标记 DONE;
  * 任务级 metrics/gate_pass/fail_cases 由任务 5 汇总填充。
  */
 @Slf4j
@@ -76,6 +78,8 @@ public class EvalRunner {
     private EvalResultMapper evalResultMapper;
     @Resource
     private EvalTaskMapper evalTaskMapper;
+    @Resource
+    private EvalMetricService evalMetricService;
 
     /**
      * 异步执行评测任务(非阻塞): 立即返回, 由守护线程逐题执行并落库;
@@ -147,25 +151,31 @@ public class EvalRunner {
         start.setStartTime(LocalDateTime.now());
         evalTaskMapper.updateById(start);
         log.info("[runTask][任务 {} 开始评测: 用例 {} 条, kbId={}]", taskId, cases.size(), task.getKbId());
-        // 3. 逐题评估(单题失败隔离, 不影响后续用例)
-        int failCount = 0;
+        // 3. 逐题评估(单题失败隔离, 不影响后续用例); 达标与否由指标回填(步骤 4)判定
         for (EvalCaseDO evalCase : cases) {
             EvalResultDO result = evaluateOne(evalCase, task);
             evalResultMapper.insert(result);
-            if (!Boolean.TRUE.equals(result.getPassed())) {
-                failCount++;
-            }
-            log.info("[runTask][任务 {} 用例 {} 评测完成: answerable={}, confidence={}, passed={}]",
-                    taskId, evalCase.getId(), result.getAnswerable(), result.getConfidence(), result.getPassed());
+            log.info("[runTask][任务 {} 用例 {} 评测完成: answerable={}, confidence={}]",
+                    taskId, evalCase.getId(), result.getAnswerable(), result.getConfidence());
         }
-        // 4. 收尾: 结束时间 + DONE(任务级 metrics/gate_pass/fail_cases 由任务 5 汇总填充)
+        // 4. 指标回填: 逐题计算 Recall/MRR/NDCG/忠实度/幻觉率/引用准确率 + 达标判定
+        //    (失败不影响 DONE: 逐题原始结果已落库, 指标可后续补跑)
+        try {
+            evalMetricService.fillMetrics(taskId);
+        } catch (Exception e) {
+            log.error("[runTask][任务 {} 指标回填失败, 继续收尾]", taskId, e);
+        }
+        // 5. 收尾: 结束时间 + DONE(任务级 metrics/gate_pass/fail_cases 由任务 5 汇总填充)
         EvalTaskDO finish = new EvalTaskDO();
         finish.setId(taskId);
         finish.setStatus(STATUS_DONE);
         finish.setEndTime(LocalDateTime.now());
         evalTaskMapper.updateById(finish);
-        log.info("[runTask][任务 {} 评测完成: 共 {} 题, 未通过 {} 题, 耗时 {}ms]",
-                taskId, cases.size(), failCount, System.currentTimeMillis() - startTime);
+        // 达标数在指标回填后统计(逐题 passed 由 fillMetrics 写入)
+        long passedCount = evalResultMapper.selectListByTaskId(taskId).stream()
+                .filter(r -> Boolean.TRUE.equals(r.getPassed())).count();
+        log.info("[runTask][任务 {} 评测完成: 共 {} 题, 达标 {} 题, 耗时 {}ms]",
+                taskId, cases.size(), passedCount, System.currentTimeMillis() - startTime);
     }
 
     /**
@@ -203,6 +213,11 @@ public class EvalRunner {
                 List<Long> orderedChunkIds = data.getEvidence().stream()
                         .map(EvidenceItemDTO::getChunkId).toList();
                 result.setResultChunks(JSONUtil.toJsonStr(orderedChunkIds));
+            }
+            // 断言验证结果: [{text,verdict,evidenceIndex}](evidenceIndex 对应 evidence[] 位置 = resultChunks 位置,
+            // 供 MetricCalculator 计算忠实度/幻觉率/引用准确率)
+            if (CollUtil.isNotEmpty(data.getClaims())) {
+                result.setClaims(JSONUtil.toJsonStr(data.getClaims()));
             }
             return result;
         } catch (Exception e) {

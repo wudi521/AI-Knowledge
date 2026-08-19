@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS `ai_eval_result`  (
   `answer` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '模型回答',
   `trace_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '评估链路追踪号',
   `result_chunks` json NULL DEFAULT NULL COMMENT '检索结果顺序(chunkId列表, 供指标计算)',
+  `claims` json NULL DEFAULT NULL COMMENT '模型回答的断言验证结果(供忠实度/幻觉率/引用准确率计算)',
   `creator` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '创建者',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updater` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '更新者',
@@ -72,3 +73,6 @@ CREATE TABLE IF NOT EXISTS `ai_eval_result`  (
   PRIMARY KEY (`id`) USING BTREE,
   KEY `idx_task` (`task_id`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI 评测逐题结果';
+
+-- 存量库升级(MySQL 8 不支持 ADD COLUMN IF NOT EXISTS, 已存在则跳过):
+-- ALTER TABLE `ai_eval_result` ADD COLUMN `claims` json NULL DEFAULT NULL COMMENT '模型回答的断言验证结果(供忠实度/幻觉率/引用准确率计算)' AFTER `result_chunks`;

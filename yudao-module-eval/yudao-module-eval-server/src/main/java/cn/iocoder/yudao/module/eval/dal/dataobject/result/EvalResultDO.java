@@ -76,4 +76,7 @@ public class EvalResultDO extends TenantBaseDO {
     /** 检索结果顺序(JSON 数组字符串, evidence[] 按得分降序 → chunkId 有序列表, 供指标计算) */
     private String resultChunks;
 
+    /** 模型回答的断言验证结果(JSON 数组字符串: [{text,verdict,evidenceIndex}], 供忠实度/幻觉率/引用准确率计算) */
+    private String claims;
+
 }
