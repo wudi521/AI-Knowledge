@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS `ai_eval_case`  (
   `gold_answer` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT '标准答案',
   `gold_chunks` json NULL DEFAULT NULL COMMENT '标准证据',
   `source_feedback` bigint NULL DEFAULT NULL COMMENT '来源反馈编号',
+  `kb_id` bigint NULL DEFAULT NULL COMMENT '知识库编号',
+  `category` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '分类(如 综合/保修/收费)',
   `creator` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '创建者',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updater` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '更新者',
