@@ -68,8 +68,8 @@ public class EvalCaseController {
     @PreAuthorize("@ss.hasPermission('eval:case:query')")
     public CommonResult<PageResult<EvalCaseRespVO>> getCasePage(@Valid EvalCasePageReqVO pageReqVO) {
         PageResult<EvalCaseDO> pageResult = evalCaseService.getCasePage(pageReqVO);
-        return success(BeanUtils.toBean(pageResult, EvalCaseRespVO.class,
-                vo -> vo.setGoldChunks(parseGoldChunks(vo.getGoldChunksJson()))));
+        return success(new PageResult<>(pageResult.getList().stream()
+                .map(this::toRespVO).toList(), pageResult.getTotal()));
     }
 
     @GetMapping("/get")
@@ -77,10 +77,17 @@ public class EvalCaseController {
     @Parameter(name = "id", description = "编号", required = true)
     @PreAuthorize("@ss.hasPermission('eval:case:query')")
     public CommonResult<EvalCaseRespVO> getCase(@RequestParam("id") Long id) {
-        EvalCaseDO evalCase = evalCaseService.getCase(id);
+        return success(toRespVO(evalCaseService.getCase(id)));
+    }
+
+    /**
+     * DO → VO: goldChunks 原始 JSON 由 DO 侧解析到 VO.goldChunks(BeanUtils 按属性名拷贝,
+     * DO.goldChunks(String) 与 VO.goldChunks(List) 类型不匹配会被跳过, 需显式解析)
+     */
+    private EvalCaseRespVO toRespVO(EvalCaseDO evalCase) {
         EvalCaseRespVO respVO = BeanUtils.toBean(evalCase, EvalCaseRespVO.class);
-        respVO.setGoldChunks(parseGoldChunks(respVO.getGoldChunksJson()));
-        return success(respVO);
+        respVO.setGoldChunks(parseGoldChunks(evalCase.getGoldChunks()));
+        return respVO;
     }
 
     /**
