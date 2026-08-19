@@ -27,6 +27,12 @@
             <artifactId>yudao-module-ingestion-api</artifactId>
             <version>${revision}</version>
         </dependency>
+        <!-- 评测平台 API(发布闸门 checkGate) -->
+        <dependency>
+            <groupId>cn.iocoder.cloud</groupId>
+            <artifactId>yudao-module-eval-api</artifactId>
+            <version>${revision}</version>
+        </dependency>
         <!-- 系统模块(角色/权限) -->
         <dependency>
             <groupId>cn.iocoder.cloud</groupId>

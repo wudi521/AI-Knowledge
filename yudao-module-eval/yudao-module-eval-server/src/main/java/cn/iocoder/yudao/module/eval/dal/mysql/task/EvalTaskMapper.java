@@ -23,4 +23,18 @@ public interface EvalTaskMapper extends BaseMapperX<EvalTaskDO> {
                 .orderByDesc(EvalTaskDO::getId));
     }
 
+    /**
+     * 查询指定知识库最新一条 DONE 任务(闸门检查用; 租户由框架自动过滤)
+     * <p>
+     * 状态常量见 {@link cn.iocoder.yudao.module.eval.service.runner.EvalRunner} 的 STATUS_DONE,
+     * 此处不依赖 service 包, 直接使用字面量避免包层级反向引用。
+     */
+    default EvalTaskDO selectLatestDoneByKbId(Long kbId) {
+        return selectOne(new LambdaQueryWrapperX<EvalTaskDO>()
+                .eq(EvalTaskDO::getKbId, kbId)
+                .eq(EvalTaskDO::getStatus, "DONE")
+                .orderByDesc(EvalTaskDO::getId)
+                .last("LIMIT 1"));
+    }
+
 }

@@ -165,6 +165,22 @@ public class EvalReportService {
     }
 
     /**
+     * 确保 DONE 任务已完成任务级聚合(gatePass/metrics/failCases 可用)
+     * <p>
+     * 聚合是惰性的(见 {@link #getTask}): 任务 DONE 但从未被查询时 gatePass 为 null。
+     * 闸门检查(EvalApiImpl.checkGate)直接读 gatePass 前必须先触发聚合, 否则会误判未达标。
+     *
+     * @return 聚合后的最新任务行(无逐题结果时返回入参, 不阻断)
+     */
+    public EvalTaskDO ensureTaskAggregated(EvalTaskDO task) {
+        if (EvalRunner.STATUS_DONE.equals(task.getStatus())
+                && (task.getGatePass() == null || StrUtil.isBlank(task.getMetrics()))) {
+            return aggregateAndPersist(task);
+        }
+        return task;
+    }
+
+    /**
      * EvalTaskDO → EvalTaskRespVO(metrics/failCases JSON 解析为空安全; 不抛异常)
      */
     public EvalTaskRespVO toRespVO(EvalTaskDO task) {

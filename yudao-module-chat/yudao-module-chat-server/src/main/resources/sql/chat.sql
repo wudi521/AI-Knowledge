@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS `ai_message`  (
 CREATE TABLE IF NOT EXISTS `ai_feedback`  (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',
   `message_id` bigint NOT NULL COMMENT '消息编号',
-  `type` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '类型: LIKE/DISLIKE/CORRECTION',
+  `type` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '类型: THUMB_UP 点赞/THUMB_DOWN 点踩(点踩自动生成评测考题)',
   `note` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '说明',
   `eval_case_id` bigint NULL DEFAULT NULL COMMENT '生成的评测用例编号',
   `creator` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT '' COMMENT '创建者',

@@ -38,6 +38,12 @@
             <artifactId>yudao-module-knowledge-api</artifactId>
             <version>${revision}</version>
         </dependency>
+        <!-- 评测平台 API(点踩反馈转考题) -->
+        <dependency>
+            <groupId>cn.iocoder.cloud</groupId>
+            <artifactId>yudao-module-eval-api</artifactId>
+            <version>${revision}</version>
+        </dependency>
         <!-- 业务组件: 多租户 -->
         <dependency>
             <groupId>cn.iocoder.cloud</groupId>

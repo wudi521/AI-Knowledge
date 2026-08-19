@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
+import cn.iocoder.yudao.module.eval.api.EvalApi;
 import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
@@ -46,6 +47,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     private ConflictService conflictService;
     @Resource
     private IntentSummarizer intentSummarizer;
+    @Resource
+    private EvalApi evalApi;
 
     @Override
     public AiDocVersionDO createVersion(Long docId) {
@@ -157,6 +160,22 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         AiDocumentDO doc = aiDocumentMapper.selectById(version.getDocId());
         if (doc == null) {
             throw new ServiceException(DOCUMENT_NOT_EXISTS);
+        }
+        // 门禁 4: 评测闸门(仅首次发布路径; 上方幂等分支已 return, 重索引不受影响)
+        // evalApi.checkGate: 闸门配置关闭 → true 放行; 无 DONE 评测或未全题达标 → false 阻断;
+        // 内部实现不抛异常; 此处兜底 RPC 级故障(网络/序列化)保守阻断, 避免未评测内容上线
+        try {
+            CommonResult<Boolean> gate = evalApi.checkGate(doc.getKbId());
+            if (gate.isError() || !Boolean.TRUE.equals(gate.getCheckedData())) {
+                log.warn("[publish][版本 {} 评测闸门未通过: code={}, msg={}]",
+                        versionId, gate.getCode(), gate.getMsg());
+                throw new ServiceException(VERSION_GATE_BLOCKED);
+            }
+        } catch (ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[publish][版本 {} 评测闸门 RPC 异常, 保守阻断: {}]", versionId, e.getMessage(), e);
+            throw new ServiceException(VERSION_GATE_BLOCKED);
         }
         // 三写: 由 ingestion 从 MySQL embedding 写 Milvus/ES(Task 4 填充实现)
         CommonResult<Boolean> result = ingestionApi.indexVersion(versionId, doc.getKbId(), doc.getTenantId());

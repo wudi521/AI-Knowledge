@@ -10,5 +10,7 @@ public interface ErrorCodeConstants {
 
     ErrorCode CHAT_NOT_EXISTS = new ErrorCode(1_003_000_001, "对话工作台数据不存在");
     ErrorCode CONVERSATION_NOT_EXISTS = new ErrorCode(1_003_000_002, "会话不存在");
+    ErrorCode MESSAGE_NOT_EXISTS = new ErrorCode(1_003_000_003, "消息不存在");
+    ErrorCode FEEDBACK_TYPE_ERROR = new ErrorCode(1_003_000_004, "反馈类型不正确(仅支持 THUMB_UP/THUMB_DOWN)");
 
 }
