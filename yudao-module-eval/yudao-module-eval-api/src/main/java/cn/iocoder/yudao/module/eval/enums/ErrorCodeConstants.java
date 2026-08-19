@@ -12,4 +12,8 @@ public interface ErrorCodeConstants {
 
     ErrorCode EVAL_CASE_NOT_EXISTS = new ErrorCode(1_012_000_002, "评测用例不存在");
 
+    ErrorCode EVAL_TASK_NOT_EXISTS = new ErrorCode(1_012_000_003, "评测任务不存在");
+
+    ErrorCode EVAL_TASK_NO_CASE = new ErrorCode(1_012_000_004, "评测任务无可执行用例");
+
 }

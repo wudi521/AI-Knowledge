@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS `ai_eval_task`  (
   `deleted` bit(1) NOT NULL DEFAULT b'0' COMMENT '是否删除',
   `tenant_id` bigint NOT NULL DEFAULT 0 COMMENT '租户编号',
   `kb_id` bigint NULL DEFAULT NULL COMMENT '评测知识库',
+  `case_ids` json NULL DEFAULT NULL COMMENT '选考题列表(为空=按kbId或全部)',
   `case_count` int NULL DEFAULT NULL COMMENT '考题数',
   `start_time` datetime NULL DEFAULT NULL COMMENT '开始时间',
   `end_time` datetime NULL DEFAULT NULL COMMENT '结束时间',

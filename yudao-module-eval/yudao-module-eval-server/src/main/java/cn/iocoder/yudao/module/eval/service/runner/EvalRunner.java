@@ -25,6 +25,8 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
@@ -138,10 +140,17 @@ public class EvalRunner {
             log.warn("[runTask][评测任务 {} 不存在, 忽略]", taskId);
             return;
         }
-        // 1. 加载用例: task.kbId 为空 → 全部用例; 非空 → 限定该知识库
-        List<EvalCaseDO> cases = evalCaseMapper.selectList(new LambdaQueryWrapperX<EvalCaseDO>()
-                .eqIfPresent(EvalCaseDO::getKbId, task.getKbId())
-                .orderByAsc(EvalCaseDO::getId));
+        // 1. 加载用例: 任务记录选考题(case_ids) → 严格按选考题执行;
+        //    否则 task.kbId 为空 → 全部用例; 非空 → 限定该知识库
+        List<EvalCaseDO> cases;
+        if (StrUtil.isNotBlank(task.getCaseIds())) {
+            List<Long> caseIdList = JSONUtil.toList(task.getCaseIds(), Long.class);
+            cases = selectCasesByIds(caseIdList);
+        } else {
+            cases = evalCaseMapper.selectList(new LambdaQueryWrapperX<EvalCaseDO>()
+                    .eqIfPresent(EvalCaseDO::getKbId, task.getKbId())
+                    .orderByAsc(EvalCaseDO::getId));
+        }
         // 2. 记录开始时间与考题数
         long startTime = System.currentTimeMillis();
         EvalTaskDO start = new EvalTaskDO();
@@ -176,6 +185,19 @@ public class EvalRunner {
                 .filter(r -> Boolean.TRUE.equals(r.getPassed())).count();
         log.info("[runTask][任务 {} 评测完成: 共 {} 题, 达标 {} 题, 耗时 {}ms]",
                 taskId, cases.size(), passedCount, System.currentTimeMillis() - startTime);
+    }
+
+    /**
+     * 按选考题编号列表加载用例(保持请求顺序; 剔除不存在/非本租户的编号)
+     */
+    private List<EvalCaseDO> selectCasesByIds(List<Long> caseIds) {
+        if (CollUtil.isEmpty(caseIds)) {
+            return List.of();
+        }
+        List<EvalCaseDO> all = evalCaseMapper.selectByIds(caseIds);
+        Map<Long, EvalCaseDO> byId = all.stream()
+                .collect(java.util.stream.Collectors.toMap(EvalCaseDO::getId, e -> e, (a, b) -> a));
+        return caseIds.stream().map(byId::get).filter(Objects::nonNull).toList();
     }
 
     /**

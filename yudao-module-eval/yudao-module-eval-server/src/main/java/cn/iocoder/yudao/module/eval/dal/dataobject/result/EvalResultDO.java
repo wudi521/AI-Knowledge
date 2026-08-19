@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.eval.dal.dataobject.result;
 
 import cn.iocoder.yudao.framework.tenant.core.db.TenantBaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AllArgsConstructor;
@@ -43,7 +44,8 @@ public class EvalResultDO extends TenantBaseDO {
     /** 充分度(0~1) */
     private Double confidence;
 
-    /** Recall@5 */
+    /** Recall@5(列名 recall_at_5, 默认驼峰映射会成 recall_at5, 需显式指定) */
+    @TableField("recall_at_5")
     private Double recallAt5;
 
     /** MRR */

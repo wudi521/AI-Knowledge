@@ -13,6 +13,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "yudao.eval")
 public class EvalProperties {
 
+    /** 默认评测模型(发起任务时写入 ai_eval_task.model) */
+    private String model = "evidence-v1";
+
     /** 逐题达标闸门配置 */
     private Gate gate = new Gate();
 

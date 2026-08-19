@@ -49,6 +49,9 @@ public class EvalTaskDO extends TenantBaseDO {
     /** 评测知识库(为空 = 全部用例) */
     private Long kbId;
 
+    /** 选考题列表(JSON 数组字符串; 为空 = 按 kbId 或全部用例) */
+    private String caseIds;
+
     /** 考题数(开始评测时写入) */
     private Integer caseCount;
 

@@ -51,6 +51,7 @@ xxl:
 # 评测平台业务配置
 yudao:
   eval:
+    model: evidence-v1 # 默认评测模型(发起评测任务时写入 ai_eval_task.model)
     gate:
       enabled: true
       recall-at-5: 0.9
