@@ -4,14 +4,17 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeSlotDefinitionDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.intent.AiIntentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseSlotDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.service.intent.IntentService;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
+import cn.iocoder.yudao.module.knowledge.service.knowledge.AiKnowledgeBaseSlotService;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import cn.hutool.core.collection.CollUtil;
@@ -47,6 +50,8 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     private KnowledgePermissionHelper knowledgePermissionHelper;
     @Resource
     private IntentService intentService;
+    @Resource
+    private AiKnowledgeBaseSlotService aiKnowledgeBaseSlotService;
 
     @Override
     public Boolean checkKnowledgePermission(Long chunkId, Long userId) {
@@ -150,6 +155,12 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     public CommonResult<List<IntentDTO>> getKbIntents(Long kbId) {
         List<AiIntentDO> intents = intentService.listEnabledByKb(kbId);
         return success(BeanUtils.toBean(intents, IntentDTO.class));
+    }
+
+    @Override
+    public CommonResult<List<KnowledgeSlotDefinitionDTO>> getSlotDefinitions(List<Long> kbIds) {
+        List<AiKnowledgeBaseSlotDO> slots = aiKnowledgeBaseSlotService.getEnabledByKbIds(kbIds);
+        return success(BeanUtils.toBean(slots, KnowledgeSlotDefinitionDTO.class));
     }
 
 }
