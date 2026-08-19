@@ -47,14 +47,20 @@ public class IntentSummarizer {
     private static final String SYSTEM_PROMPT = """
             你是知识库意图分析师。根据下方知识库已发布内容, 总结该知识库能回答的客户意图分类(2~8 个), 每个意图给简短说明(20字内)。
             只输出合法 JSON, 不要输出其他文字。格式: {"intents":[{"name":"保修","description":"保修期与免费维修政策"}]}
-            要求: 意图名简短名词, 覆盖该库实际内容, 不要编造库中不存在的业务。
+            要求:
+            1. 意图名简短名词, 覆盖该库实际内容, 不要编造库中不存在的业务;
+            2. 内容含价格/收费/计费/费用/合同条款时, 必须提炼出"收费/定价"或"合同条款"类意图(如"收费","费用说明","合同条款"), 不得遗漏;
+            3. 内容为多类文档混合(如行业报告+FAQ+合同)时, 意图应覆盖各类文档的客户问题, 而非只覆盖部分。
             """;
 
-    /** 参与总结的片段上限 */
-    private static final int MAX_CHUNKS = 20;
+    /** 参与总结的片段上限(跨版本均衡采样, 保证多文档都有代表, 避免单文档占满) */
+    private static final int MAX_CHUNKS = 40;
 
     /** 单个片段内容截断长度(字) */
     private static final int MAX_CHUNK_LEN = 200;
+
+    /** 单个版本最多采样的片段数(均衡采样上限) */
+    private static final int MAX_CHUNKS_PER_VERSION = 15;
 
     /** 意图名字段上限(varchar(64)) */
     private static final int MAX_NAME_LEN = 64;
@@ -141,17 +147,23 @@ public class IntentSummarizer {
         }
         StringBuilder sb = new StringBuilder();
         int chunkCount = 0;
+        // 均衡采样: 每版本最多取 MAX_CHUNKS_PER_VERSION 条, 总上限 MAX_CHUNKS —— 多文档知识库不会因单文档占满而漏掉其他文档的意图
         for (AiDocVersionDO version : versions) {
+            if (chunkCount >= MAX_CHUNKS) {
+                break;
+            }
             List<ChunkRespDTO> chunks = ingestionApi.getChunksByVersion(version.getId()).getCheckedData();
             if (CollUtil.isEmpty(chunks)) {
                 continue;
             }
+            int perVersion = 0;
             for (ChunkRespDTO chunk : chunks) {
-                if (chunkCount >= MAX_CHUNKS) {
-                    return sb.toString();
+                if (chunkCount >= MAX_CHUNKS || perVersion >= MAX_CHUNKS_PER_VERSION) {
+                    break;
                 }
                 sb.append(StrUtil.sub(StrUtil.nullToEmpty(chunk.getContent()), 0, MAX_CHUNK_LEN)).append("\n\n");
                 chunkCount++;
+                perVersion++;
             }
         }
         return sb.toString();
