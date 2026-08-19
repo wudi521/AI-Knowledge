@@ -70,3 +70,5 @@ yudao:
       similarity-threshold: 0.85 # 证据去重相似度阈值
     claim:
       max-retry: 2              # Claim 验证最大重试次数
+    slot:
+      enabled: true # 槽位检测总开关(缺必填槽位 → 反问)

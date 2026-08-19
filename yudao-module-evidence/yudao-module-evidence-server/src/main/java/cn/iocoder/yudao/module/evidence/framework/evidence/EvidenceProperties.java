@@ -22,6 +22,20 @@ public class EvidenceProperties {
     /** Claim 验证配置 */
     private Claim claim = new Claim();
 
+    /** 槽位检测配置 */
+    private Slot slot = new Slot();
+
+    /**
+     * 槽位检测配置
+     */
+    @Data
+    public static class Slot {
+
+        /** 总开关(默认 true; 关掉则跳过检测走原流程) */
+        private Boolean enabled = true;
+
+    }
+
     /**
      * 充分性判定配置
      */
