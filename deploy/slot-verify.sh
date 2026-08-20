@@ -19,11 +19,15 @@ TOKEN=$(curl -s -m 10 -X POST "http://127.0.0.1:${SYSTEM}/admin-api/system/auth/
 if [ -z "$TOKEN" ]; then echo "❌ 登录失败"; exit 1; fi
 echo "✅ 登录成功"
 
-# 目标知识库: 取第一个知识库(售后政策库; 需已按 Task 3 建好 3 个必填槽位)
-KB=$(curl -s -m 10 "http://127.0.0.1:${KNOWLEDGE}/admin-api/knowledge/knowledge-base/page?pageNo=1&pageSize=1" \
-  -H "tenant-id: ${TENANT}" -H "Authorization: Bearer ${TOKEN}" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['list'][0]['id'])" 2>/dev/null)
-echo "✅ 目标知识库 kb=$KB (需已配置 brand/faultType/purchaseTime 三个必填槽位)"
+# 目标知识库: 默认取第一个知识库; 可用环境变量 KB_ID 覆盖(如 KB_ID=1 指定售后库)
+if [ -n "${KB_ID:-}" ]; then
+  KB="$KB_ID"
+else
+  KB=$(curl -s -m 10 "http://127.0.0.1:${KNOWLEDGE}/admin-api/knowledge/knowledge-base/page?pageNo=1&pageSize=1" \
+    -H "tenant-id: ${TENANT}" -H "Authorization: Bearer ${TOKEN}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['list'][0]['id'])" 2>/dev/null)
+fi
+echo "✅ 目标知识库 kb=$KB (需已配置必填槽位; 可用 KB_ID 环境变量覆盖)"
 
 ev() { # ev <名称> <query> <kbIds json or null>
   local name="$1" query="$2" kb="$3"
