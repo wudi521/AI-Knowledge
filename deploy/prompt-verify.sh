@@ -8,15 +8,15 @@ SYSTEM=48081
 MODEL=48091
 RETRIEVAL=48086
 TENANT1=1
-TENANT2=2
+TENANT2=122
 
-tok() { # tok <tenant>
+tok() { # tok <tenant> <username>
   curl -s -m 10 -X POST "http://127.0.0.1:${SYSTEM}/admin-api/system/auth/login" \
     -H "tenant-id: $1" -H "Content-Type: application/json" \
-    -d '{"username":"admin","password":"admin123"}' \
+    -d "{\"username\":\"$2\",\"password\":\"admin123\"}" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['accessToken'])" 2>/dev/null
 }
-T1=$(tok $TENANT1); T2=$(tok $TENANT2)
+T1=$(tok $TENANT1 admin); T2=$(tok $TENANT2 aoteman)
 if [ -z "$T1" ] || [ -z "$T2" ]; then echo "❌ 登录失败"; exit 1; fi
 echo "✅ 双租户登录成功"
 
