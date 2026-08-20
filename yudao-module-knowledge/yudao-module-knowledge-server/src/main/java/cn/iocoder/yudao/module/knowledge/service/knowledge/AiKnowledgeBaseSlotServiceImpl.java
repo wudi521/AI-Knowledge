@@ -12,6 +12,7 @@ import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapp
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseSlotMapper;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
@@ -47,28 +48,34 @@ public class AiKnowledgeBaseSlotServiceImpl implements AiKnowledgeBaseSlotServic
             throw new ServiceException(KB_SLOT_CODE_EXISTS);
         }
         AiKnowledgeBaseSlotDO slot = BeanUtils.toBean(createReqVO, AiKnowledgeBaseSlotDO.class);
+        slot.setSource("MANUAL"); // 手动创建固定 MANUAL; LLM_AUTO 仅由总结器写入
         mapper.insert(slot);
         return slot.getId();
     }
 
     @Override
     public void updateAiKnowledgeBaseSlot(AiKnowledgeBaseSlotSaveReqVO updateReqVO) {
-        // 校验槽位存在
-        AiKnowledgeBaseSlotDO slot = mapper.selectById(updateReqVO.getId());
-        if (slot == null) {
+        AiKnowledgeBaseSlotDO db = mapper.selectById(updateReqVO.getId());
+        if (db == null) {
             throw new ServiceException(KB_SLOT_NOT_EXISTS);
         }
-        // kbId 或 slotCode 变更时, 校验 (kbId, slotCode) 唯一(排除自身)
-        if (!Objects.equals(slot.getKbId(), updateReqVO.getKbId())
-                || !Objects.equals(slot.getSlotCode(), updateReqVO.getSlotCode())) {
-            if (mapper.selectCount(new LambdaQueryWrapperX<AiKnowledgeBaseSlotDO>()
+        // 重复编码校验(kbId/slotCode 变化时)
+        if (!Objects.equals(db.getKbId(), updateReqVO.getKbId())
+                || !Objects.equals(db.getSlotCode(), updateReqVO.getSlotCode())) {
+            Long count = mapper.selectCount(new LambdaQueryWrapperX<AiKnowledgeBaseSlotDO>()
                     .eq(AiKnowledgeBaseSlotDO::getKbId, updateReqVO.getKbId())
                     .eq(AiKnowledgeBaseSlotDO::getSlotCode, updateReqVO.getSlotCode())
-                    .ne(AiKnowledgeBaseSlotDO::getId, updateReqVO.getId())) > 0) {
+                    .ne(AiKnowledgeBaseSlotDO::getId, updateReqVO.getId()));
+            if (count != null && count > 0) {
                 throw new ServiceException(KB_SLOT_CODE_EXISTS);
             }
         }
-        mapper.updateById(BeanUtils.toBean(updateReqVO, AiKnowledgeBaseSlotDO.class));
+        AiKnowledgeBaseSlotDO update = BeanUtils.toBean(updateReqVO, AiKnowledgeBaseSlotDO.class);
+        // 编辑保护: 用户改过自动生成的槽位 → 翻转 MANUAL, 后续自动生成不再覆盖
+        if ("LLM_AUTO".equals(db.getSource())) {
+            update.setSource("MANUAL");
+        }
+        mapper.updateById(update);
     }
 
     @Override
@@ -96,6 +103,22 @@ public class AiKnowledgeBaseSlotServiceImpl implements AiKnowledgeBaseSlotServic
                 .eq(AiKnowledgeBaseSlotDO::getStatus, CommonStatusEnum.ENABLE.getStatus())
                 .orderByAsc(AiKnowledgeBaseSlotDO::getKbId)
                 .orderByAsc(AiKnowledgeBaseSlotDO::getSort));
+    }
+
+    @Override
+    @Transactional
+    public void replaceAutoSlots(Long kbId, List<AiKnowledgeBaseSlotDO> slots) {
+        mapper.deleteAutoByKbId(kbId);
+        if (slots == null || slots.isEmpty()) {
+            return;
+        }
+        for (AiKnowledgeBaseSlotDO slot : slots) {
+            slot.setId(null);
+            slot.setKbId(kbId);
+            slot.setSource("LLM_AUTO");
+            slot.setStatus(0); // 默认启用
+            mapper.insert(slot);
+        }
     }
 
 }

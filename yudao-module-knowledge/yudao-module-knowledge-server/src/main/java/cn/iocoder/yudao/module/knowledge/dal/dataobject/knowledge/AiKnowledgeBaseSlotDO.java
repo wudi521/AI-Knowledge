@@ -40,5 +40,7 @@ public class AiKnowledgeBaseSlotDO extends TenantBaseDO {
     private Integer sort;
     /** 状态: 0=启用 1=禁用(CommonStatusEnum) */
     private Integer status;
+    /** 来源: LLM_AUTO(总结器生成, 可被覆盖重写)/ MANUAL(用户创建或编辑过, 受保护) */
+    private String source;
 
 }

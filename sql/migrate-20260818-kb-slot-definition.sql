@@ -28,3 +28,9 @@ ALTER TABLE `ai_evidence_eval`
   ADD COLUMN `slots` json NULL COMMENT '抽取的槽位值(JSON)',
   ADD COLUMN `missing_slots` json NULL COMMENT '缺失必填槽位(JSON)',
   ADD COLUMN `clarify_question` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL DEFAULT NULL COMMENT '反问句(缺槽位时)';
+
+-- 增量: 槽位自动生成(2026-08-19; 仅执行一次, 重复执行会报 Duplicate column)
+ALTER TABLE `ai_knowledge_base_slot`
+  ADD COLUMN `source` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'MANUAL' COMMENT '来源: LLM_AUTO(总结器生成, 可覆盖)/ MANUAL(用户创建或编辑过, 受保护)';
+ALTER TABLE `ai_knowledge_base_slot`
+  ADD INDEX `idx_kb_source`(`kb_id` ASC, `source` ASC) USING BTREE;
