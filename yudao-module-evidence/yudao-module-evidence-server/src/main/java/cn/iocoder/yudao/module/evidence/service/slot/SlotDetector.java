@@ -93,13 +93,15 @@ public class SlotDetector {
             // 5. 代码兜底: required 且未抽到值 → 必填缺失(与 LLM 报告并集, 按 sort 升序)
             Set<String> missingCodes = new LinkedHashSet<>();
             if (applicable) {
-                // 5a. LLM 报告的 missing(仅认定义中存在的槽位)
+                // 5a. LLM 报告的 missing(仅认定义中存在且必填的槽位, 可选槽位不触发反问)
                 JSONArray llmMissing = json.getJSONArray("missing");
                 if (llmMissing != null) {
                     for (Object item : llmMissing) {
                         if (item instanceof JSONObject obj && obj.getStr("code") != null) {
                             String code = obj.getStr("code");
-                            if (unique.containsKey(code) && missingCodes.add(code)) {
+                            if (unique.containsKey(code)
+                                    && Boolean.TRUE.equals(unique.get(code).getRequired())
+                                    && missingCodes.add(code)) {
                                 // 名称以定义为准, 不信任 LLM 给的 name
                             }
                         }
