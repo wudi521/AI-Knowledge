@@ -5,8 +5,7 @@
 set -uo pipefail
 
 SYSTEM=48081
-MODEL=$(grep -m1 "port:" /Users/wudi/IdealProjects/myself/yudao-cloud-mini-master-jdk17/yudao-module-model/yudao-module-model-server/src/main/resources/application.yaml | awk '{print $2}')
-MODEL=${MODEL:-48093}
+MODEL=48091 # model-server 固定端口
 TENANT=1
 
 TOKEN=$(curl -s -m 10 -X POST "http://127.0.0.1:${SYSTEM}/admin-api/system/auth/login" \
