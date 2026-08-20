@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
+import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowledgeBaseSlotPageReqVO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowledgeBaseSlotSaveReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseSlotDO;
@@ -15,8 +16,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.INTENT_KB_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_SLOT_CODE_EXISTS;
@@ -108,16 +112,28 @@ public class AiKnowledgeBaseSlotServiceImpl implements AiKnowledgeBaseSlotServic
     @Override
     @Transactional
     public void replaceAutoSlots(Long kbId, List<AiKnowledgeBaseSlotDO> slots) {
-        mapper.deleteAutoByKbId(kbId);
+        mapper.deleteAutoByKbId(kbId, TenantContextHolder.getTenantId());
         if (slots == null || slots.isEmpty()) {
             return;
         }
+        // 跳过与既有槽位(MANUAL, 用户创建/编辑过)同编码的: uk(kb_id,slot_code,deleted) 冲突, MANUAL 保持权威
+        Set<String> existingCodes = mapper.selectList(new LambdaQueryWrapperX<AiKnowledgeBaseSlotDO>()
+                        .eq(AiKnowledgeBaseSlotDO::getKbId, kbId))
+                .stream().map(AiKnowledgeBaseSlotDO::getSlotCode)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        List<AiKnowledgeBaseSlotDO> toInsert = new ArrayList<>();
         for (AiKnowledgeBaseSlotDO slot : slots) {
+            if (slot.getSlotCode() != null && existingCodes.contains(slot.getSlotCode())) {
+                continue;
+            }
             slot.setId(null);
             slot.setKbId(kbId);
             slot.setSource("LLM_AUTO");
             slot.setStatus(0); // 默认启用
-            mapper.insert(slot);
+            toInsert.add(slot);
+        }
+        if (!toInsert.isEmpty()) {
+            mapper.insertBatch(toInsert);
         }
     }
 
