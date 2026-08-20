@@ -17,6 +17,7 @@ public interface AiModelConfigMapper extends BaseMapperX<AiModelConfigDO> {
         return selectPage(reqVO, new LambdaQueryWrapperX<AiModelConfigDO>()
                 .likeIfPresent(AiModelConfigDO::getName, reqVO.getName())
                 .eqIfPresent(AiModelConfigDO::getType, reqVO.getType())
+                .eqIfPresent(AiModelConfigDO::getScenario, reqVO.getScenario())
                 .eqIfPresent(AiModelConfigDO::getStatus, reqVO.getStatus())
                 .orderByDesc(AiModelConfigDO::getId));
     }
