@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.model.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
+import cn.iocoder.yudao.module.model.api.dto.ModelEmbeddingReqDTO;
 import cn.iocoder.yudao.module.model.api.dto.ModelRerankReqDTO;
 import cn.iocoder.yudao.module.model.enums.ApiConstants;
 import org.springframework.cloud.openfeign.FeignClient;
@@ -25,6 +26,15 @@ public interface ModelApi {
      */
     @PostMapping(ApiConstants.PREFIX + "/embedding")
     CommonResult<List<List<Float>>> embedding(@RequestBody List<String> texts);
+
+    /**
+     * 文本向量化(带场景/追踪号, 走模型网关计量)
+     *
+     * @param req 文本列表 + 场景 + 追踪号
+     * @return 每个文本对应的向量列表
+     */
+    @PostMapping(ApiConstants.PREFIX + "/embedding-meta")
+    CommonResult<List<List<Float>>> embeddingMeta(@RequestBody ModelEmbeddingReqDTO req);
 
     /**
      * 文本对话(LLM 生成, 供审核条目抽取/冲突判定)

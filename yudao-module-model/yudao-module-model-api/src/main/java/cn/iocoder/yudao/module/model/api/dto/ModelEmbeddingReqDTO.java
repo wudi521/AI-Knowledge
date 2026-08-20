@@ -5,21 +5,18 @@ import lombok.Data;
 import java.util.List;
 
 /**
- * 重排请求 DTO
+ * 文本向量化请求 DTO(带场景/追踪号; 原 embedding(List<String>) 保留兼容)
  */
 @Data
-public class ModelRerankReqDTO {
+public class ModelEmbeddingReqDTO {
 
-    /** 查询文本 */
-    private String query;
-
-    /** 候选文本列表 */
-    private List<String> documents;
+    /** 文本列表(批量) */
+    private List<String> texts;
 
     /** 场景标识(路由用; null=默认场景) */
     private String scenario;
 
-    /** 链路追踪号(计量/快照关联) */
+    /** 链路追踪号 */
     private String traceId;
 
 }
