@@ -26,6 +26,10 @@ public class AiModelConfigDO extends BaseDO {
     private String name;
     /** 类型: chat / embedding / rerank */
     private String type;
+    /** 场景标识(如 A/B; *=默认场景) */
+    private String scenario;
+    /** 降级顺序(同类型同场景内, 小者优先) */
+    private Integer priority;
     /** 供应商: OLLAMA / OPENAI / ALIYUN / XINFERENCE */
     private String provider;
     /** 模型标识 */

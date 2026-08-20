@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.model.controller.admin.model.vo;
 
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
@@ -19,6 +20,13 @@ public class AiModelConfigSaveReqVO {
     @Schema(description = "类型", requiredMode = Schema.RequiredMode.REQUIRED, example = "embedding")
     @NotEmpty(message = "类型不能为空")
     private String type;
+
+    @Schema(description = "场景标识(如 A/B; *=默认场景)", example = "*")
+    @NotBlank(message = "场景不能为空")
+    private String scenario;
+
+    @Schema(description = "降级顺序(小者优先)", example = "0")
+    private Integer priority;
 
     @Schema(description = "供应商", example = "OLLAMA")
     private String provider;

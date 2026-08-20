@@ -18,6 +18,12 @@ public class AiModelConfigRespVO {
     @Schema(description = "类型", example = "embedding")
     private String type;
 
+    @Schema(description = "场景标识(如 A/B; *=默认场景)", example = "*")
+    private String scenario;
+
+    @Schema(description = "降级顺序(小者优先)", example = "0")
+    private Integer priority;
+
     @Schema(description = "供应商", example = "OLLAMA")
     private String provider;
 

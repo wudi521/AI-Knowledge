@@ -16,6 +16,9 @@ public class AiModelConfigPageReqVO extends PageParam {
     @Schema(description = "类型", example = "embedding")
     private String type;
 
+    @Schema(description = "场景标识")
+    private String scenario;
+
     @Schema(description = "状态", example = "1")
     private Integer status;
 
