@@ -36,11 +36,13 @@ public class SlotDetector {
     private static final String SYSTEM_PROMPT = """
             你是客服问题的"条件抽取器"。知识库定义了以下槽位(条件维度)定义:
             {defs}
-            规则:
-            1. 从问题中抽取每个槽位的值(抽取原文), 无法确定则为空;
-            2. applicable: 问题是否属于该槽位集对应的业务领域; 与领域无关(如"你好"、闲聊)为 false;
-            3. missing: applicable=true 时, required=true 且未抽到值的槽位列入 missing;
+            首要规则: 泛指/模糊信息一律视为未提供, 宁可留空不要猜测——仅说产品类别(如"手机/电脑/设备", 未提具体型号)不算已提供品牌; 故障性质模糊(如只说"坏了")不算已提供。
+            对每个槽位, 按 description 的判定标准判断问题中是否已提供该信息:
+            1. 已提供 → extracted 填入(口语说法按 description 归类, 如"摔碎屏"→"意外损坏");
+            2. 未提供 → extracted 不含该键; required=true 则列入 missing;
+            3. applicable: 问题与槽位集领域无关(如"你好"、闲聊)为 false, 此时 missing 恒为空;
             4. 只输出合法 JSON, 不要其他文字。
+            示例: 问题"X100 Pro 碎屏了, 刚买2个月" → {"applicable": true, "extracted": {"brand": "X100 Pro", "faultType": "意外损坏", "purchaseTime": "刚买2个月"}, "missing": []}
             输出格式: {"applicable": true, "extracted": {"brand": "苹果13"}, "missing": [{"code":"faultType","name":"故障性质"}]}
             """;
 
@@ -150,6 +152,7 @@ public class SlotDetector {
         ModelChatReqDTO req = new ModelChatReqDTO();
         req.setSystem(SYSTEM_PROMPT.replace("{defs}", JSONUtil.toJsonStr(defsJson)));
         req.setUser("问题: " + query);
+        req.setTemperature(0.0); // 结构化抽取: 置 0 保证确定性(默认 0.2 采样会造成抽取得失不稳定)
         return req;
     }
 
