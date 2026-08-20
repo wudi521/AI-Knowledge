@@ -5,13 +5,8 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
-import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
-import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.intent.AiIntentDO;
-import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
-import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
-import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
-import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
+import cn.iocoder.yudao.module.knowledge.service.common.PublishedContentCollector;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import com.alibaba.ttl.TtlRunnable;
@@ -53,15 +48,6 @@ public class IntentSummarizer {
             3. 内容为多类文档混合(如行业报告+FAQ+合同)时, 意图应覆盖各类文档的客户问题, 而非只覆盖部分。
             """;
 
-    /** 参与总结的片段上限(跨版本均衡采样, 保证多文档都有代表, 避免单文档占满) */
-    private static final int MAX_CHUNKS = 40;
-
-    /** 单个片段内容截断长度(字) */
-    private static final int MAX_CHUNK_LEN = 200;
-
-    /** 单个版本最多采样的片段数(均衡采样上限) */
-    private static final int MAX_CHUNKS_PER_VERSION = 15;
-
     /** 意图名字段上限(varchar(64)) */
     private static final int MAX_NAME_LEN = 64;
 
@@ -71,13 +57,9 @@ public class IntentSummarizer {
     @Resource
     private IntentService intentService;
     @Resource
-    private IngestionApi ingestionApi;
+    private PublishedContentCollector publishedContentCollector;
     @Resource
     private ModelApi modelApi;
-    @Resource
-    private AiDocumentMapper aiDocumentMapper;
-    @Resource
-    private AiDocVersionMapper aiDocVersionMapper;
 
     /**
      * 同步总结知识库意图(手动 summarize 与异步任务共用)
@@ -88,7 +70,7 @@ public class IntentSummarizer {
     public int summarizeByKb(Long kbId) {
         try {
             // 1. 收集知识库已发布内容(≤20 片段 × 200 字)
-            String content = collectPublishedContent(kbId);
+            String content = publishedContentCollector.collectPublishedContent(kbId);
             if (StrUtil.isBlank(content)) {
                 log.warn("[summarizeByKb][知识库 {} 无已发布内容, 跳过总结]", kbId);
                 return 0;
@@ -130,43 +112,6 @@ public class IntentSummarizer {
             }
         };
         ASYNC_EXECUTOR.execute(TtlRunnable.get(task)); // 传递租户上下文
-    }
-
-    /**
-     * 收集知识库已发布版本片段内容: 文档(kbId) -> 已发布版本 -> 片段, 截断到上限
-     */
-    private String collectPublishedContent(Long kbId) {
-        List<AiDocumentDO> docs = aiDocumentMapper.selectListByKbId(kbId);
-        if (CollUtil.isEmpty(docs)) {
-            return "";
-        }
-        List<AiDocVersionDO> versions = aiDocVersionMapper.selectPublishedByDocIds(
-                docs.stream().map(AiDocumentDO::getId).toList());
-        if (CollUtil.isEmpty(versions)) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder();
-        int chunkCount = 0;
-        // 均衡采样: 每版本最多取 MAX_CHUNKS_PER_VERSION 条, 总上限 MAX_CHUNKS —— 多文档知识库不会因单文档占满而漏掉其他文档的意图
-        for (AiDocVersionDO version : versions) {
-            if (chunkCount >= MAX_CHUNKS) {
-                break;
-            }
-            List<ChunkRespDTO> chunks = ingestionApi.getChunksByVersion(version.getId()).getCheckedData();
-            if (CollUtil.isEmpty(chunks)) {
-                continue;
-            }
-            int perVersion = 0;
-            for (ChunkRespDTO chunk : chunks) {
-                if (chunkCount >= MAX_CHUNKS || perVersion >= MAX_CHUNKS_PER_VERSION) {
-                    break;
-                }
-                sb.append(StrUtil.sub(StrUtil.nullToEmpty(chunk.getContent()), 0, MAX_CHUNK_LEN)).append("\n\n");
-                chunkCount++;
-                perVersion++;
-            }
-        }
-        return sb.toString();
     }
 
     /**
