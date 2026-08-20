@@ -6,8 +6,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 进程内熔断器: 单模型连续失败≥5 → OPEN 30s(直接跳过); 半开放 1 个探测请求, 成功恢复
- * key 用 "type:modelId"(yaml 兜底用 "type:yaml")
+ * 进程内熔断器: 单模型连续失败≥5 → OPEN 30s(窗口内跳过); 窗口过后半开放(放行探测), 成功恢复
+ * key 用 "type:modelId"(yaml 兜底不熔断)
  */
 @Component
 public class CircuitBreaker {

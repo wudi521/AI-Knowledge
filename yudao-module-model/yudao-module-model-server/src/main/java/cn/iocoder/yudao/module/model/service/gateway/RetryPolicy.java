@@ -3,7 +3,7 @@ package cn.iocoder.yudao.module.model.service.gateway;
 import org.springframework.stereotype.Component;
 
 /**
- * 重试策略: 瞬态错误(超时/5xx/网络)重试 1 次(共 2 次尝试), 指数退避 200/400ms; 4xx 不重试
+ * 重试策略: 瞬态错误(超时/5xx/网络)重试 1 次(共 2 次尝试), 线性退避 200/400ms; 4xx 不重试
  */
 @Component
 public class RetryPolicy {

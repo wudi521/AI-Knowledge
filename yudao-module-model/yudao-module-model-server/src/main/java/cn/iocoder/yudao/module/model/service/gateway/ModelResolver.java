@@ -11,7 +11,7 @@ import java.util.List;
 /**
  * 路由解析: (租户,类型,场景) → 启用模型候选列表(priority 升序)
  * 先精确场景, 再回退 '*' 默认场景; 均无 → 空列表(网关回退 yaml)
- * 租户过滤由 TenantBaseDO 框架自动附加
+ * 注: ai_model_config 为全局配置(BaseDO), 路由不区分租户; 租户级模型配置留 M8
  */
 @Component
 public class ModelResolver {

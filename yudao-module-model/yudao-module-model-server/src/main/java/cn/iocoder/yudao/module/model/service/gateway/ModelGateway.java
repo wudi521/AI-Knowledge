@@ -79,6 +79,7 @@ public class ModelGateway {
                         return r;
                     } catch (ModelInvokeException e) {
                         ModelCallResult failed = buildFailure(type, cfg, attempt, traceId, scenario, degraded, e);
+                        failed.setElapsedMs((int) (System.currentTimeMillis() - t0));
                         meter.record(failed);
                         lastFailure = failed;
                         circuitBreaker.onFailure(key);
@@ -108,6 +109,7 @@ public class ModelGateway {
                     return r;
                 } catch (ModelInvokeException e) {
                     ModelCallResult failed = buildFailure(type, null, attempt, traceId, scenario, degraded, e);
+                    failed.setElapsedMs((int) (System.currentTimeMillis() - t0));
                     meter.record(failed);
                     lastFailure = failed;
                     if (!e.isRetryable() || attempt >= attempts) {
@@ -117,16 +119,22 @@ public class ModelGateway {
                 }
             }
         }
-        String msg = lastFailure != null && lastFailure.getErrorMsg() != null
-                ? lastFailure.getErrorMsg() : "未配置模型且无 yaml 默认";
+        String msg;
+        if (lastFailure != null && lastFailure.getErrorMsg() != null) {
+            msg = lastFailure.getErrorMsg();
+        } else {
+            msg = (candidates != null && !candidates.isEmpty())
+                    ? "模型候选全部被熔断跳过且无 yaml 兜底" : "未配置模型且无 yaml 默认";
+        }
         log.warn("[invokeWithFallback][type({}) 模型调用全部失败: {}]", type, msg);
         throw new ServiceException(GlobalErrorCodeConstants.INTERNAL_SERVER_ERROR.getCode(), "模型调用失败: " + msg);
     }
 
     private ModelCallResult buildFailure(String type, AiModelConfigDO cfg, int attempt, String traceId,
                                          String scenario, boolean degraded, ModelInvokeException e) {
+        // 失败的尝试一律 FAILED(降级语义只属于成功路径: 见 ModelCallResult.isOk)
         return ModelCallResult.builder()
-                .status(degraded ? "DEGRADED" : "FAILED")
+                .status("FAILED")
                 .type(type)
                 .modelId(cfg != null ? cfg.getId() : null)
                 .modelName(cfg != null ? cfg.getModelName() : null)

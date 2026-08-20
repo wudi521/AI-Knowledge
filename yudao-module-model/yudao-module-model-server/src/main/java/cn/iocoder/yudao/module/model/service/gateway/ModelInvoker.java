@@ -7,9 +7,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
@@ -34,10 +34,8 @@ public class ModelInvoker {
     }
 
     @Resource
+    @Qualifier("modelRestTemplate")
     private RestTemplate restTemplate;
-
-    @Value("${yudao.model.read-timeout-ms:300000}")
-    private long readTimeoutMs;
 
     /**
      * 调用注册表中的模型配置
