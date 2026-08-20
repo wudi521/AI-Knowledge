@@ -33,6 +33,9 @@ public class AiKnowledgeBaseSlotRespVO {
     @Schema(description = "状态: 0=启用 1=禁用", example = "0")
     private Integer status;
 
+    @Schema(description = "来源: LLM_AUTO(自动生成)/ MANUAL(手动或编辑过)", example = "MANUAL")
+    private String source;
+
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 

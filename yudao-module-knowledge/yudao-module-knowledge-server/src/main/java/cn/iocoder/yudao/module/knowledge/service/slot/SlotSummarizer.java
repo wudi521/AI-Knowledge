@@ -90,10 +90,10 @@ public class SlotSummarizer {
                 log.warn("[summarizeByKb][知识库 {} LLM 输出无可解析槽位, 跳过; 原文: {}]", kbId, resp);
                 return -1;
             }
-            // 3. 覆盖写入 LLM_AUTO(事务内; MANUAL 保留)
-            slotService.replaceAutoSlots(kbId, slots);
-            log.info("[summarizeByKb][知识库 {} 槽位总结完成: {} 个槽位]", kbId, slots.size());
-            return slots.size();
+            // 3. 覆盖写入 LLM_AUTO(事务内; MANUAL 保留); 返回值 = 实际插入数(与 MANUAL 同码被跳过)
+            int inserted = slotService.replaceAutoSlots(kbId, slots);
+            log.info("[summarizeByKb][知识库 {} 槽位总结完成: LLM 提议 {} 个, 实际插入 {} 个]", kbId, slots.size(), inserted);
+            return inserted;
         } catch (Exception e) {
             log.warn("[summarizeByKb][知识库 {} 槽位总结失败: {}]", kbId, e.getMessage(), e);
             return -1;

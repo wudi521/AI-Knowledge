@@ -111,10 +111,10 @@ public class AiKnowledgeBaseSlotServiceImpl implements AiKnowledgeBaseSlotServic
 
     @Override
     @Transactional
-    public void replaceAutoSlots(Long kbId, List<AiKnowledgeBaseSlotDO> slots) {
+    public int replaceAutoSlots(Long kbId, List<AiKnowledgeBaseSlotDO> slots) {
         mapper.deleteAutoByKbId(kbId, TenantContextHolder.getTenantId());
         if (slots == null || slots.isEmpty()) {
-            return;
+            return 0;
         }
         // 跳过与既有槽位(MANUAL, 用户创建/编辑过)同编码的: uk(kb_id,slot_code,deleted) 冲突, MANUAL 保持权威
         Set<String> existingCodes = mapper.selectList(new LambdaQueryWrapperX<AiKnowledgeBaseSlotDO>()
@@ -135,6 +135,7 @@ public class AiKnowledgeBaseSlotServiceImpl implements AiKnowledgeBaseSlotServic
         if (!toInsert.isEmpty()) {
             mapper.insertBatch(toInsert);
         }
+        return toInsert.size();
     }
 
 }

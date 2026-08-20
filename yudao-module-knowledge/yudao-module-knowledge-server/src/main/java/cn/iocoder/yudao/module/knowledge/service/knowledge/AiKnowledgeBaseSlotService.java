@@ -32,7 +32,8 @@ public interface AiKnowledgeBaseSlotService {
      *
      * @param kbId  知识库编号
      * @param slots 新槽位(kbId/source/status 由本方法强制填充)
+     * @return 实际插入的槽位数(与既有 MANUAL 同编码的会被跳过)
      */
-    void replaceAutoSlots(Long kbId, List<AiKnowledgeBaseSlotDO> slots);
+    int replaceAutoSlots(Long kbId, List<AiKnowledgeBaseSlotDO> slots);
 
 }
