@@ -16,7 +16,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -44,7 +46,8 @@ public class SlotSummarizer {
             1. code 用英文蛇形且唯一(如 brand/faultType/purchaseTime/orderType/region/status);
             2. 只总结该库实际区分的条件维度, 不要编造库中不存在的业务; 2~8 个;
             3. required: 缺了该信息是否影响准确回答该库的问题(影响=必填 true, 否则 false);
-            4. description 需包含判定标准与示例(供槽位检测抽取器使用), 说明口语/泛指如何处理。
+            4. sort 按重要度 1..N 升序且不重复(组反问句顺序);
+            5. description 需包含判定标准与示例(供槽位检测抽取器使用), 说明口语/泛指如何处理。
             """;
 
     /** 槽位编码/名/说明字段上限(对齐表 varchar(64)/varchar(500)) */
@@ -122,6 +125,7 @@ public class SlotSummarizer {
             return List.of();
         }
         List<AiKnowledgeBaseSlotDO> slots = new ArrayList<>();
+        Set<String> seenCodes = new LinkedHashSet<>();
         for (Object o : arr) {
             if (!(o instanceof JSONObject obj)) {
                 continue;
@@ -131,8 +135,12 @@ public class SlotSummarizer {
             if (StrUtil.isBlank(code) || StrUtil.isBlank(name)) {
                 continue;
             }
+            String slotCode = StrUtil.sub(code, 0, MAX_CODE_NAME_LEN);
+            if (!seenCodes.add(slotCode)) {
+                continue; // 同批重复编码去重(首个优先), 避免 uk(kb_id,slot_code,deleted) 冲突导致整批回滚
+            }
             AiKnowledgeBaseSlotDO slot = AiKnowledgeBaseSlotDO.builder()
-                    .slotCode(StrUtil.sub(code, 0, MAX_CODE_NAME_LEN))
+                    .slotCode(slotCode)
                     .slotName(StrUtil.sub(name, 0, MAX_CODE_NAME_LEN))
                     .description(StrUtil.sub(StrUtil.nullToEmpty(obj.getStr("description")), 0, MAX_DESC_LEN))
                     .required(Boolean.TRUE.equals(obj.getBool("required")))

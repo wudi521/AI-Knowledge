@@ -69,7 +69,7 @@ public class IntentSummarizer {
      */
     public int summarizeByKb(Long kbId) {
         try {
-            // 1. 收集知识库已发布内容(≤20 片段 × 200 字)
+            // 1. 收集知识库已发布内容(≤40 片段 × 200 字, 跨版本均衡采样)
             String content = publishedContentCollector.collectPublishedContent(kbId);
             if (StrUtil.isBlank(content)) {
                 log.warn("[summarizeByKb][知识库 {} 无已发布内容, 跳过总结]", kbId);
