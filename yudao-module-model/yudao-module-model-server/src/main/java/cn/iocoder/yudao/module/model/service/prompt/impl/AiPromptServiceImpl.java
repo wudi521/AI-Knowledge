@@ -81,9 +81,10 @@ public class AiPromptServiceImpl implements AiPromptService {
     @Override
     public void grayEnablePrompt(Long id, List<Long> tenantIds) {
         AiPromptDO prompt = validatePromptExists(id);
-        // 该 key 必须已有全量启用版本, 否则不能灰度
+        // 该 key 必须另有全量启用版本(目标行自身不算), 否则灰度后无全量版本可用
         List<AiPromptDO> enabled = aiPromptMapper.selectByKeyAndStatusIn(prompt.getPromptKey(), List.of(1));
-        if (enabled.isEmpty()) {
+        boolean hasOtherEnabled = enabled.stream().anyMatch(e -> !e.getId().equals(id));
+        if (!hasOtherEnabled) {
             throw exception(AI_PROMPT_GRAY_NEED_ENABLED);
         }
         // 当前行灰度启用
