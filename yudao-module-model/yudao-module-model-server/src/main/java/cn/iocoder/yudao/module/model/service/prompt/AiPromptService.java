@@ -33,6 +33,9 @@ public interface AiPromptService {
     /** 获得提示词 */
     AiPromptDO getPrompt(Long id);
 
+    /** 删除提示词(逻辑删除; 删除启用行后该 key 回退代码默认) */
+    void deletePrompt(Long id);
+
     /** 分页查询 */
     PageResult<AiPromptDO> getPage(AiPromptPageReqVO reqVO);
 

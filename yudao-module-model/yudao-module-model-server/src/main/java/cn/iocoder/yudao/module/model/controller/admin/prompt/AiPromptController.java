@@ -94,6 +94,15 @@ public class AiPromptController {
         return success(new PageResult<>(list, pageResult.getTotal()));
     }
 
+    @DeleteMapping("/delete")
+    @Operation(summary = "删除提示词(删除启用行后该 key 回退代码默认)")
+    @Parameter(name = "id", description = "编号", required = true)
+    @PreAuthorize("@ss.hasPermission('model:prompt:delete')")
+    public CommonResult<Boolean> deletePrompt(@RequestParam("id") Long id) {
+        aiPromptService.deletePrompt(id);
+        return success(true);
+    }
+
     @GetMapping("/key-list")
     @Operation(summary = "获得业务键汇总")
     @PreAuthorize("@ss.hasPermission('model:prompt:query')")

@@ -119,6 +119,12 @@ public class AiPromptServiceImpl implements AiPromptService {
     }
 
     @Override
+    public void deletePrompt(Long id) {
+        validatePromptExists(id);
+        aiPromptMapper.deleteById(id); // 逻辑删除
+    }
+
+    @Override
     public PageResult<AiPromptDO> getPage(AiPromptPageReqVO reqVO) {
         return aiPromptMapper.selectPage(reqVO);
     }
