@@ -35,7 +35,7 @@ pm_gray() { # pm_gray <id> <tenantIdsJson>
     -d "{\"id\":$1,\"tenantIds\":$2}" >/dev/null
 }
 pm_disable_all() { # 停用某 key 全部行(回退代码默认)
-  for id in $(curl -s "http://127.0.0.1:${MODEL}/admin-api/model/prompt/page?pageNo=1&pageSize=50&promptKey=query-analysis" \
+  for id in $(curl -s "http://127.0.0.1:${MODEL}/admin-api/model/prompt/page?pageNo=1&pageSize=50&promptKey=query-disambiguate" \
     -H "tenant-id: ${TENANT1}" -H "Authorization: Bearer ${T1}" | python3 -c "
 import sys,json
 for r in (json.load(sys.stdin)['data']['list']): print(r['id'])" 2>/dev/null); do
@@ -64,15 +64,15 @@ print(d.get('analysis',{}).get('intent','∅'))" 2>/dev/null
 }
 
 echo ""
-echo "========== PM-01 生效: 建 query-analysis DB prompt(强制 TEST_INTENT) =========="
-V1=$(pm_create query-analysis "测试版1" '你是测试用查询分析器。只输出合法 JSON: {"intent":"TEST_INTENT","entities":[],"products":[],"rewrites":["碎屏 保修"],"sub_questions":[]}')
+echo "========== PM-01 生效: 建 query-disambiguate DB prompt(强制 TEST_INTENT) =========="
+V1=$(pm_create query-disambiguate "测试版1" '你是测试用查询分析器。只输出合法 JSON: {"intent":"TEST_INTENT","entities":[],"products":[],"rewrites":["碎屏 保修"],"sub_questions":[]}')
 pm_enable "$V1"
 sleep 32 # 缓存 30s
 echo "intent(应为 TEST_INTENT): $(retrieve_intent $TENANT1 $T1)"
 
 echo ""
 echo "========== PM-02 版本切换/回滚: 建 v2(OTHER) → 启用 → 回滚 v1 =========="
-V2=$(pm_create query-analysis "测试版2" '你是测试用查询分析器。只输出合法 JSON: {"intent":"OTHER_INTENT","entities":[],"products":[],"rewrites":[],"sub_questions":[]}')
+V2=$(pm_create query-disambiguate "测试版2" '你是测试用查询分析器。只输出合法 JSON: {"intent":"OTHER_INTENT","entities":[],"products":[],"rewrites":[],"sub_questions":[]}')
 pm_enable "$V2"; sleep 32
 echo "intent(v2 生效, 应为 OTHER_INTENT): $(retrieve_intent $TENANT1 $T1)"
 pm_enable "$V1"; sleep 32
@@ -80,15 +80,19 @@ echo "intent(回滚 v1, 应为 TEST_INTENT): $(retrieve_intent $TENANT1 $T1)"
 
 echo ""
 echo "========== PM-03 租户灰度: v3 全量(BASE_INTENT) + v4 灰度租户2(GRAY_INTENT) =========="
-V3=$(pm_create query-analysis "全量版" '你是测试用查询分析器。只输出合法 JSON: {"intent":"BASE_INTENT","entities":[],"products":[],"rewrites":[],"sub_questions":[]}')
-V4=$(pm_create query-analysis "灰度版" '你是测试用查询分析器。只输出合法 JSON: {"intent":"GRAY_INTENT","entities":[],"products":[],"rewrites":[],"sub_questions":[]}')
-pm_enable "$V3"; pm_gray "$V4" "[2]"; sleep 32
-echo "租户1 intent(应 BASE_INTENT): $(retrieve_intent $TENANT1 $T1)"
-echo "租户2 intent(应 GRAY_INTENT): $(retrieve_intent $TENANT2 $T2)"
+V3=$(pm_create query-disambiguate "全量版" '你是测试用查询分析器。只输出合法 JSON: {"intent":"BASE_INTENT","entities":[],"products":[],"rewrites":[],"sub_questions":[]}')
+V4=$(pm_create query-disambiguate "灰度版" '你是测试用查询分析器。只输出合法 JSON: {"intent":"GRAY_INTENT","entities":[],"products":[],"rewrites":[],"sub_questions":[]}')
+pm_enable "$V3"; pm_gray "$V4" "[122]"; sleep 32
+gpr() { # gpr <tenant> <token> → get-prompt 内容片段
+  curl -s -m 10 "http://127.0.0.1:${MODEL}/admin-api/model/prompt/get-prompt?key=query-disambiguate&tenantId=$1" \
+    -H "tenant-id: $1" -H "Authorization: Bearer $2" | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('data') or '')[:60])" 2>/dev/null
+}
+echo "租户1 get-prompt(应 BASE_INTENT 内容): $(gpr $TENANT1 $T1)"
+echo "租户122 get-prompt(应 GRAY_INTENT 内容): $(gpr $TENANT2 $T2)"
 
 echo ""
-echo "========== PM-04 降级: 删除全部 query-analysis 行 → 回退代码默认 =========="
-pm_delete_key query-analysis; sleep 32
+echo "========== PM-04 降级: 删除全部 query-disambiguate 行 → 回退代码默认 =========="
+pm_delete_key query-disambiguate; sleep 32
 echo "intent(应回退代码默认, 非 TEST/BASE/GRAY): $(retrieve_intent $TENANT1 $T1)"
 
 echo ""
@@ -103,8 +107,8 @@ print('answerable:', d.get('answerable'), '| answer:', (d.get('answer') or '∅'
 "
 
 echo ""
-echo "========== 清理: 确认 query-analysis 无残留 =========="
-curl -s "http://127.0.0.1:${MODEL}/admin-api/model/prompt/page?pageNo=1&pageSize=10&promptKey=query-analysis" \
+echo "========== 清理: 确认 query-disambiguate 无残留 =========="
+curl -s "http://127.0.0.1:${MODEL}/admin-api/model/prompt/page?pageNo=1&pageSize=10&promptKey=query-disambiguate" \
   -H "tenant-id: ${TENANT1}" -H "Authorization: Bearer ${T1}" | python3 -c "
 import sys,json
 print('残留行数:', (json.load(sys.stdin)['data']['total']))"
