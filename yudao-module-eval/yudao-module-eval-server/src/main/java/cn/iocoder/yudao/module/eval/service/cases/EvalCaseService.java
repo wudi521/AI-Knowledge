@@ -138,12 +138,13 @@ public class EvalCaseService {
     private static final String CATEGORY_AUTO = "自动生成";
 
     private static final String GENERATE_SYSTEM_PROMPT = """
-            你是知识库评测命题员。根据给定的知识片段(含片段编号), 为每个片段生成一道客户咨询题:
-            {"cases":[{"chunkId":123,"question":"客户会怎么问?","goldAnswer":"依据该片段的标准答案"}]}
+            你是知识库评测命题员。根据给定的知识片段(含片段编号), 生成客户咨询题:
+            {"cases":[{"question":"客户会怎么问?","goldAnswer":"依据片段的标准答案","goldChunks":[123,124]}]}
             要求:
-            1. 每题 question 是客户口语化咨询, 且必须能仅凭该片段内容作答;
+            1. 每题 question 是客户口语化咨询, 且必须能仅凭给定片段作答;
             2. goldAnswer 严格依据片段内容给出标准答案, 不得编造片段外信息;
-            3. 覆盖片段, 不要遗漏; 只输出合法 JSON, 不要其他文字。
+            3. goldChunks 列出该题作答所需的全部相关片段编号(从给定片段中选, 1~3 个, 覆盖答案依据);
+            4. 每题尽量选取不同主题, 覆盖给定片段, 5~8 题; 只输出合法 JSON, 不要其他文字。
             """;
 
     @Resource
@@ -155,7 +156,7 @@ public class EvalCaseService {
      * 从知识库已发布内容自动生成评测用例(入库后一键评测用)
      * <p>
      * 规则: 该库已有用例数 &gt;= MAX_AUTO_CASES_PER_KB(5) 时跳过(返回 0);
-     * 采样已发布片段(≤8) → LLM 逐片段命题(question/goldAnswer, goldChunks=来源片段) → 落库。
+     * 采样已发布片段(≤8) → LLM 命题(question/goldAnswer/goldChunks=相关片段集合 1~3 个) → 落库。
      * 失败语义: 任何失败返回 -1, 绝不抛出。
      *
      * @param kbId 知识库编号
@@ -211,17 +212,28 @@ public class EvalCaseService {
                 if (!(o instanceof JSONObject obj)) {
                     continue;
                 }
-                Long chunkId = obj.getLong("chunkId");
                 String question = StrUtil.nullToEmpty(obj.getStr("question")).trim();
                 String goldAnswer = StrUtil.nullToEmpty(obj.getStr("goldAnswer")).trim();
-                if (chunkId == null || !sampleIds.contains(chunkId) || StrUtil.isBlank(question)
-                        || StrUtil.isBlank(goldAnswer)) {
+                if (StrUtil.isBlank(question) || StrUtil.isBlank(goldAnswer)) {
+                    continue;
+                }
+                // goldChunks: LLM 选定的相关片段集合(仅认采样片段编号; 空则跳过该题)
+                JSONArray goldArr = obj.getJSONArray("goldChunks");
+                List<Long> goldChunks = new ArrayList<>();
+                if (goldArr != null) {
+                    for (Object g : goldArr) {
+                        if (g instanceof Number n && sampleIds.contains(n.longValue())) {
+                            goldChunks.add(n.longValue());
+                        }
+                    }
+                }
+                if (goldChunks.isEmpty()) {
                     continue;
                 }
                 EvalCaseDO evalCase = EvalCaseDO.builder()
                         .question(StrUtil.maxLength(question, 500))
                         .goldAnswer(StrUtil.maxLength(goldAnswer, 2000))
-                        .goldChunks(JSONUtil.toJsonStr(List.of(chunkId)))
+                        .goldChunks(JSONUtil.toJsonStr(goldChunks))
                         .kbId(kbId)
                         .category(CATEGORY_AUTO)
                         .build();
