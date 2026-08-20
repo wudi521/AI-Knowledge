@@ -196,7 +196,7 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         expireOldVersions(version.getDocId(), versionId);
         // 文档置已发布
         aiDocumentMapper.updateParseStatus(doc.getId(), "PUBLISHED", null, null);
-        // 异步 LLM 意图总结: 等发布事务提交后再触发(保证异步线程能读到 PUBLISHED 版本), 不阻断发布响应; 失败仅告警, 可手动 summarize 重跑
+        // 异步 LLM 意图/槽位总结: 等发布事务提交后再触发(保证异步线程能读到 PUBLISHED 版本), 不阻断发布响应; 失败仅告警, 可手动 summarize 重跑
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
