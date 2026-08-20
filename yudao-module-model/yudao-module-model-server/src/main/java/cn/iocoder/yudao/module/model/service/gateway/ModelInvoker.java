@@ -7,11 +7,14 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+
+import jakarta.annotation.PostConstruct;
 
 import jakarta.annotation.Resource;
 
@@ -33,9 +36,25 @@ public class ModelInvoker {
                                 ModelRerankReqDTO rerankReq) {
     }
 
-    @Resource
-    @Qualifier("modelRestTemplate")
+    /**
+     * 模型调用专用 RestTemplate(自建, 不注册 Bean 避免与框架 loadBalancedRestTemplate 歧义)
+     * 带连接/读超时: 模型服务挂死不响应时避免无限阻塞(重试/降级/熔断才有效)
+     */
     private RestTemplate restTemplate;
+
+    @Value("${yudao.model.connect-timeout-ms:5000}")
+    private int connectTimeoutMs;
+
+    @Value("${yudao.model.read-timeout-ms:300000}")
+    private int readTimeoutMs;
+
+    @PostConstruct
+    public void initRestTemplate() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(connectTimeoutMs);
+        factory.setReadTimeout(readTimeoutMs);
+        this.restTemplate = new RestTemplate(factory);
+    }
 
     /**
      * 调用注册表中的模型配置
