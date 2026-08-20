@@ -18,7 +18,7 @@ public interface PromptApi {
      * @param key      业务键
      * @param tenantId 租户(可为 null, 服务端 TenantContextHolder 兜底)
      */
-    @GetMapping(ApiConstants.PREFIX + "/prompt/get")
+    @GetMapping(ApiConstants.PREFIX + "/prompt/get-prompt")
     CommonResult<String> getPrompt(@RequestParam("key") String key,
                                    @RequestParam(value = "tenantId", required = false) Long tenantId);
 
