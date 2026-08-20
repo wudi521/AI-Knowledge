@@ -6,6 +6,7 @@ import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
+import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.eval.dal.dataobject.cases.EvalCaseDO;
 import cn.iocoder.yudao.module.eval.dal.dataobject.result.EvalResultDO;
@@ -90,15 +91,16 @@ public class EvalRunner {
      * @param taskId 评测任务编号
      */
     public void runTaskAsync(Long taskId) {
-        // 捕获调度线程(HTTP 请求)租户: TtlRunnable 透传, 作为异步线程租户兜底
+        // 捕获调度线程(HTTP 请求)租户与发起人: TtlRunnable 透传, 异步线程兜底
         Long callerTenantId = TenantContextHolder.getTenantId();
+        Long callerUserId = SecurityFrameworkUtils.getLoginUserId();
         Runnable task = () -> {
             try {
                 // 异步线程无租户上下文: 以任务行自身 tenant_id 为准(更健壮, 不依赖调度线程)
                 EvalTaskDO taskDO = selectTaskIgnoreTenant(taskId);
                 Long tenantId = taskDO != null && taskDO.getTenantId() != null
                         ? taskDO.getTenantId() : callerTenantId;
-                TenantUtils.execute(tenantId, () -> runTask(taskId));
+                TenantUtils.execute(tenantId, () -> runTask(taskId, callerUserId));
             } catch (Exception e) {
                 // 兜底: 标记 FAILED(租户未知时忽略租户写入, 保证状态可追踪)
                 log.error("[runTaskAsync][评测任务 {} 执行异常, 标记 FAILED]", taskId, e);
@@ -121,8 +123,12 @@ public class EvalRunner {
      * @param taskId 评测任务编号(不存在则仅告警返回)
      */
     public void runTask(Long taskId) {
+        runTask(taskId, null);
+    }
+
+    public void runTask(Long taskId, Long userId) {
         try {
-            runTaskInternal(taskId);
+            runTaskInternal(taskId, userId);
         } catch (Exception e) {
             // 外层兜底: 满足"runTask 永不抛出"约束
             log.error("[runTask][评测任务 {} 执行异常, 标记 FAILED]", taskId, e);
@@ -134,7 +140,7 @@ public class EvalRunner {
         }
     }
 
-    private void runTaskInternal(Long taskId) {
+    private void runTaskInternal(Long taskId, Long userId) {
         EvalTaskDO task = evalTaskMapper.selectById(taskId);
         if (task == null) {
             log.warn("[runTask][评测任务 {} 不存在, 忽略]", taskId);
@@ -162,7 +168,7 @@ public class EvalRunner {
         log.info("[runTask][任务 {} 开始评测: 用例 {} 条, kbId={}]", taskId, cases.size(), task.getKbId());
         // 3. 逐题评估(单题失败隔离, 不影响后续用例); 达标与否由指标回填(步骤 4)判定
         for (EvalCaseDO evalCase : cases) {
-            EvalResultDO result = evaluateOne(evalCase, task);
+            EvalResultDO result = evaluateOne(evalCase, task, userId);
             evalResultMapper.insert(result);
             log.info("[runTask][任务 {} 用例 {} 评测完成: answerable={}, confidence={}]",
                     taskId, evalCase.getId(), result.getAnswerable(), result.getConfidence());
@@ -203,7 +209,7 @@ public class EvalRunner {
     /**
      * 单题评估: 调用 evidence.evaluate, 落原始数据; 任何失败仅标记该题未通过(评估异常), 不抛出
      */
-    private EvalResultDO evaluateOne(EvalCaseDO evalCase, EvalTaskDO task) {
+    private EvalResultDO evaluateOne(EvalCaseDO evalCase, EvalTaskDO task, Long userId) {
         EvalResultDO result = EvalResultDO.builder()
                 .taskId(task.getId())
                 .caseId(evalCase.getId())
@@ -218,6 +224,7 @@ public class EvalRunner {
             req.setTopK(TOP_K);
             req.setSkipSlotDetection(true); // 评测测检索+回答质量, 不走对话层槽位反问门
             req.setTenantId(task.getTenantId() != null ? task.getTenantId() : TenantContextHolder.getTenantId());
+            req.setUserId(userId); // 发起人 userId: 检索权限过滤需要(否则 fail-closed 空权限 → 检索为空)
             CommonResult<EvidenceEvaluateRespDTO> resp = evidenceApi.evaluate(req);
             // RPC 失败(网络异常由 catch 处理; 非 0 码/空数据在此处理)
             if (resp == null || resp.getCode() != 0 || resp.getData() == null) {
