@@ -8,6 +8,7 @@ import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseSlotDO;
 import cn.iocoder.yudao.module.knowledge.service.common.PublishedContentCollector;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiKnowledgeBaseSlotService;
+import cn.iocoder.yudao.module.knowledge.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import com.alibaba.ttl.TtlRunnable;
@@ -60,6 +61,8 @@ public class SlotSummarizer {
     private PublishedContentCollector publishedContentCollector;
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
 
     /**
      * 同步总结知识库槽位(手动 summarize 与异步任务共用)
@@ -77,7 +80,7 @@ public class SlotSummarizer {
             }
             // 2. LLM 总结
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(SYSTEM_PROMPT);
+            req.setSystem(promptSupport.get("slot-summarize", SYSTEM_PROMPT));
             req.setUser(content);
             req.setTemperature(0.0); // 与槽位检测一致: 结构化输出确定性
             String resp = modelApi.chat(req).getCheckedData();

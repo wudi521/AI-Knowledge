@@ -10,6 +10,7 @@ import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.retrieval.controller.admin.search.vo.RetrievalReqVO;
 import cn.iocoder.yudao.module.retrieval.controller.admin.search.vo.RetrievalRespVO;
+import cn.iocoder.yudao.module.retrieval.service.prompt.PromptSupport;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -65,6 +66,8 @@ public class SearchService {
     private ResultFilter resultFilter;
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
 
     public RetrievalRespVO search(RetrievalReqVO req) {
         return search(req.getQuery(), req.getKbIds(), req.getTopK(),
@@ -308,7 +311,7 @@ public class SearchService {
                 evidence.append("[C").append(i + 1).append("] ").append(results.get(i).getContent()).append("\n\n");
             }
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(ANSWER_SYSTEM_PROMPT);
+            req.setSystem(promptSupport.get("search-answer", ANSWER_SYSTEM_PROMPT));
             String user = "问题: " + query;
             if (entities != null && !entities.isEmpty()) {
                 user += "\n\n问题实体(用于品牌/产品一致性校验): " + String.join("、", entities);

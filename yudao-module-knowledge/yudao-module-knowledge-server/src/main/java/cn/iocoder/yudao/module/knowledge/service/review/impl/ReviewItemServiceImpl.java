@@ -20,6 +20,7 @@ import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.enums.review.ReviewItemStatusEnum;
 import cn.iocoder.yudao.module.knowledge.service.review.ReviewItemService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
+import cn.iocoder.yudao.module.knowledge.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
@@ -72,6 +73,8 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     private IngestionApi ingestionApi;
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
 
     @Override
     @Transactional
@@ -159,7 +162,7 @@ public class ReviewItemServiceImpl implements ReviewItemService {
                 sb.setLength(4000);
             }
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(PRODUCT_SYSTEM_PROMPT);
+            req.setSystem(promptSupport.get("review-extract", PRODUCT_SYSTEM_PROMPT));
             req.setUser(sb.toString());
             String resp = modelApi.chat(req).getCheckedData();
             int start = resp.indexOf('{');
@@ -196,7 +199,7 @@ public class ReviewItemServiceImpl implements ReviewItemService {
             sb.append("[chunk_").append(chunk.getId()).append("]\n").append(chunk.getContent()).append("\n\n");
         }
         ModelChatReqDTO req = new ModelChatReqDTO();
-        req.setSystem(EXTRACT_SYSTEM_PROMPT);
+        req.setSystem(promptSupport.get("review-extract", EXTRACT_SYSTEM_PROMPT));
         req.setUser(sb.toString());
         String resp = modelApi.chat(req).getCheckedData();
         if (StrUtil.isBlank(resp)) {

@@ -22,6 +22,7 @@ import cn.iocoder.yudao.module.eval.controller.admin.cases.vo.EvalCaseSaveReqVO;
 import cn.iocoder.yudao.module.eval.controller.admin.cases.vo.EvalCaseUpdateReqVO;
 import cn.iocoder.yudao.module.eval.dal.dataobject.cases.EvalCaseDO;
 import cn.iocoder.yudao.module.eval.dal.mysql.cases.EvalCaseMapper;
+import cn.iocoder.yudao.module.eval.service.prompt.PromptSupport;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -152,6 +153,8 @@ public class EvalCaseService {
     private KnowledgeApi knowledgeApi;
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
 
     /**
      * 从知识库已发布内容自动生成评测用例(入库后一键评测用)
@@ -181,7 +184,7 @@ public class EvalCaseService {
             // 3. 跨文档均匀采样(等距取点, 覆盖多文档而非前 N 条) + LLM 命题
             List<KnowledgePublishedChunkDTO> sample = evenlySample(chunks, GENERATE_SAMPLE_LIMIT);
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(GENERATE_SYSTEM_PROMPT);
+            req.setSystem(promptSupport.get("eval-case-generate", GENERATE_SYSTEM_PROMPT));
             req.setUser(JSONUtil.toJsonStr(sample.stream().map(c -> {
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("chunkId", c.getChunkId());

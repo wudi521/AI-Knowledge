@@ -8,6 +8,7 @@ import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO;
+import cn.iocoder.yudao.module.retrieval.service.prompt.PromptSupport;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -83,6 +84,8 @@ public class QueryAnalysisService {
 
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
 
     /**
      * 分析查询(单轮, 无上下文; 兼容旧调用方)
@@ -149,15 +152,16 @@ public class QueryAnalysisService {
      */
     private String buildSystemPrompt(List<IntentDTO> intents) {
         if (intents == null || intents.isEmpty()) {
-            return SYSTEM_PROMPT;
+            return promptSupport.get("query-analysis", SYSTEM_PROMPT);
         }
-        int marker = DYNAMIC_SYSTEM_PROMPT.indexOf(INTENT_LIST_MARKER);
+        String dynamic = promptSupport.get("query-disambiguate", DYNAMIC_SYSTEM_PROMPT);
+        int marker = dynamic.indexOf(INTENT_LIST_MARKER);
         if (marker < 0) {
             log.warn("[buildSystemPrompt][动态意图模板缺占位符, 回退固定提示词]");
-            return SYSTEM_PROMPT;
+            return promptSupport.get("query-analysis", SYSTEM_PROMPT);
         }
-        StringBuilder sb = new StringBuilder(DYNAMIC_SYSTEM_PROMPT.length() + 256);
-        sb.append(DYNAMIC_SYSTEM_PROMPT, 0, marker);
+        StringBuilder sb = new StringBuilder(dynamic.length() + 256);
+        sb.append(dynamic, 0, marker);
         for (IntentDTO intent : intents) {
             sb.append("- ").append(intent.getName());
             if (StrUtil.isNotBlank(intent.getDescription())) {
@@ -165,7 +169,7 @@ public class QueryAnalysisService {
             }
             sb.append('\n');
         }
-        sb.append(DYNAMIC_SYSTEM_PROMPT, marker + INTENT_LIST_MARKER.length(), DYNAMIC_SYSTEM_PROMPT.length());
+        sb.append(dynamic, marker + INTENT_LIST_MARKER.length(), dynamic.length());
         return sb.toString();
     }
 

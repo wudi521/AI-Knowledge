@@ -14,6 +14,7 @@ import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.enums.conflict.ConflictStatusEnum;
 import cn.iocoder.yudao.module.knowledge.enums.review.ReviewItemStatusEnum;
 import cn.iocoder.yudao.module.knowledge.service.conflict.ConflictService;
+import cn.iocoder.yudao.module.knowledge.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
@@ -75,6 +76,8 @@ public class ConflictServiceImpl implements ConflictService {
     private AiDocVersionService aiDocVersionService;
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
     @Resource
     private PlatformTransactionManager transactionManager;
 
@@ -224,7 +227,7 @@ public class ConflictServiceImpl implements ConflictService {
     private JudgeResult judge(String oldContent, String newContent) {
         try {
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(JUDGE_SYSTEM_PROMPT);
+            req.setSystem(promptSupport.get("conflict-rule", JUDGE_SYSTEM_PROMPT));
             req.setUser("旧版本表述:\n" + oldContent + "\n\n新版本表述:\n" + newContent);
             String resp = modelApi.chat(req).getCheckedData();
             int start = resp.indexOf('{');

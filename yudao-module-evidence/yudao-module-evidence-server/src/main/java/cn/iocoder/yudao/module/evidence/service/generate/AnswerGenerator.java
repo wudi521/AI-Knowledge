@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.evidence.service.generate;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
+import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import jakarta.annotation.Resource;
@@ -40,6 +41,8 @@ public class AnswerGenerator {
 
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
 
     /**
      * 生成回答(首次尝试)
@@ -86,9 +89,10 @@ public class AnswerGenerator {
                 log.warn("[generate][证据列表为空, 无法生成回答, 返回 null]");
                 return null;
             }
+            String basePrompt = promptSupport.get("answer-generate", SYSTEM_PROMPT);
             String system = StrUtil.isBlank(retryFeedback)
-                    ? SYSTEM_PROMPT
-                    : SYSTEM_PROMPT + "\n\n" + retryFeedback + "\n无据句必须删除或改写为有据表述。";
+                    ? basePrompt
+                    : basePrompt + "\n\n" + retryFeedback + "\n无据句必须删除或改写为有据表述。";
             ModelChatReqDTO req = new ModelChatReqDTO();
             req.setSystem(system);
             req.setUser(buildUserPrompt(query, evidences, history));

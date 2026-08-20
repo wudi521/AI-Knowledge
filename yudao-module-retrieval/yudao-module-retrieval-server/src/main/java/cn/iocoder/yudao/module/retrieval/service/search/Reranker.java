@@ -6,6 +6,7 @@ import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import cn.iocoder.yudao.module.model.api.dto.ModelRerankReqDTO;
+import cn.iocoder.yudao.module.retrieval.service.prompt.PromptSupport;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -37,6 +38,8 @@ public class Reranker {
 
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
 
     /**
      * 重排候选
@@ -74,7 +77,7 @@ public class Reranker {
                 sb.append("[").append(i).append("] ").append(contents.get(i)).append("\n\n");
             }
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(LLM_SCORE_SYSTEM_PROMPT);
+            req.setSystem(promptSupport.get("rerank-llm", LLM_SCORE_SYSTEM_PROMPT));
             req.setUser("问题: " + query + "\n\n候选片段:\n" + sb);
             String resp = modelApi.chat(req).getCheckedData();
             List<Float> scores = parseScoreArray(resp, contents.size());

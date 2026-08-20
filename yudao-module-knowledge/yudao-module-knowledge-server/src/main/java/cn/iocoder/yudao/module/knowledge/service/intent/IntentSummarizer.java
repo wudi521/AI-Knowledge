@@ -7,6 +7,7 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.intent.AiIntentDO;
 import cn.iocoder.yudao.module.knowledge.service.common.PublishedContentCollector;
+import cn.iocoder.yudao.module.knowledge.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import com.alibaba.ttl.TtlRunnable;
@@ -60,6 +61,8 @@ public class IntentSummarizer {
     private PublishedContentCollector publishedContentCollector;
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
 
     /**
      * 同步总结知识库意图(手动 summarize 与异步任务共用)
@@ -77,7 +80,7 @@ public class IntentSummarizer {
             }
             // 2. LLM 总结
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(SYSTEM_PROMPT);
+            req.setSystem(promptSupport.get("intent-summarize", SYSTEM_PROMPT));
             req.setUser(content);
             String resp = modelApi.chat(req).getCheckedData();
             if (StrUtil.isBlank(resp)) {

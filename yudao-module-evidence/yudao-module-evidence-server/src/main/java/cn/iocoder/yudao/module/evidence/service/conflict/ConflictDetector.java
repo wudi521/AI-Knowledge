@@ -7,6 +7,7 @@ import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.evidence.domain.Conflict;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.service.assemble.EvidenceSimilarity;
+import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import jakarta.annotation.Resource;
@@ -55,6 +56,8 @@ public class ConflictDetector {
 
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
 
     /**
      * 冲突判定
@@ -75,7 +78,7 @@ public class ConflictDetector {
         String resp;
         try {
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(SYSTEM_PROMPT);
+            req.setSystem(promptSupport.get("conflict-detect", SYSTEM_PROMPT));
             req.setUser(buildUserPrompt(evidences, pairs));
             resp = modelApi.chat(req).getCheckedData();
         } catch (Exception e) {

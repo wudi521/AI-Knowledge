@@ -9,6 +9,7 @@ import cn.iocoder.yudao.module.evidence.domain.ClaimResult;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.conflict.JsonExtract;
+import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import jakarta.annotation.Resource;
@@ -52,6 +53,8 @@ public class ClaimVerifier {
 
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private PromptSupport promptSupport;
 
     /**
      * 证据业务配置(构造注入; 当前 claim.max-retry 由编排器消费, 此处预留 Claim 相关配置扩展位)
@@ -90,7 +93,7 @@ public class ClaimVerifier {
                 return null;
             }
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(SYSTEM_PROMPT);
+            req.setSystem(promptSupport.get("claim-verify", SYSTEM_PROMPT));
             req.setUser(buildUserPrompt(query, answer, evidences, history));
             String resp = modelApi.chat(req).getCheckedData();
             List<ClaimResult> claims = parseClaims(resp);

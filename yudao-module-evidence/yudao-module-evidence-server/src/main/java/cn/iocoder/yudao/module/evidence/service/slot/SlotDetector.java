@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeSlotDefinitionDTO;
 import cn.iocoder.yudao.module.model.api.ModelApi;
@@ -51,6 +52,9 @@ public class SlotDetector {
 
     @Resource
     private ModelApi modelApi;
+
+    @Resource
+    private PromptSupport promptSupport;
 
     /**
      * 检测: 抽取槽位值并找出缺失必填槽位
@@ -150,7 +154,8 @@ public class SlotDetector {
             return m;
         }).collect(Collectors.toList());
         ModelChatReqDTO req = new ModelChatReqDTO();
-        req.setSystem(SYSTEM_PROMPT.replace("{defs}", JSONUtil.toJsonStr(defsJson)));
+        String sys = promptSupport.get("slot-detect", SYSTEM_PROMPT);
+        req.setSystem(sys.replace("{defs}", JSONUtil.toJsonStr(defsJson)));
         req.setUser("问题: " + query);
         req.setTemperature(0.0); // 结构化抽取: 置 0 保证确定性(默认 0.2 采样会造成抽取得失不稳定)
         return req;
