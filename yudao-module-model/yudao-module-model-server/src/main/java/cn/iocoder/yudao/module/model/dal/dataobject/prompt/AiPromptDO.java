@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.model.dal.dataobject.prompt;
 
 import cn.iocoder.yudao.framework.mybatis.core.dataobject.BaseDO;
+import cn.iocoder.yudao.framework.tenant.core.aop.TenantIgnore;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.KeySequence;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -12,6 +13,7 @@ import lombok.*;
  */
 @TableName("ai_prompt")
 @KeySequence("ai_prompt_seq")
+@TenantIgnore // 平台级表: 不参与租户过滤(拦截器对无 @TenantIgnore 的 BaseDO 表也会加 tenant_id)
 @Data
 @EqualsAndHashCode(callSuper = true)
 @ToString(callSuper = true)
