@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.knowledge.api;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgePublishedChunkDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeSlotDefinitionDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.enums.ApiConstants;
@@ -127,5 +128,14 @@ public interface KnowledgeApi {
      */
     @PostMapping(ApiConstants.PREFIX + "/get-kb-slots")
     CommonResult<List<KnowledgeSlotDefinitionDTO>> getSlotDefinitions(@RequestBody List<Long> kbIds);
+
+    /**
+     * 采样查询知识库已发布片段(评测自动生成用例等用; 跨版本均衡采样, 每片段截断)
+     *
+     * @param kbId 知识库编号
+     * @return 已发布片段采样列表(无已发布内容返回空列表)
+     */
+    @GetMapping(ApiConstants.PREFIX + "/get-published-chunks")
+    CommonResult<List<KnowledgePublishedChunkDTO>> getPublishedChunks(@RequestParam("kbId") Long kbId);
 
 }

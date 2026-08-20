@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeSlotDefinitionDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgePublishedChunkDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.intent.AiIntentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
@@ -14,6 +15,7 @@ import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBas
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.service.intent.IntentService;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
+import cn.iocoder.yudao.module.knowledge.service.common.PublishedContentCollector;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiKnowledgeBaseSlotService;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
@@ -52,6 +54,8 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     private IntentService intentService;
     @Resource
     private AiKnowledgeBaseSlotService aiKnowledgeBaseSlotService;
+    @Resource
+    private PublishedContentCollector publishedContentCollector;
 
     @Override
     public Boolean checkKnowledgePermission(Long chunkId, Long userId) {
@@ -161,6 +165,11 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     public CommonResult<List<KnowledgeSlotDefinitionDTO>> getSlotDefinitions(List<Long> kbIds) {
         List<AiKnowledgeBaseSlotDO> slots = aiKnowledgeBaseSlotService.getEnabledByKbIds(kbIds);
         return success(BeanUtils.toBean(slots, KnowledgeSlotDefinitionDTO.class));
+    }
+
+    @Override
+    public CommonResult<List<KnowledgePublishedChunkDTO>> getPublishedChunks(Long kbId) {
+        return success(publishedContentCollector.collectPublishedChunks(kbId));
     }
 
 }
