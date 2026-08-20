@@ -20,3 +20,13 @@ UPDATE `system_menu` SET `parent_id` = 6740, `sort` = 109 WHERE `id` = 6806; -- 
 
 -- 还原保护: AI 知识库(系统原有)保持 2758 下(误移则还原)
 UPDATE `system_menu` SET `parent_id` = 2758, `sort` = 5 WHERE `id` = 2915;
+
+-- 修订2: 槽位/意图 按钮权限行(我方 2026-08-19/20 创建)归入 6737 知识库列表
+UPDATE `system_menu` SET `parent_id` = 6737, `sort` = 1 WHERE `id` = 6808;
+UPDATE `system_menu` SET `parent_id` = 6737, `sort` = 2 WHERE `id` = 6809;
+UPDATE `system_menu` SET `parent_id` = 6737, `sort` = 3 WHERE `id` = 6810;
+UPDATE `system_menu` SET `parent_id` = 6737, `sort` = 4 WHERE `id` = 6811;
+UPDATE `system_menu` SET `parent_id` = 6737, `sort` = 5 WHERE `id` = 6768;
+UPDATE `system_menu` SET `parent_id` = 6737, `sort` = 6 WHERE `id` = 6769;
+UPDATE `system_menu` SET `parent_id` = 6737, `sort` = 7 WHERE `id` = 6770;
+UPDATE `system_menu` SET `parent_id` = 6737, `sort` = 8 WHERE `id` = 6771;
