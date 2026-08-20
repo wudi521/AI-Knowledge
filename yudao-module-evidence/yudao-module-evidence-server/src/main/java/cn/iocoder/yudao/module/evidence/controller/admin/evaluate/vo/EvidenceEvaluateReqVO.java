@@ -20,4 +20,7 @@ public class EvidenceEvaluateReqVO {
     /** 返回证据条数(默认 8) */
     private Integer topK = 8;
 
+    /** 跳过槽位检测(评测/批处理用) */
+    private Boolean skipSlotDetection;
+
 }

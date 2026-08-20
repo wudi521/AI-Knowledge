@@ -30,7 +30,8 @@ public class EvidenceEvaluateController {
     @Operation(summary = "证据评估(检索→去重→冲突→充分性→生成+Claim验证→落库)")
     @PreAuthorize("@ss.hasPermission('evidence:evaluate')")
     public CommonResult<EvidenceEvaluateRespVO> evaluate(@Valid @RequestBody EvidenceEvaluateReqVO req) {
-        return success(evidenceService.evaluate(req.getQuery(), req.getKbIds(), req.getTopK()));
+        return success(evidenceService.evaluate(req.getQuery(), req.getKbIds(), req.getTopK(),
+                req.getSkipSlotDetection()));
     }
 
 }

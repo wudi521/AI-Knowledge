@@ -28,4 +28,7 @@ public class EvidenceEvaluateReqDTO {
     /** 上下文轮次(可选, 空 = 单轮) */
     private List<ChatTurnDTO> history;
 
+    /** 跳过槽位检测(评测/批处理用: 测检索+回答质量, 不走对话层反问门) */
+    private Boolean skipSlotDetection;
+
 }

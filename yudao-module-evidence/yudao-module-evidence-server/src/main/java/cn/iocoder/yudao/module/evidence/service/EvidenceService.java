@@ -75,11 +75,19 @@ public class EvidenceService {
      * @return 评估结果(永不抛异常)
      */
     public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK) {
+        return evaluate(query, kbIds, topK, (Boolean) null);
+    }
+
+    /**
+     * 证据评估(Controller 直连场景; 支持跳过槽位检测)
+     */
+    public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
+                                           Boolean skipSlotDetection) {
         // 登录态: 经网关有登录用户; 缺失(如本地直连无 token)时透传 null
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
         Long userId = loginUser != null ? loginUser.getId() : null;
-        return evaluate(query, kbIds, topK, tenantId, userId);
+        return evaluate(query, kbIds, topK, tenantId, userId, null, skipSlotDetection);
     }
 
     /**
@@ -110,6 +118,17 @@ public class EvidenceService {
      */
     public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
                                            Long tenantId, Long userId, List<ChatTurnDTO> history) {
+        return evaluate(query, kbIds, topK, tenantId, userId, history, null);
+    }
+
+    /**
+     * 证据评估(Feign RPC 场景; 支持多轮上下文 + 跳过槽位检测)
+     *
+     * @param skipSlotDetection 是否跳过槽位检测(评测/批处理用: 测检索+回答质量, 不走对话层反问门)
+     */
+    public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
+                                           Long tenantId, Long userId, List<ChatTurnDTO> history,
+                                           Boolean skipSlotDetection) {
         long start = System.currentTimeMillis();
         String traceId = newTraceId();
 
@@ -121,7 +140,8 @@ public class EvidenceService {
 
         // 0. 槽位检测(检索之前; 缺必填槽位 → 反问短路, 不检索; 检测失败/无定义 → 走原流程)
         SlotDetectionResult slotResult = null;
-        if (Boolean.TRUE.equals(properties.getSlot().getEnabled())
+        if (!Boolean.TRUE.equals(skipSlotDetection)
+                && Boolean.TRUE.equals(properties.getSlot().getEnabled())
                 && kbIds != null && !kbIds.isEmpty()) {
             slotResult = slotDetector.detect(query, kbIds);
             if (slotResult != null && slotResult.isApplicable() && !slotResult.getMissing().isEmpty()) {

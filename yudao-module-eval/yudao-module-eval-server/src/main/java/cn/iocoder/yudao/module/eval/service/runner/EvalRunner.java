@@ -216,6 +216,7 @@ public class EvalRunner {
             req.setQuery(evalCase.getQuestion());
             req.setKbIds(evalCase.getKbId() != null ? List.of(evalCase.getKbId()) : null);
             req.setTopK(TOP_K);
+            req.setSkipSlotDetection(true); // 评测测检索+回答质量, 不走对话层槽位反问门
             req.setTenantId(task.getTenantId() != null ? task.getTenantId() : TenantContextHolder.getTenantId());
             CommonResult<EvidenceEvaluateRespDTO> resp = evidenceApi.evaluate(req);
             // RPC 失败(网络异常由 catch 处理; 非 0 码/空数据在此处理)
