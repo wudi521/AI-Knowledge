@@ -1,6 +1,5 @@
 package cn.iocoder.yudao.module.model.service.gateway;
 
-import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.model.dal.dataobject.model.AiModelConfigDO;
 import cn.iocoder.yudao.module.model.dal.mysql.model.AiModelConfigMapper;
@@ -24,7 +23,7 @@ public class ModelResolver {
         List<AiModelConfigDO> exact = aiModelConfigMapper.selectList(new LambdaQueryWrapperX<AiModelConfigDO>()
                 .eq(AiModelConfigDO::getType, type)
                 .eq(AiModelConfigDO::getScenario, scenario == null ? "*" : scenario)
-                .eq(AiModelConfigDO::getStatus, CommonStatusEnum.ENABLE.getStatus())
+                .eq(AiModelConfigDO::getStatus, 1) // 模块约定: 1=启用 0=停用(与框架 CommonStatusEnum 相反)
                 .orderByAsc(AiModelConfigDO::getPriority)
                 .orderByAsc(AiModelConfigDO::getId));
         if (!exact.isEmpty()) {
@@ -33,7 +32,7 @@ public class ModelResolver {
         return aiModelConfigMapper.selectList(new LambdaQueryWrapperX<AiModelConfigDO>()
                 .eq(AiModelConfigDO::getType, type)
                 .eq(AiModelConfigDO::getScenario, "*")
-                .eq(AiModelConfigDO::getStatus, CommonStatusEnum.ENABLE.getStatus())
+                .eq(AiModelConfigDO::getStatus, 1) // 模块约定: 1=启用 0=停用(与框架 CommonStatusEnum 相反)
                 .orderByAsc(AiModelConfigDO::getPriority)
                 .orderByAsc(AiModelConfigDO::getId));
     }
