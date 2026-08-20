@@ -1,6 +1,18 @@
 package cn.iocoder.yudao.module.eval.service.cases;
 
 import cn.hutool.core.util.StrUtil;
+import java.util.stream.Collectors;
+import java.util.Set;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
+import cn.iocoder.yudao.module.model.api.ModelApi;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgePublishedChunkDTO;
+import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
+import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
+import cn.hutool.json.JSONObject;
+import cn.hutool.json.JSONArray;
+import cn.hutool.core.collection.CollUtil;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
@@ -112,6 +124,116 @@ public class EvalCaseService {
             return null;
         }
         return JSONUtil.toJsonStr(goldChunks);
+    }
+
+    // ========== 自动生成用例(入库后一键评测) ==========
+
+    /** 该知识库已有用例数达到上限后不再自动生成(避免重复堆积) */
+    private static final int MAX_AUTO_CASES_PER_KB = 5;
+
+    /** 单次生成采样的片段上限(片段来自 knowledge 已发布均衡采样) */
+    private static final int GENERATE_SAMPLE_LIMIT = 8;
+
+    /** 用例分类标记(自动生成) */
+    private static final String CATEGORY_AUTO = "自动生成";
+
+    private static final String GENERATE_SYSTEM_PROMPT = """
+            你是知识库评测命题员。根据给定的知识片段(含片段编号), 为每个片段生成一道客户咨询题:
+            {"cases":[{"chunkId":123,"question":"客户会怎么问?","goldAnswer":"依据该片段的标准答案"}]}
+            要求:
+            1. 每题 question 是客户口语化咨询, 且必须能仅凭该片段内容作答;
+            2. goldAnswer 严格依据片段内容给出标准答案, 不得编造片段外信息;
+            3. 覆盖片段, 不要遗漏; 只输出合法 JSON, 不要其他文字。
+            """;
+
+    @Resource
+    private KnowledgeApi knowledgeApi;
+    @Resource
+    private ModelApi modelApi;
+
+    /**
+     * 从知识库已发布内容自动生成评测用例(入库后一键评测用)
+     * <p>
+     * 规则: 该库已有用例数 &gt;= MAX_AUTO_CASES_PER_KB(5) 时跳过(返回 0);
+     * 采样已发布片段(≤8) → LLM 逐片段命题(question/goldAnswer, goldChunks=来源片段) → 落库。
+     * 失败语义: 任何失败返回 -1, 绝不抛出。
+     *
+     * @param kbId 知识库编号
+     * @return 新生成用例数; 无已发布内容/已达上限返回 0; 失败返回 -1
+     */
+    public int generateCases(Long kbId) {
+        try {
+            // 1. 已发布片段采样
+            List<KnowledgePublishedChunkDTO> chunks = knowledgeApi.getPublishedChunks(kbId).getCheckedData();
+            if (CollUtil.isEmpty(chunks)) {
+                log.warn("[generateCases][知识库 {} 无已发布内容, 跳过生成]", kbId);
+                return 0;
+            }
+            // 2. 幂等: 已有用例足够时跳过
+            Long existing = evalCaseMapper.selectCount(new LambdaQueryWrapperX<EvalCaseDO>()
+                    .eq(EvalCaseDO::getKbId, kbId));
+            if (existing != null && existing >= MAX_AUTO_CASES_PER_KB) {
+                log.info("[generateCases][知识库 {} 已有 {} 个用例, 跳过自动生成]", kbId, existing);
+                return 0;
+            }
+            // 3. 采样 + LLM 命题
+            List<KnowledgePublishedChunkDTO> sample = chunks.subList(0, Math.min(GENERATE_SAMPLE_LIMIT, chunks.size()));
+            ModelChatReqDTO req = new ModelChatReqDTO();
+            req.setSystem(GENERATE_SYSTEM_PROMPT);
+            req.setUser(JSONUtil.toJsonStr(sample.stream().map(c -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("chunkId", c.getChunkId());
+                m.put("content", c.getContent());
+                return m;
+            }).toList()));
+            req.setTemperature(0.0); // 结构化输出确定性
+            String resp = modelApi.chat(req).getCheckedData();
+            if (StrUtil.isBlank(resp)) {
+                log.warn("[generateCases][知识库 {} LLM 返回为空, 跳过]", kbId);
+                return -1;
+            }
+            // 4. 解析 + 落库(仅认采样片段编号)
+            Set<Long> sampleIds = sample.stream().map(KnowledgePublishedChunkDTO::getChunkId)
+                    .collect(Collectors.toSet());
+            int start = resp.indexOf('{');
+            int end = resp.lastIndexOf('}');
+            if (start < 0 || end <= start) {
+                log.warn("[generateCases][知识库 {} LLM 输出无法解析, 跳过; 原文: {}]", kbId, resp);
+                return -1;
+            }
+            JSONArray arr = JSONUtil.parseObj(resp.substring(start, end + 1)).getJSONArray("cases");
+            if (arr == null) {
+                log.warn("[generateCases][知识库 {} LLM 输出无 cases, 跳过; 原文: {}]", kbId, resp);
+                return -1;
+            }
+            int inserted = 0;
+            for (Object o : arr) {
+                if (!(o instanceof JSONObject obj)) {
+                    continue;
+                }
+                Long chunkId = obj.getLong("chunkId");
+                String question = StrUtil.nullToEmpty(obj.getStr("question")).trim();
+                String goldAnswer = StrUtil.nullToEmpty(obj.getStr("goldAnswer")).trim();
+                if (chunkId == null || !sampleIds.contains(chunkId) || StrUtil.isBlank(question)
+                        || StrUtil.isBlank(goldAnswer)) {
+                    continue;
+                }
+                EvalCaseDO evalCase = EvalCaseDO.builder()
+                        .question(StrUtil.maxLength(question, 500))
+                        .goldAnswer(StrUtil.maxLength(goldAnswer, 2000))
+                        .goldChunks(JSONUtil.toJsonStr(List.of(chunkId)))
+                        .kbId(kbId)
+                        .category(CATEGORY_AUTO)
+                        .build();
+                evalCaseMapper.insert(evalCase);
+                inserted++;
+            }
+            log.info("[generateCases][知识库 {} 自动生成用例完成: {} 个]", kbId, inserted);
+            return inserted;
+        } catch (Exception e) {
+            log.warn("[generateCases][知识库 {} 自动生成用例失败: {}]", kbId, e.getMessage(), e);
+            return -1;
+        }
     }
 
 }

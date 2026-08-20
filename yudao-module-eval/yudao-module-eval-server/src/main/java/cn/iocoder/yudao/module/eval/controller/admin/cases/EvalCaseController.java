@@ -63,6 +63,14 @@ public class EvalCaseController {
         return success(true);
     }
 
+    @PostMapping("/generate")
+    @Operation(summary = "从知识库已发布内容自动生成评测用例(入库后一键评测; 该库已有≥5个用例时跳过)")
+    @Parameter(name = "kbId", description = "知识库编号", required = true)
+    @PreAuthorize("@ss.hasPermission('eval:case:create')")
+    public CommonResult<Integer> generateCases(@RequestParam("kbId") Long kbId) {
+        return success(evalCaseService.generateCases(kbId));
+    }
+
     @GetMapping("/page")
     @Operation(summary = "获得评测用例分页")
     @PreAuthorize("@ss.hasPermission('eval:case:query')")
