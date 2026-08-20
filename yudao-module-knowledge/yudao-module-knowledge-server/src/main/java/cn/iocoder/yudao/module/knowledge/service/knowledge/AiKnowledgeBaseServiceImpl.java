@@ -8,6 +8,7 @@ import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowled
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowledgeBaseSaveReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
+import cn.iocoder.yudao.module.knowledge.service.slot.SlotSummarizer;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
@@ -29,10 +30,15 @@ public class AiKnowledgeBaseServiceImpl implements AiKnowledgeBaseService {
     @Resource
     private KnowledgePermissionHelper knowledgePermissionHelper;
 
+    @Resource
+    private SlotSummarizer slotSummarizer;
+
     @Override
     public Long createAiKnowledgeBase(AiKnowledgeBaseSaveReqVO createReqVO) {
         AiKnowledgeBaseDO knowledgeBase = BeanUtils.toBean(createReqVO, AiKnowledgeBaseDO.class);
         aiKnowledgeBaseMapper.insert(knowledgeBase);
+        // 新建即触发槽位自动总结(空库无内容 → 优雅跳过; 发布后会自动再触发)
+        slotSummarizer.summarizeByKbAsync(knowledgeBase.getId());
         return knowledgeBase.getId();
     }
 

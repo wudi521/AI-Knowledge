@@ -14,6 +14,7 @@ import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
 import cn.iocoder.yudao.module.knowledge.service.conflict.ConflictService;
 import cn.iocoder.yudao.module.knowledge.service.intent.IntentSummarizer;
+import cn.iocoder.yudao.module.knowledge.service.slot.SlotSummarizer;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
@@ -47,6 +48,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     private ConflictService conflictService;
     @Resource
     private IntentSummarizer intentSummarizer;
+    @Resource
+    private SlotSummarizer slotSummarizer;
     @Resource
     private EvalApi evalApi;
 
@@ -199,10 +202,12 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
                 @Override
                 public void afterCommit() {
                     intentSummarizer.summarizeByKbAsync(doc.getKbId());
+                    slotSummarizer.summarizeByKbAsync(doc.getKbId());
                 }
             });
         } else {
             intentSummarizer.summarizeByKbAsync(doc.getKbId());
+            slotSummarizer.summarizeByKbAsync(doc.getKbId());
         }
         log.info("[publish][版本 {} 发布完成, 文档 {}]", versionId, doc.getId());
     }

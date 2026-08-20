@@ -8,6 +8,7 @@ import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowled
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowledgeBaseSlotSaveReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseSlotDO;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiKnowledgeBaseSlotService;
+import cn.iocoder.yudao.module.knowledge.service.slot.SlotSummarizer;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -27,6 +28,9 @@ public class AiKnowledgeBaseSlotController {
 
     @Resource
     private AiKnowledgeBaseSlotService aiKnowledgeBaseSlotService;
+
+    @Resource
+    private SlotSummarizer slotSummarizer;
 
     @PostMapping("/create")
     @Operation(summary = "创建知识库槽位定义")
@@ -66,6 +70,14 @@ public class AiKnowledgeBaseSlotController {
     public CommonResult<PageResult<AiKnowledgeBaseSlotRespVO>> getAiKnowledgeBaseSlotPage(@Valid AiKnowledgeBaseSlotPageReqVO pageReqVO) {
         PageResult<AiKnowledgeBaseSlotDO> pageResult = aiKnowledgeBaseSlotService.getAiKnowledgeBaseSlotPage(pageReqVO);
         return success(BeanUtils.toBean(pageResult, AiKnowledgeBaseSlotRespVO.class));
+    }
+
+    @PostMapping("/summarize")
+    @Operation(summary = "LLM 总结知识库槽位(覆盖 LLM_AUTO, MANUAL 保留)")
+    @Parameter(name = "kbId", description = "知识库编号", required = true)
+    @PreAuthorize("@ss.hasPermission('knowledge:kb-slot:update')")
+    public CommonResult<Integer> summarize(@RequestParam("kbId") Long kbId) {
+        return success(slotSummarizer.summarizeByKb(kbId));
     }
 
 }
