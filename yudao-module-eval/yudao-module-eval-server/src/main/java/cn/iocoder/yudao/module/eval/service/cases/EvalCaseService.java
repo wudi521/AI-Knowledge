@@ -132,8 +132,8 @@ public class EvalCaseService {
     /** 该知识库已有用例数达到上限后不再自动生成(避免重复堆积) */
     private static final int MAX_AUTO_CASES_PER_KB = 5;
 
-    /** 单次生成采样的片段上限(片段来自 knowledge 已发布均衡采样) */
-    private static final int GENERATE_SAMPLE_LIMIT = 8;
+    /** 单次生成采样的片段上限(跨文档均匀抽取, 避免单文档表格行占满) */
+    private static final int GENERATE_SAMPLE_LIMIT = 12;
 
     /** 用例分类标记(自动生成) */
     private static final String CATEGORY_AUTO = "自动生成";
@@ -178,8 +178,8 @@ public class EvalCaseService {
                 log.info("[generateCases][知识库 {} 已有 {} 个用例, 跳过自动生成]", kbId, existing);
                 return 0;
             }
-            // 3. 采样 + LLM 命题
-            List<KnowledgePublishedChunkDTO> sample = chunks.subList(0, Math.min(GENERATE_SAMPLE_LIMIT, chunks.size()));
+            // 3. 跨文档均匀采样(等距取点, 覆盖多文档而非前 N 条) + LLM 命题
+            List<KnowledgePublishedChunkDTO> sample = evenlySample(chunks, GENERATE_SAMPLE_LIMIT);
             ModelChatReqDTO req = new ModelChatReqDTO();
             req.setSystem(GENERATE_SYSTEM_PROMPT);
             req.setUser(JSONUtil.toJsonStr(sample.stream().map(c -> {
@@ -247,6 +247,20 @@ public class EvalCaseService {
             log.warn("[generateCases][知识库 {} 自动生成用例失败: {}]", kbId, e.getMessage(), e);
             return -1;
         }
+    }
+
+    /** 跨文档均匀采样: 等距取点最多 limit 个, 避免前 N 条全来自同一文档 */
+    private List<KnowledgePublishedChunkDTO> evenlySample(List<KnowledgePublishedChunkDTO> chunks, int limit) {
+        int size = chunks.size();
+        if (size <= limit) {
+            return chunks;
+        }
+        List<KnowledgePublishedChunkDTO> sample = new ArrayList<>();
+        for (int i = 0; i < limit; i++) {
+            int idx = (int) Math.round(i * (size - 1) / (double) (limit - 1));
+            sample.add(chunks.get(idx));
+        }
+        return sample;
     }
 
 }
