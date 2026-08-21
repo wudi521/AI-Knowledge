@@ -29,8 +29,11 @@ public class Evidence {
     /** 版本号: V1/V2/... */
     private String versionNo;
 
-    /** 归一化得分(0~1, 批次内 min-max, 供排序/充分性判定) */
+    /** 归一化得分(0~1, 批次内 min-max, 供排序用) */
     private Double score;
+
+    /** 原始检索分(重排分优先, 否则 RRF 分; 未归一化, 供充分性判定区分度; 可为 null) */
+    private Double rawScore;
 
     /**
      * 证据涉及的产品/品牌

@@ -82,7 +82,7 @@ public class SufficiencyJudge {
             double topScore = maxScore(evs);
             int evidenceCount = evs.size();
             int minCount = minEvidenceCount(cfg);
-            double countMetric = Math.min((double) evidenceCount / minCount, 1.0);
+            double countMetric = countMetric(evidenceCount, minCount);
             double coverageMetric = entityCoverage(evs, products);
             double confidence = fuse(topScore, countMetric, coverageMetric, cfg);
 
@@ -123,15 +123,40 @@ public class SufficiencyJudge {
 
     // ========== 指标 ==========
 
-    /** 最高证据分(0~1, 无证据为 0; score 为 null 按 0 处理) */
+    /**
+     * 最高证据原始分: 优先 rawScore(重排/RRF 原始分, 未归一化, 保留区分度), 缺失回退归一化 score。
+     * 无证据为 0。修复: 归一化 min-max 使最高分恒为 1.0(全相等时更全部为 1.0),
+     * 原 topScore 恒 1.0 导致 confidence 虚高、阈值判定不可达。
+     */
     private double maxScore(List<Evidence> evidences) {
         double max = 0.0;
         for (Evidence evidence : evidences) {
-            if (evidence != null && evidence.getScore() != null && evidence.getScore() > max) {
-                max = evidence.getScore();
+            if (evidence == null) {
+                continue;
+            }
+            Double s = evidence.getRawScore() != null ? evidence.getRawScore() : evidence.getScore();
+            if (s != null && s > max) {
+                max = s;
             }
         }
         return max;
+    }
+
+    /**
+     * 证据条数指标(分段饱和, 拉开区分度; 修复原线性 min(count/minCount,1) 到 2 条即饱和 1.0):
+     * 0→0, 1→0.4, 2→0.7, 3→0.85, ≥4→1.0(以 minCount 为界缩放, 最小条数要求内按比例)
+     */
+    private double countMetric(int evidenceCount, int minCount) {
+        if (evidenceCount <= 0) {
+            return 0.0;
+        }
+        if (evidenceCount >= minCount) {
+            // 达到最低要求后再按条数微增, 但至少 0.7(有支撑) 且不超过 1.0
+            return Math.min(1.0, 0.7 + 0.15 * (evidenceCount - minCount));
+        }
+        // 未达最低要求: 按比例, 但上限低于 0.7(明确不足)
+        double ratio = (double) evidenceCount / minCount;
+        return Math.min(0.65, ratio * 0.65);
     }
 
     /**

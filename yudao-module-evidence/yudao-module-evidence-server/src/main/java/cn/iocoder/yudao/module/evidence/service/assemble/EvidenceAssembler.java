@@ -102,6 +102,7 @@ public class EvidenceAssembler {
                     .documentName(result.getDocumentName())
                     .versionNo(result.getVersionNo())
                     .score(normalizedScores.get(i))
+                    .rawScore(rawScores.get(i))
                     // 检索 RPC 不暴露逐条证据的产品归属, 保持空列表(Task 4 实体覆盖率退化为 questionProducts 覆盖检查)
                     .products(Collections.emptyList())
                     .channels(result.getChannels() != null ? new ArrayList<>(result.getChannels()) : new ArrayList<>())
