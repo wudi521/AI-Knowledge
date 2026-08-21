@@ -142,7 +142,10 @@ public class ChatPipeline {
         Long userId = loginUser != null ? loginUser.getId() : null;
         EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null, history);
 
-        // 5. 分流: 可作答 → 回答; 否则 → 转人工决策(TransferHandler 落库 SYSTEM + 状态迁移)
+        // 5. 分流: 缺必填槽位 → 反问(不转人工); 可作答 → 回答; 否则 → 转人工决策
+        if (isClarifyRequired(resp)) {
+            return buildClarifyResult(conversationId, resp);
+        }
         if (isAnswerable(resp)) {
             return buildAnswerResult(conversationId, resp);
         }
@@ -166,6 +169,35 @@ public class ChatPipeline {
     }
 
     // ========== 判定与分流 ==========
+
+    /**
+     * 是否需要反问(槽位检测缺必填信息): 证据评估返回 missingSlots 非空且给了反问问题。
+     * <p>
+     * 反问不是转人工: 客户补充信息后可继续作答, 会话保持 ACTIVE。
+     */
+    private boolean isClarifyRequired(EvidenceEvaluateRespDTO resp) {
+        return resp != null
+                && resp.getMissingSlots() != null
+                && !resp.getMissingSlots().isEmpty()
+                && StrUtil.isNotBlank(resp.getClarifyQuestion());
+    }
+
+    /**
+     * 反问路径: 落库 AI 消息(反问问题)并返回决策, 不转人工、不迁移会话状态。
+     */
+    private ChatSendResult buildClarifyResult(Long conversationId, EvidenceEvaluateRespDTO resp) {
+        messageService.addMessage(conversationId, "AI", resp.getClarifyQuestion(),
+                null, null, null, null, resp.getTraceId());
+        return ChatSendResult.builder()
+                .conversationId(conversationId)
+                .reply(resp.getClarifyQuestion())
+                .answerable(false)
+                .confidence(resp.getConfidence())
+                .citations(List.of())
+                .traceId(resp.getTraceId())
+                .transferRequired(false)
+                .build();
+    }
 
     private boolean isAnswerable(EvidenceEvaluateRespDTO resp) {
         return resp != null

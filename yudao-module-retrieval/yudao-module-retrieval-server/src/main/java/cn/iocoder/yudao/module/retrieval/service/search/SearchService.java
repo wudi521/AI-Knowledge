@@ -6,11 +6,9 @@ import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.model.api.ModelApi;
-import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.retrieval.controller.admin.search.vo.RetrievalReqVO;
 import cn.iocoder.yudao.module.retrieval.controller.admin.search.vo.RetrievalRespVO;
-import cn.iocoder.yudao.module.retrieval.service.prompt.PromptSupport;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -40,16 +38,6 @@ public class SearchService {
     /** 检索变体上限 */
     private static final int VARIANT_LIMIT = 6;
 
-    /** 总结回答系统提示词: 只依据证据作答, 标注引用, 证据不足明说 */
-    private static final String ANSWER_SYSTEM_PROMPT = """
-            你是企业客服助手。基于给定的"证据片段"回答用户问题:
-            1. 只能依据证据内容作答, 不得编造事实;
-            2. 回答中在关键结论句后标注证据编号 [C1][C2](编号对应证据列表顺序);
-            3. 证据不足时, 直接说明"根据现有资料无法确定", 并列出已确认的信息;
-            4. 语言简洁口语化, 先给结论再给依据;
-            5. **产品/品牌一致性校验(强制)**: 若问题明确指出具体产品(如"苹果13"、"iPhone")或品牌, 而证据片段中没有任何该产品的条款(证据属于其他产品, 如 X100 Pro), 则必须回答"现有资料中未收录{该产品}的售后政策, 无法确认其政策", 并说明现有资料覆盖的产品范围, 严禁把其他产品的条款套用到该产品上; 仅当证据中确实包含该产品/品牌的条款时才可正常作答。
-            """;
-
     @Resource
     private QueryAnalysisService queryAnalysisService;
     @Resource
@@ -66,8 +54,6 @@ public class SearchService {
     private ResultFilter resultFilter;
     @Resource
     private ModelApi modelApi;
-    @Resource
-    private PromptSupport promptSupport;
 
     public RetrievalRespVO search(RetrievalReqVO req) {
         return search(req.getQuery(), req.getKbIds(), req.getTopK(),
@@ -226,8 +212,11 @@ public class SearchService {
                     + "」, 无法确认其政策, 拒绝作答");
             resp.setAnswer(null);
         } else {
-            // 13. 大模型总结回答(基于 TopN 证据 + 问题实体, 带 [C1][C2] 引用; 失败置 null 不阻断)
-            resp.setAnswer(generateAnswer(query, analysis.getEntities(), results));
+            // 13. 双回答者收敛(2026-08-21): 检索只负责召回/重排/门禁, 不再自己生成 answer。
+            //     答案统一由证据管线(EvidenceService.evaluate → AnswerPipeline)产出——
+            //     带充分性判定/冲突检测/Claim 逐句验证, 与对话工作台同一链路, 避免两套回答不一致。
+            //     前端检索测试页已并行展示证据评估结果, 此处 answer 恒为 null。
+            resp.setAnswer(null);
         }
         return resp;
     }
@@ -298,32 +287,6 @@ public class SearchService {
             }
         }
         return products;
-    }
-
-    /** 基于检索结果生成总结回答(LLM; 引用编号 C1.. 对应 results 顺序; 失败返回 null) */
-    private String generateAnswer(String query, List<String> entities, List<RetrievalRespVO.ResultVO> results) {
-        if (results.isEmpty()) {
-            return null;
-        }
-        try {
-            StringBuilder evidence = new StringBuilder();
-            for (int i = 0; i < results.size(); i++) {
-                evidence.append("[C").append(i + 1).append("] ").append(results.get(i).getContent()).append("\n\n");
-            }
-            ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(promptSupport.get("search-answer", ANSWER_SYSTEM_PROMPT));
-            String user = "问题: " + query;
-            if (entities != null && !entities.isEmpty()) {
-                user += "\n\n问题实体(用于品牌/产品一致性校验): " + String.join("、", entities);
-            }
-            user += "\n\n证据片段:\n" + evidence;
-            req.setUser(user);
-            String answer = modelApi.chat(req).getCheckedData();
-            return StrUtil.isBlank(answer) ? null : answer;
-        } catch (Exception e) {
-            log.warn("[generateAnswer][生成回答失败: {}]", e.getMessage());
-            return null;
-        }
     }
 
     /** 向量通道召回: 变体整体 embedding, 失败跳过该通道(不阻断主链路) */
