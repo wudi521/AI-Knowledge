@@ -45,15 +45,28 @@ public class ModelInvoker {
     @Value("${yudao.model.connect-timeout-ms:5000}")
     private int connectTimeoutMs;
 
-    @Value("${yudao.model.read-timeout-ms:300000}")
+    /** 读超时(默认 120s: LLM 2048 token 一般 30-60s 足够, 收敛自 300s 防请求线程被慢模型长期占用) */
+    @Value("${yudao.model.read-timeout-ms:120000}")
     private int readTimeoutMs;
 
     @PostConstruct
     public void initRestTemplate() {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(connectTimeoutMs);
-        factory.setReadTimeout(readTimeoutMs);
-        this.restTemplate = new RestTemplate(factory);
+        // 连接池(生产级): 复用 TCP 连接, 避免每次调用新建连接(高并发下 TIME_WAIT 堆积);
+        // 总连接 200/路由 50, 连接/读超时来自配置。
+        org.apache.hc.client5.http.config.RequestConfig requestConfig =
+                org.apache.hc.client5.http.config.RequestConfig.custom()
+                        .setConnectTimeout(org.apache.hc.core5.util.Timeout.ofMilliseconds(connectTimeoutMs))
+                        .setResponseTimeout(org.apache.hc.core5.util.Timeout.ofMilliseconds(readTimeoutMs))
+                        .build();
+        org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager cm =
+                new org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager();
+        cm.setMaxTotal(200);
+        cm.setDefaultMaxPerRoute(50);
+        org.apache.hc.client5.http.impl.classic.HttpClientBuilder builder =
+                org.apache.hc.client5.http.impl.classic.HttpClients.custom()
+                        .setConnectionManager(cm)
+                        .setDefaultRequestConfig(requestConfig);
+        this.restTemplate = new RestTemplate(new org.springframework.http.client.HttpComponentsClientHttpRequestFactory(builder.build()));
     }
 
     /**
