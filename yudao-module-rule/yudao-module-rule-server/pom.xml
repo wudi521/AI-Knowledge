@@ -68,6 +68,23 @@
             <groupId>com.github.xiaoymin</groupId>
             <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
         </dependency>
+        <!-- Drools 规则引擎(8.44.0.Final 兼容 Java 17; drools-engine 已含 kiesession/compiler 传递依赖, 显式声明 compiler 便于直接使用 KieBuilder) -->
+        <dependency>
+            <groupId>org.drools</groupId>
+            <artifactId>drools-engine</artifactId>
+            <version>8.44.0.Final</version>
+        </dependency>
+        <dependency>
+            <groupId>org.drools</groupId>
+            <artifactId>drools-compiler</artifactId>
+            <version>8.44.0.Final</version>
+        </dependency>
+        <!-- drools-mvel: 经典 MVEL 方言(DRL 条件/结论执行); 8.x 中 drools-engine/compiler 不再传递引入, 缺失时 KieBuilder 运行期抛 MissingDependencyException -->
+        <dependency>
+            <groupId>org.drools</groupId>
+            <artifactId>drools-mvel</artifactId>
+            <version>8.44.0.Final</version>
+        </dependency>
     </dependencies>
 
     <build>
