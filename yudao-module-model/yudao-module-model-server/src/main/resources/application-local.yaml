@@ -44,27 +44,5 @@ xxl:
     admin:
       addresses: http://127.0.0.1:9090/xxl-job-admin # 调度中心部署跟地址
 
-# 模型网关 文本向量化(Embedding)配置
-yudao:
-  model:
-    embedding:
-      base-url: http://127.0.0.1:1234/v1   # LM Studio
-      model: text-embedding-bge-m3
-    chat:
-      base-url: http://127.0.0.1:1234/v1   # LM Studio
-      model: qwen/qwen3-8b                  # 已确认加载; 备选 qwen/qwen3-14b
-    rerank:
-      base-url: http://127.0.0.1:1236/v1   # llama.cpp server(bge-reranker-v2-m3 Q8_0, 见 deploy/llama-rerank.sh)
-      model: bge-reranker-v2-m3
-    # 成本管理单价(每百万 token, 元; 未配置的模型不估算金额, 仅统计 token)。
-    # 本地 LM Studio 实际零成本, 这里填市场参考价用于成本可视化与预算测算, 可按实际采购价调整。
-    pricing:
-      default:
-        in-per-mtok: 1.0
-        out-per-mtok: 2.0
-      qwen/qwen3-8b:
-        in-per-mtok: 0.5
-        out-per-mtok: 1.5
-      text-embedding-bge-m3:
-        in-per-mtok: 0.1
-        out-per-mtok: 0.1
+# 模型连接配置与成本单价已全部迁移至数据库 ai_model_config 表(模型管理页维护), 此处不再配置。
+# 启动后系统按 type/scenario 从数据库加载启用模型; 未配置时报错提示, 无 yaml 兜底。

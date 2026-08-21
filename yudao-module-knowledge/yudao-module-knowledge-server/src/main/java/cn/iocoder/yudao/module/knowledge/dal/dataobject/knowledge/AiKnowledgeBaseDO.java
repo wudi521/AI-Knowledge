@@ -26,10 +26,6 @@ public class AiKnowledgeBaseDO extends TenantBaseDO {
     private Long id;
     /** 名称 */
     private String name;
-    /** 切分策略: Semantic / ParentChild / Table / FAQ / Policy */
-    private String chunkStrategy;
-    /** Embedding 模型: BGE-M3 / Qwen */
-    private String embedModel;
     /** 状态: 0 停用 1 启用 */
     private Integer status;
     /** 备注 */

@@ -11,6 +11,8 @@ import cn.iocoder.yudao.module.ingestion.parse.OfficeParser;
 import cn.iocoder.yudao.module.ingestion.parse.PdfParser;
 import cn.iocoder.yudao.module.ingestion.parse.TextParser;
 import cn.iocoder.yudao.module.ingestion.split.Chunk;
+import cn.iocoder.yudao.module.ingestion.split.ParsedDocument;
+import cn.iocoder.yudao.module.ingestion.split.SplitParams;
 import cn.iocoder.yudao.module.ingestion.split.SplitterFactory;
 import cn.iocoder.yudao.module.ingestion.store.MysqlChunkStore;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
@@ -76,7 +78,10 @@ public class IngestServiceImpl implements IngestService {
             if (versionId == null) {
                 throw new RuntimeException("文档无版本记录: " + documentId);
             }
-            String chunkStrategy = getKnowledgeBaseStrategy(kbId);
+            String chunkStrategy = document.getChunkStrategy();
+            if (StrUtil.isBlank(chunkStrategy)) {
+                chunkStrategy = "auto"; // 文档未选策略默认自动
+            }
 
             java.io.File tmpFile = downloadFromMinio(storagePath);
             String text;
@@ -91,8 +96,9 @@ public class IngestServiceImpl implements IngestService {
                     log.warn("[ingestDocument][文档 {} 临时文件清理失败: {}]", documentId, cleanupEx.getMessage());
                 }
             }
+            SplitParams splitParams = SplitParams.merge(SplitParams.of(500), document.getChunkStrategyParams());
             List<Chunk> chunks = splitterFactory.getSplitter(chunkStrategy)
-                    .split(text, 500);
+                    .split(ParsedDocument.ofText(text), splitParams);
             List<String> contents = chunks.stream().map(Chunk::getContent).toList();
             List<List<Float>> vectors = embeddingClient.embed(contents);
 
@@ -193,11 +199,6 @@ public class IngestServiceImpl implements IngestService {
             case "WORD", "EXCEL", "PPT" -> officeParser;
             default -> textParser; // TXT / MD
         };
-    }
-
-    private String getKnowledgeBaseStrategy(Long kbId) {
-        // 按知识库配置的切分策略(Feign 调 knowledge-server); 缺失时默认 ParentChild
-        return knowledgeApi.getKnowledgeBaseStrategy(kbId).getCheckedData();
     }
 
     /**

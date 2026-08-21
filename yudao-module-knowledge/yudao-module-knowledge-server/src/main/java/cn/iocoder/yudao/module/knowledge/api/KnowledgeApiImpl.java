@@ -82,6 +82,8 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         dto.setType(doc.getType());
         dto.setStoragePath(doc.getStoragePath());
         dto.setParseStatus(doc.getParseStatus());
+        dto.setChunkStrategy(doc.getChunkStrategy());
+        dto.setChunkStrategyParams(doc.getChunkStrategyParams());
         dto.setTenantId(doc.getTenantId());
         // 当前版本编号(管线写 chunk.version_id 用)
         AiDocVersionDO version = aiDocVersionService.getLatestVersion(doc.getId());
@@ -114,12 +116,6 @@ public class KnowledgeApiImpl implements KnowledgeApi {
             map.put(doc.getId(), dto);
         }
         return success(map);
-    }
-
-    @Override
-    public CommonResult<String> getKnowledgeBaseStrategy(Long kbId) {
-        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(kbId);
-        return success(kb == null || kb.getChunkStrategy() == null ? "ParentChild" : kb.getChunkStrategy());
     }
 
     @Override

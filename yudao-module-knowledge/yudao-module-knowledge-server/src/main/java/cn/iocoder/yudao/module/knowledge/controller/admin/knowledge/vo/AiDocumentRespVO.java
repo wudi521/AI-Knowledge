@@ -18,11 +18,11 @@ public class AiDocumentRespVO {
     @Schema(description = "知识库名称")
     private String kbName;
 
-    @Schema(description = "切分策略", example = "ParentChild")
+    @Schema(description = "切分策略", example = "auto")
     private String chunkStrategy;
 
-    @Schema(description = "Embedding 模型", example = "BGE-M3")
-    private String embedModel;
+    @Schema(description = "切分策略参数(JSON)")
+    private String chunkStrategyParams;
 
     @Schema(description = "文档名", example = "退换货政策.md")
     private String name;

@@ -7,11 +7,14 @@ import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowledgeBasePageReqVO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowledgeBaseSaveReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.service.slot.SlotSummarizer;
 import com.mzt.logapi.context.LogRecordContext;
 import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
 
@@ -24,6 +27,7 @@ import static cn.iocoder.yudao.module.knowledge.enums.KnowledgeLogRecordConstant
 /**
  * 知识库 Service 实现
  */
+@Slf4j
 @Service
 @Validated
 public class AiKnowledgeBaseServiceImpl implements AiKnowledgeBaseService {
@@ -33,6 +37,12 @@ public class AiKnowledgeBaseServiceImpl implements AiKnowledgeBaseService {
 
     @Resource
     private KnowledgePermissionHelper knowledgePermissionHelper;
+
+    @Resource
+    private AiDocumentMapper aiDocumentMapper;
+
+    @Resource
+    private AiDocumentService aiDocumentService;
 
     @Resource
     private SlotSummarizer slotSummarizer;
@@ -68,6 +78,19 @@ public class AiKnowledgeBaseServiceImpl implements AiKnowledgeBaseService {
         // 先查对象再删, 供操作日志模板引用对象名({{#kb?.name}}); 对象不存在时原样执行删除(空操作), 模板安全导航渲染为空
         AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(id);
         LogRecordContext.putVariable("kb", kb);
+        // 级联删除(H4): 先删该库下全部文档(走 deleteAiDocument 完整级联: 版本/审核条目/冲突/意图/槽位 + 向量/ES 清理),
+        // 避免 doc/version/chunk/向量 变孤儿数据。单文档删除失败仅告警不阻断 KB 删除(尽力而为)。
+        List<AiDocumentDO> docs = aiDocumentMapper.selectListByKbId(id);
+        if (docs != null) {
+            for (AiDocumentDO doc : docs) {
+                try {
+                    aiDocumentService.deleteAiDocument(doc.getId());
+                } catch (Exception e) {
+                    log.warn("[deleteAiKnowledgeBase][知识库 {} 下文档 {} 级联删除失败: {}]",
+                            id, doc.getId(), e.getMessage());
+                }
+            }
+        }
         aiKnowledgeBaseMapper.deleteById(id);
     }
 

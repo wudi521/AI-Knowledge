@@ -15,12 +15,6 @@ public class AiKnowledgeBaseRespVO {
     @Schema(description = "名称", example = "产品与售后知识库")
     private String name;
 
-    @Schema(description = "切分策略", example = "ParentChild")
-    private String chunkStrategy;
-
-    @Schema(description = "Embedding 模型", example = "BGE-M3")
-    private String embedModel;
-
     @Schema(description = "状态", example = "1")
     private Integer status;
 

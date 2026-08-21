@@ -64,7 +64,7 @@ public class AiDocumentController {
     public CommonResult<PageResult<AiDocumentRespVO>> getAiDocumentPage(@Valid AiDocumentPageReqVO pageReqVO) {
         PageResult<AiDocumentDO> pageResult = aiDocumentService.getAiDocumentPage(pageReqVO);
         PageResult<AiDocumentRespVO> voPageResult = BeanUtils.toBean(pageResult, AiDocumentRespVO.class);
-        // 联表填充知识库信息(名称/切分策略/Embedding 模型), 知识库可能被删故 null 安全
+        // 联表填充知识库名称(切分策略为文档级字段, 由 BeanUtils 直接转换, 不再从知识库带)
         for (AiDocumentRespVO respVO : voPageResult.getList()) {
             if (respVO.getKbId() == null) {
                 continue;
@@ -72,8 +72,6 @@ public class AiDocumentController {
             AiKnowledgeBaseDO knowledgeBase = aiKnowledgeBaseMapper.selectById(respVO.getKbId());
             if (knowledgeBase != null) {
                 respVO.setKbName(knowledgeBase.getName());
-                respVO.setChunkStrategy(knowledgeBase.getChunkStrategy());
-                respVO.setEmbedModel(knowledgeBase.getEmbedModel());
             }
         }
         return success(voPageResult);

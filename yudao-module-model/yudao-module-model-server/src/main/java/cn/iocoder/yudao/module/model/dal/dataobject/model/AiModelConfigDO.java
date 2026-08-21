@@ -40,6 +40,10 @@ public class AiModelConfigDO extends BaseDO {
     private String apiKey;
     /** 向量维度(embedding 类型用) */
     private Integer dimensions;
+    /** 输入单价(每百万 token, 元; 成本估算用, 未配置不估金额) */
+    private java.math.BigDecimal inPerMtok;
+    /** 输出单价(每百万 token, 元) */
+    private java.math.BigDecimal outPerMtok;
     /** 状态: 0 停用 1 启用 */
     private Integer status;
     /** 备注 */

@@ -33,6 +33,10 @@ public class AiDocumentDO extends TenantBaseDO {
     private String storagePath;
     /** 文件 SHA-256 */
     private String fileHash;
+    /** 切分策略: auto/structure/parent-child/semantic/policy/faq/table/image */
+    private String chunkStrategy;
+    /** 切分策略参数(JSON, 覆盖默认; 如 {"maxTokens":500,"overlap":1}) */
+    private String chunkStrategyParams;
     /** 解析状态: PENDING/PARSING/EMBEDDING/INDEXED/FAILED */
     private String parseStatus;
     /** 失败原因 */

@@ -29,8 +29,6 @@ public class ModelGateway {
     private CircuitBreaker circuitBreaker;
     @Resource
     private CallMeter meter;
-    @Resource
-    private YamlModelDefaults yamlDefaults;
 
     /** chat(显式场景/追踪号; 缺省走默认路由) */
     public String chat(ModelChatReqDTO req, String scenario, String traceId) {
@@ -99,39 +97,13 @@ public class ModelGateway {
                 degraded = true; // 下一个候选为降级
             }
         }
-        // yaml 兜底(带重试; yaml 目标无熔断)
-        YamlModelDefaults.ModelTarget target = yamlDefaults.resolve(type);
-        if (target != null) {
-            int attempts = retryPolicy.attempts(true);
-            for (int attempt = 1; attempt <= attempts; attempt++) {
-                long t0 = System.currentTimeMillis();
-                try {
-                    ModelCallResult r = invoker.invokeYaml(target, req);
-                    r.setAttempt(attempt);
-                    r.setElapsedMs((int) (System.currentTimeMillis() - t0));
-                    r.setStatus(degraded ? "DEGRADED" : "SUCCESS");
-                    r.setTraceId(traceId);
-                    r.setScenario(scenario == null ? "*" : scenario);
-                    meter.record(r);
-                    return r;
-                } catch (ModelInvokeException e) {
-                    ModelCallResult failed = buildFailure(type, null, attempt, traceId, scenario, degraded, e);
-                    failed.setElapsedMs((int) (System.currentTimeMillis() - t0));
-                    meter.record(failed);
-                    lastFailure = failed;
-                    if (!e.isRetryable() || attempt >= attempts) {
-                        break;
-                    }
-                    retryPolicy.backoff(attempt);
-                }
-            }
-        }
+        // 配置全部来自数据库(ai_model_config): 无候选或全部失败 → 明确报错
         String msg;
         if (lastFailure != null && lastFailure.getErrorMsg() != null) {
             msg = lastFailure.getErrorMsg();
         } else {
             msg = (candidates != null && !candidates.isEmpty())
-                    ? "模型候选全部被熔断跳过且无 yaml 兜底" : "未配置模型且无 yaml 默认";
+                    ? "模型候选全部被熔断跳过" : "未配置可用的 " + type + " 模型, 请在模型管理页配置";
         }
         log.warn("[invokeWithFallback][type({}) 模型调用全部失败: {}]", type, msg);
         throw new ServiceException(GlobalErrorCodeConstants.INTERNAL_SERVER_ERROR.getCode(), "模型调用失败: " + msg);

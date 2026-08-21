@@ -94,15 +94,6 @@ public interface KnowledgeApi {
     CommonResult<Map<Long, KnowledgeDocumentRespDTO>> getDocumentMap(@RequestBody List<Long> ids);
 
     /**
-     * 查询知识库切分策略(ingestion 按知识库配置切分; 不存在返回默认 ParentChild)
-     *
-     * @param kbId 知识库编号
-     * @return 切分策略: Semantic/ParentChild/Table/FAQ/Policy
-     */
-    @GetMapping(ApiConstants.PREFIX + "/get-kb-strategy")
-    CommonResult<String> getKnowledgeBaseStrategy(@RequestParam("kbId") Long kbId);
-
-    /**
      * 查询用户可见的知识库编号集合(检索权限过滤用; super_admin 返回全部)
      *
      * @param userId 用户编号

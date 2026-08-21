@@ -27,4 +27,10 @@ public class AiDocumentSaveReqVO {
     @Schema(description = "文件 SHA-256(前端上传时计算, 用于重复文档拦截)")
     private String fileHash;
 
+    @Schema(description = "切分策略", example = "auto")
+    private String chunkStrategy;
+
+    @Schema(description = "切分策略参数(JSON, 可选; 如 {\"maxTokens\":500,\"overlap\":1})")
+    private String chunkStrategyParams;
+
 }

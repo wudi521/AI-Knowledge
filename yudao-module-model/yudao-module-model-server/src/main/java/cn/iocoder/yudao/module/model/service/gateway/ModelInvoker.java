@@ -76,13 +76,6 @@ public class ModelInvoker {
         return doCall(req.type(), cfg.getBaseUrl(), cfg.getModelName(), cfg.getApiKey(), cfg, req);
     }
 
-    /**
-     * 调用 yaml 默认目标(modelId=null)
-     */
-    public ModelCallResult invokeYaml(YamlModelDefaults.ModelTarget target, InvokeRequest req) {
-        return doCall(target.type(), target.baseUrl(), target.modelName(), null, null, req);
-    }
-
     private ModelCallResult doCall(String type, String baseUrl, String modelName, String apiKey,
                                    AiModelConfigDO cfg, InvokeRequest req) {
         long start = System.currentTimeMillis();

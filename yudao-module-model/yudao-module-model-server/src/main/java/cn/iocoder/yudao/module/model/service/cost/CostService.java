@@ -4,11 +4,12 @@ import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.model.dal.dataobject.calllog.AiModelCallLogDO;
+import cn.iocoder.yudao.module.model.dal.dataobject.model.AiModelConfigDO;
 import cn.iocoder.yudao.module.model.dal.mysql.calllog.AiModelCallLogMapper;
+import cn.iocoder.yudao.module.model.dal.mysql.model.AiModelConfigMapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -30,7 +31,7 @@ import java.util.stream.Collectors;
  *   <li>趋势: 按天调用量·token·成本(近 N 天, 无调用日期补 0)</li>
  *   <li>分摊: 按租户 / 按场景 / 按模型 / 按状态</li>
  * </ul>
- * 成本估算: yaml {@code yudao.model.pricing.<model>.{in,out}-per-mtok}(每百万 token 单价, 元)。
+ * 成本估算: 单价来自数据库 `ai_model_config.in_per_mtok/out_per_mtok`(每百万 token 单价, 元)。
  * 未配置单价的模型不估算金额(tokens 仍如实统计), 避免拍脑袋定价。
  * 多租户: DO 继承 TenantBaseDO, Mapper 自动按当前租户过滤; 汇总页即当前租户成本。
  */
@@ -43,7 +44,7 @@ public class CostService {
     @Resource
     private AiModelCallLogMapper callLogMapper;
     @Resource
-    private Environment environment;
+    private AiModelConfigMapper aiModelConfigMapper;
 
     // ========== 汇总 ==========
 
@@ -123,7 +124,7 @@ public class CostService {
     }
 
     public List<CostGroupItem> byModel(Integer recentDays) {
-        return group(recentDays, r -> StrUtil.blankToDefault(r.getModelName(), "(yaml 兜底)"));
+        return group(recentDays, r -> StrUtil.blankToDefault(r.getModelName(), "(未配置单价)"));
     }
 
     public List<CostGroupItem> byStatus(Integer recentDays) {
@@ -189,36 +190,38 @@ public class CostService {
 
     private Map<String, Pricing> loadPricing() {
         Map<String, Pricing> map = new LinkedHashMap<>();
-        for (String model : List.of("qwen/qwen3-8b", "qwen/qwen3-14b", "text-embedding-bge-m3", "bge-reranker-v2-m3")) {
-            BigDecimal in = price("yudao.model.pricing." + model + ".in-per-mtok");
-            BigDecimal out = price("yudao.model.pricing." + model + ".out-per-mtok");
-            if (in != null && out != null) {
-                map.put(model, new Pricing(in, out));
+        List<AiModelConfigDO> configs = aiModelConfigMapper.selectList(
+                Wrappers.lambdaQuery(AiModelConfigDO.class).eq(AiModelConfigDO::getStatus, 1));
+        for (AiModelConfigDO cfg : configs) {
+            if (cfg.getInPerMtok() == null || cfg.getOutPerMtok() == null) {
+                continue; // 未配置单价不估算
             }
+            map.put(cfg.getModelName(), new Pricing(cfg.getInPerMtok(), cfg.getOutPerMtok()));
         }
         return map;
     }
 
+    /** 趋势口径近似单价: 取 chat 类型启用且配置了单价的首个模型; 均未配则 0(汇总口径仍逐模型精确) */
+    private Pricing defaultPricing() {
+        List<AiModelConfigDO> chats = aiModelConfigMapper.selectList(
+                Wrappers.lambdaQuery(AiModelConfigDO.class)
+                        .eq(AiModelConfigDO::getType, "chat")
+                        .eq(AiModelConfigDO::getStatus, 1)
+                        .orderByAsc(AiModelConfigDO::getId));
+        for (AiModelConfigDO cfg : chats) {
+            if (cfg.getInPerMtok() != null && cfg.getOutPerMtok() != null) {
+                return new Pricing(cfg.getInPerMtok(), cfg.getOutPerMtok());
+            }
+        }
+        return new Pricing(BigDecimal.ZERO, BigDecimal.ZERO);
+    }
+
     private BigDecimal defaultInPrice() {
-        BigDecimal p = price("yudao.model.pricing.default.in-per-mtok");
-        return p == null ? BigDecimal.ZERO : p;
+        return defaultPricing().inPerMtok();
     }
 
     private BigDecimal defaultOutPrice() {
-        BigDecimal p = price("yudao.model.pricing.default.out-per-mtok");
-        return p == null ? BigDecimal.ZERO : p;
-    }
-
-    private BigDecimal price(String key) {
-        String v = environment.getProperty(key);
-        if (StrUtil.isBlank(v)) {
-            return null;
-        }
-        try {
-            return new BigDecimal(v.trim());
-        } catch (NumberFormatException e) {
-            return null;
-        }
+        return defaultPricing().outPerMtok();
     }
 
     private static int nullToZero(Integer v) {

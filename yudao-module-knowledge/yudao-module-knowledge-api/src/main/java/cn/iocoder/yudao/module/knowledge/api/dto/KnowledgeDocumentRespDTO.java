@@ -23,6 +23,12 @@ public class KnowledgeDocumentRespDTO {
     /** 解析状态 */
     private String parseStatus;
 
+    /** 切分策略(文档级: auto/structure/parent-child/semantic/policy/faq/table/image) */
+    private String chunkStrategy;
+
+    /** 切分策略参数(JSON, 可选) */
+    private String chunkStrategyParams;
+
     /** 租户编号 */
     private Long tenantId;
 
