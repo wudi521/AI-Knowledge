@@ -12,6 +12,7 @@ import cn.iocoder.yudao.module.model.dal.dataobject.prompt.AiPromptDO;
 import cn.iocoder.yudao.module.model.dal.mysql.prompt.AiPromptMapper;
 import cn.iocoder.yudao.module.model.service.prompt.AiPromptService;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.mzt.logapi.context.LogRecordContext;
 import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
@@ -41,7 +42,7 @@ public class AiPromptServiceImpl implements AiPromptService {
     private AiPromptMapper aiPromptMapper;
 
     @Override
-    @LogRecord(type = PROMPT_TYPE, subType = PROMPT_CREATE_SUB_TYPE, bizNo = "{{#prompt.id}}",
+    @LogRecord(type = PROMPT_TYPE, subType = PROMPT_CREATE_SUB_TYPE, bizNo = "{{#promptId}}",
             success = PROMPT_CREATE_SUCCESS)
     public Long createPrompt(AiPromptSaveReqVO req) {
         AiPromptDO prompt = BeanUtils.toBean(req, AiPromptDO.class);
@@ -51,6 +52,8 @@ public class AiPromptServiceImpl implements AiPromptService {
         prompt.setVersion(nextVersion);
         prompt.setStatus(0); // 新版本默认停用
         aiPromptMapper.insert(prompt);
+        LogRecordContext.putVariable("promptId", prompt.getId());
+        LogRecordContext.putVariable("newVersion", nextVersion);
         return prompt.getId();
     }
 
@@ -73,6 +76,7 @@ public class AiPromptServiceImpl implements AiPromptService {
             success = PROMPT_ENABLE_SUCCESS)
     public void enablePrompt(Long id) {
         AiPromptDO prompt = validatePromptExists(id);
+        LogRecordContext.putVariable("prompt", prompt);
         // 当前行启用
         AiPromptDO updateObj = new AiPromptDO();
         updateObj.setId(id);
@@ -91,6 +95,7 @@ public class AiPromptServiceImpl implements AiPromptService {
             success = PROMPT_GRAY_ENABLE_SUCCESS)
     public void grayEnablePrompt(Long id, List<Long> tenantIds) {
         AiPromptDO prompt = validatePromptExists(id);
+        LogRecordContext.putVariable("prompt", prompt);
         // 该 key 必须另有全量启用版本(目标行自身不算), 否则灰度后无全量版本可用
         List<AiPromptDO> enabled = aiPromptMapper.selectByKeyAndStatusIn(prompt.getPromptKey(), List.of(1));
         boolean hasOtherEnabled = enabled.stream().anyMatch(e -> !e.getId().equals(id));
@@ -117,6 +122,7 @@ public class AiPromptServiceImpl implements AiPromptService {
             success = PROMPT_GRAY_OFF_SUCCESS)
     public void grayOffPrompt(Long id) {
         AiPromptDO prompt = validatePromptExists(id);
+        LogRecordContext.putVariable("prompt", prompt);
         // 灰度行回退为停用并清空灰度租户
         aiPromptMapper.update(null, new LambdaUpdateWrapper<AiPromptDO>()
                 .eq(AiPromptDO::getId, id)
@@ -135,6 +141,7 @@ public class AiPromptServiceImpl implements AiPromptService {
             success = PROMPT_DELETE_SUCCESS)
     public void deletePrompt(Long id) {
         AiPromptDO prompt = validatePromptExists(id);
+        LogRecordContext.putVariable("prompt", prompt);
         aiPromptMapper.deleteById(id); // 逻辑删除
     }
 

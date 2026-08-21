@@ -24,6 +24,8 @@ import cn.iocoder.yudao.module.knowledge.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.mzt.logapi.context.LogRecordContext;
+import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -41,6 +43,7 @@ import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.VERSION
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_STATUS_ERROR;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_REASON_REQUIRED;
+import static cn.iocoder.yudao.module.knowledge.enums.KnowledgeLogRecordConstants.*;
 
 /**
  * 审核条目服务: LLM 抽取 -> 分级 -> 分流(REVIEW / 自动发布)
@@ -323,8 +326,11 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     }
 
     @Override
+    @LogRecord(type = REVIEW_TYPE, subType = REVIEW_APPROVE_SUB_TYPE, bizNo = "{{#id}}",
+            success = REVIEW_APPROVE_SUCCESS)
     public void approve(Long id) {
         ReviewItemDO item = getItem(id);
+        LogRecordContext.putVariable("item", item);
         if (!ReviewItemStatusEnum.PENDING.getStatus().equals(item.getStatus())) {
             throw new ServiceException(REVIEW_ITEM_STATUS_ERROR);
         }
@@ -339,11 +345,14 @@ public class ReviewItemServiceImpl implements ReviewItemService {
 
 
     @Override
+    @LogRecord(type = REVIEW_TYPE, subType = REVIEW_REJECT_SUB_TYPE, bizNo = "{{#id}}",
+            success = REVIEW_REJECT_SUCCESS)
     public void reject(Long id, String reason) {
         if (StrUtil.isBlank(reason)) {
             throw new ServiceException(REVIEW_REASON_REQUIRED);
         }
         ReviewItemDO item = getItem(id);
+        LogRecordContext.putVariable("item", item);
         if (!ReviewItemStatusEnum.PENDING.getStatus().equals(item.getStatus())) {
             throw new ServiceException(REVIEW_ITEM_STATUS_ERROR);
         }

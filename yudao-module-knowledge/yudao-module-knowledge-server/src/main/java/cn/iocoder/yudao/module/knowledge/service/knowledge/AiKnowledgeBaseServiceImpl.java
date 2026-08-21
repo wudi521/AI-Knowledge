@@ -9,6 +9,8 @@ import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowled
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.service.slot.SlotSummarizer;
+import com.mzt.logapi.context.LogRecordContext;
+import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
@@ -16,6 +18,8 @@ import org.springframework.validation.annotation.Validated;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
+
+import static cn.iocoder.yudao.module.knowledge.enums.KnowledgeLogRecordConstants.*;
 
 /**
  * 知识库 Service 实现
@@ -34,15 +38,20 @@ public class AiKnowledgeBaseServiceImpl implements AiKnowledgeBaseService {
     private SlotSummarizer slotSummarizer;
 
     @Override
+    @LogRecord(type = KB_TYPE, subType = KB_CREATE_SUB_TYPE, bizNo = "{{#kb.id}}",
+            success = KB_CREATE_SUCCESS)
     public Long createAiKnowledgeBase(AiKnowledgeBaseSaveReqVO createReqVO) {
         AiKnowledgeBaseDO knowledgeBase = BeanUtils.toBean(createReqVO, AiKnowledgeBaseDO.class);
         aiKnowledgeBaseMapper.insert(knowledgeBase);
+        LogRecordContext.putVariable("kb", knowledgeBase);
         // 新建即触发槽位自动总结(空库无内容 → 优雅跳过; 发布后会自动再触发)
         slotSummarizer.summarizeByKbAsync(knowledgeBase.getId());
         return knowledgeBase.getId();
     }
 
     @Override
+    @LogRecord(type = KB_TYPE, subType = KB_UPDATE_SUB_TYPE, bizNo = "{{#updateReqVO.id}}",
+            success = KB_UPDATE_SUCCESS)
     public void updateAiKnowledgeBase(AiKnowledgeBaseSaveReqVO updateReqVO) {
         AiKnowledgeBaseDO db = aiKnowledgeBaseMapper.selectById(updateReqVO.getId());
         if (db == null) {
@@ -53,7 +62,12 @@ public class AiKnowledgeBaseServiceImpl implements AiKnowledgeBaseService {
     }
 
     @Override
+    @LogRecord(type = KB_TYPE, subType = KB_DELETE_SUB_TYPE, bizNo = "{{#id}}",
+            success = KB_DELETE_SUCCESS)
     public void deleteAiKnowledgeBase(Long id) {
+        // 先查对象再删, 供操作日志模板引用对象名({{#kb?.name}}); 对象不存在时原样执行删除(空操作), 模板安全导航渲染为空
+        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(id);
+        LogRecordContext.putVariable("kb", kb);
         aiKnowledgeBaseMapper.deleteById(id);
     }
 

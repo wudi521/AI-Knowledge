@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.model.controller.admin.model.vo.AiModelConfigSave
 import cn.iocoder.yudao.module.model.dal.dataobject.model.AiModelConfigDO;
 import cn.iocoder.yudao.module.model.dal.mysql.model.AiModelConfigMapper;
 import cn.iocoder.yudao.module.model.service.model.AiModelConfigService;
+import com.mzt.logapi.context.LogRecordContext;
 import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
@@ -29,11 +30,12 @@ public class AiModelConfigServiceImpl implements AiModelConfigService {
     private AiModelConfigMapper aiModelConfigMapper;
 
     @Override
-    @LogRecord(type = MODEL_CONFIG_TYPE, subType = MODEL_CONFIG_CREATE_SUB_TYPE, bizNo = "{{#config.id}}",
+    @LogRecord(type = MODEL_CONFIG_TYPE, subType = MODEL_CONFIG_CREATE_SUB_TYPE, bizNo = "{{#configId}}",
             success = MODEL_CONFIG_CREATE_SUCCESS)
     public Long createAiModelConfig(AiModelConfigSaveReqVO createReqVO) {
         AiModelConfigDO config = BeanUtils.toBean(createReqVO, AiModelConfigDO.class);
         aiModelConfigMapper.insert(config);
+        LogRecordContext.putVariable("configId", config.getId());
         return config.getId();
     }
 
@@ -54,6 +56,7 @@ public class AiModelConfigServiceImpl implements AiModelConfigService {
     public void deleteAiModelConfig(Long id) {
         // 校验存在
         AiModelConfigDO config = validateAiModelConfigExists(id);
+        LogRecordContext.putVariable("config", config);
         // 删除
         aiModelConfigMapper.deleteById(id);
     }

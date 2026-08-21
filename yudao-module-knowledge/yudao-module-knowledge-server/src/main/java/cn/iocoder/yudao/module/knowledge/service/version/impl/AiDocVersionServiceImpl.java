@@ -7,16 +7,20 @@ import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.eval.api.EvalApi;
 import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.service.conflict.ConflictService;
 import cn.iocoder.yudao.module.knowledge.service.intent.IntentSummarizer;
 import cn.iocoder.yudao.module.knowledge.service.slot.SlotSummarizer;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.mzt.logapi.context.LogRecordContext;
+import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -28,6 +32,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.*;
+import static cn.iocoder.yudao.module.knowledge.enums.KnowledgeLogRecordConstants.*;
 
 /**
  * 文档版本状态机
@@ -40,6 +45,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     private AiDocVersionMapper aiDocVersionMapper;
     @Resource
     private AiDocumentMapper aiDocumentMapper;
+    @Resource
+    private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
     @Resource
     private ReviewItemMapper reviewItemMapper;
     @Resource
@@ -123,13 +130,21 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
 
     @Override
     @Transactional
+    @LogRecord(type = PUBLISH_TYPE, subType = PUBLISH_SUB_TYPE, bizNo = "{{#versionId}}",
+            success = PUBLISH_SUCCESS)
     public void publish(Long versionId) {
         AiDocVersionDO version = getVersion(versionId);
+        LogRecordContext.putVariable("version", version);
         // 幂等(正常场景): 已发布则直接返回(notifyParsed 在 Kafka 重投/重试场景可能重复触发)
         // 例外修复: 版本已 PUBLISHED 但片段被重新抽取(新片段默认 REVIEW 未发布)时, 需重跑索引同步,
         //           否则新片段不进 Milvus/ES 且永远卡 REVIEW(检索不到)。indexVersion 幂等(覆盖式重写)。
         if (VersionStatusEnum.PUBLISHED.getStatus().equals(version.getStatus())) {
             AiDocumentDO doc = aiDocumentMapper.selectById(version.getDocId());
+            if (doc != null) {
+                // 注册操作日志模板变量(文档/知识库可能已删, 模板用安全导航)
+                LogRecordContext.putVariable("doc", doc);
+                LogRecordContext.putVariable("kb", aiKnowledgeBaseMapper.selectById(doc.getKbId()));
+            }
             if (doc != null && hasUnpublishedChunks(versionId)) {
                 log.warn("[publish][版本 {} 已发布但存在未发布片段, 重跑索引同步]", versionId);
                 CommonResult<Boolean> result = ingestionApi.indexVersion(versionId, doc.getKbId(), doc.getTenantId());
@@ -164,6 +179,9 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         if (doc == null) {
             throw new ServiceException(DOCUMENT_NOT_EXISTS);
         }
+        // 注册操作日志模板变量(知识库可能已删, 模板用安全导航)
+        LogRecordContext.putVariable("doc", doc);
+        LogRecordContext.putVariable("kb", aiKnowledgeBaseMapper.selectById(doc.getKbId()));
         // 门禁 4: 评测闸门(仅首次发布路径; 上方幂等分支已 return, 重索引不受影响)
         // evalApi.checkGate: 闸门配置关闭 → true 放行; 无 DONE 评测或未全题达标 → false 阻断;
         // 内部实现不抛异常; 此处兜底 RPC 级故障(网络/序列化)保守阻断, 避免未评测内容上线
@@ -230,12 +248,18 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     }
 
     @Override
+    @LogRecord(type = PUBLISH_TYPE, subType = REJECT_VERSION_SUB_TYPE, bizNo = "{{#versionId}}",
+            success = REJECT_VERSION_SUCCESS)
     public void reject(Long versionId, String comment) {
         AiDocVersionDO version = getVersion(versionId);
+        LogRecordContext.putVariable("version", version);
         // 仅审核中可整体驳回, 避免已发布版本被误操作回退
         if (!VersionStatusEnum.REVIEW.getStatus().equals(version.getStatus())) {
             throw new ServiceException(VERSION_STATUS_ERROR);
         }
+        // 注册操作日志模板变量(文档可能已删, 模板用安全导航)
+        AiDocumentDO doc = aiDocumentMapper.selectById(version.getDocId());
+        LogRecordContext.putVariable("doc", doc);
         AiDocVersionDO update = new AiDocVersionDO();
         update.setId(versionId);
         update.setStatus(VersionStatusEnum.DRAFT.getStatus());

@@ -15,6 +15,8 @@ import cn.iocoder.yudao.module.rule.service.rule.AiRuleService;
 import cn.iocoder.yudao.module.rule.service.rule.RuleEngine;
 import cn.iocoder.yudao.module.rule.service.rule.RuleResult;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.mzt.logapi.context.LogRecordContext;
+import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -32,6 +34,7 @@ import static cn.iocoder.yudao.module.rule.enums.ErrorCodeConstants.AI_RULE_COMP
 import static cn.iocoder.yudao.module.rule.enums.ErrorCodeConstants.AI_RULE_GRAY_NEED_ENABLED;
 import static cn.iocoder.yudao.module.rule.enums.ErrorCodeConstants.AI_RULE_NOT_EDITABLE;
 import static cn.iocoder.yudao.module.rule.enums.ErrorCodeConstants.AI_RULE_NOT_EXISTS;
+import static cn.iocoder.yudao.module.rule.enums.RuleLogRecordConstants.*;
 
 /**
  * AI 硬规则 Service 实现
@@ -49,6 +52,8 @@ public class AiRuleServiceImpl implements AiRuleService {
     private RuleEngine ruleEngine;
 
     @Override
+    @LogRecord(type = RULE_TYPE, subType = RULE_CREATE_SUB_TYPE, bizNo = "{{#ruleId}}",
+            success = RULE_CREATE_SUCCESS)
     public Long createRule(AiRuleSaveReqVO req) {
         // 试编译: DRL 非法直接报错, 不入库
         compileOrThrow(req.getRuleKey(), req.getDrlContent());
@@ -59,10 +64,13 @@ public class AiRuleServiceImpl implements AiRuleService {
         rule.setVersion(nextVersion);
         rule.setStatus(0); // 新版本默认停用
         aiRuleMapper.insert(rule);
+        LogRecordContext.putVariable("ruleId", rule.getId());
         return rule.getId();
     }
 
     @Override
+    @LogRecord(type = RULE_TYPE, subType = RULE_UPDATE_SUB_TYPE, bizNo = "{{#req.id}}",
+            success = RULE_UPDATE_SUCCESS)
     public void updateRule(AiRuleUpdateReqVO req) {
         // 校验存在 + 仅停用版本可编辑
         AiRuleDO rule = validateRuleExists(req.getId());
@@ -77,8 +85,11 @@ public class AiRuleServiceImpl implements AiRuleService {
     }
 
     @Override
+    @LogRecord(type = RULE_TYPE, subType = RULE_ENABLE_SUB_TYPE, bizNo = "{{#id}}",
+            success = RULE_ENABLE_SUCCESS)
     public void enableRule(Long id) {
         AiRuleDO rule = validateRuleExists(id);
+        LogRecordContext.putVariable("rule", rule);
         // 当前行启用
         AiRuleDO updateObj = new AiRuleDO();
         updateObj.setId(id);
@@ -93,8 +104,11 @@ public class AiRuleServiceImpl implements AiRuleService {
     }
 
     @Override
+    @LogRecord(type = RULE_TYPE, subType = RULE_GRAY_ENABLE_SUB_TYPE, bizNo = "{{#id}}",
+            success = RULE_GRAY_ENABLE_SUCCESS)
     public void grayEnableRule(Long id, List<Long> tenantIds) {
         AiRuleDO rule = validateRuleExists(id);
+        LogRecordContext.putVariable("rule", rule);
         // 该 key 必须另有全量启用版本(目标行自身不算), 否则灰度后无全量版本可用
         List<AiRuleDO> enabled = aiRuleMapper.selectByKeyAndStatusIn(rule.getRuleKey(), List.of(1));
         boolean hasOtherEnabled = enabled.stream().anyMatch(e -> !e.getId().equals(id));
@@ -117,8 +131,11 @@ public class AiRuleServiceImpl implements AiRuleService {
     }
 
     @Override
+    @LogRecord(type = RULE_TYPE, subType = RULE_GRAY_OFF_SUB_TYPE, bizNo = "{{#id}}",
+            success = RULE_GRAY_OFF_SUCCESS)
     public void grayOffRule(Long id) {
-        validateRuleExists(id);
+        AiRuleDO rule = validateRuleExists(id);
+        LogRecordContext.putVariable("rule", rule);
         // 灰度行回退为停用并清空灰度租户
         aiRuleMapper.update(null, new LambdaUpdateWrapper<AiRuleDO>()
                 .eq(AiRuleDO::getId, id)
@@ -133,8 +150,11 @@ public class AiRuleServiceImpl implements AiRuleService {
     }
 
     @Override
+    @LogRecord(type = RULE_TYPE, subType = RULE_DELETE_SUB_TYPE, bizNo = "{{#id}}",
+            success = RULE_DELETE_SUCCESS)
     public void deleteRule(Long id) {
-        validateRuleExists(id);
+        AiRuleDO rule = validateRuleExists(id);
+        LogRecordContext.putVariable("rule", rule);
         aiRuleMapper.deleteById(id); // 逻辑删除
     }
 

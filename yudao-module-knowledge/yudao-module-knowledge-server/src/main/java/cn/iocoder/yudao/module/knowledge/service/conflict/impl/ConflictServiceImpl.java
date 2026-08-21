@@ -18,6 +18,8 @@ import cn.iocoder.yudao.module.knowledge.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
+import com.mzt.logapi.context.LogRecordContext;
+import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -36,6 +38,7 @@ import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.CONFLICT_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.CONFLICT_STATUS_ERROR;
+import static cn.iocoder.yudao.module.knowledge.enums.KnowledgeLogRecordConstants.*;
 
 /**
  * 版本冲突检测与裁决
@@ -174,6 +177,8 @@ public class ConflictServiceImpl implements ConflictService {
 
     @Override
     @Transactional // 冲突状态更新与关联条目驳回必须原子, 防止"冲突已解决但条目未驳回"后发布
+    @LogRecord(type = CONFLICT_TYPE, subType = CONFLICT_RESOLVE_SUB_TYPE, bizNo = "{{#conflictId}}",
+            success = CONFLICT_RESOLVE_SUCCESS)
     public void resolve(Long conflictId, String resolveType, String comment) {
         ConflictStatusEnum type = ConflictStatusEnum.fromStatus(resolveType);
         if (type == null || ConflictStatusEnum.PENDING.equals(type)) {
@@ -186,6 +191,9 @@ public class ConflictServiceImpl implements ConflictService {
         if (!ConflictStatusEnum.PENDING.getStatus().equals(conflict.getStatus())) {
             throw new ServiceException(CONFLICT_STATUS_ERROR);
         }
+        // 注册操作日志模板变量(裁决结果用枚举中文名, 如"已裁决·以新版为准")
+        LogRecordContext.putVariable("conflict", conflict);
+        LogRecordContext.putVariable("resolveResult", type.getName());
         ConflictDO update = new ConflictDO();
         update.setId(conflictId);
         update.setStatus(type.getStatus());

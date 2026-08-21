@@ -23,6 +23,8 @@ import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHe
 import cn.iocoder.yudao.module.knowledge.service.review.ReviewItemService;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.mzt.logapi.context.LogRecordContext;
+import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -30,6 +32,7 @@ import org.springframework.stereotype.Service;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_NOT_VISIBLE;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KNOWLEDGE_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.VERSION_DOC_MISMATCH;
+import static cn.iocoder.yudao.module.knowledge.enums.KnowledgeLogRecordConstants.*;
 import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
@@ -78,6 +81,8 @@ public class AiDocumentServiceImpl implements AiDocumentService {
     private ConflictMapper conflictMapper;
 
     @Override
+    @LogRecord(type = DOC_TYPE, subType = DOC_CREATE_SUB_TYPE, bizNo = "{{#doc.id}}",
+            success = DOC_CREATE_SUCCESS)
     public Long createAiDocument(AiDocumentSaveReqVO createReqVO) {
         // 权限边界: 目标知识库须存在且对当前用户可见(含未过期)
         Long userId = SecurityFrameworkUtils.getLoginUserId();
@@ -103,6 +108,7 @@ public class AiDocumentServiceImpl implements AiDocumentService {
             doc.setParseStatus("PENDING");
         }
         aiDocumentMapper.insert(doc);
+        LogRecordContext.putVariable("doc", doc);
         // 创建 DRAFT 版本(版本状态机)
         aiDocVersionService.createVersion(doc.getId());
         // 发送入库任务消息(Kafka), ingestion-server 异步解析/切分/向量化
@@ -111,8 +117,11 @@ public class AiDocumentServiceImpl implements AiDocumentService {
     }
 
     @Override
+    @LogRecord(type = DOC_TYPE, subType = DOC_DELETE_SUB_TYPE, bizNo = "{{#id}}",
+            success = DOC_DELETE_SUCCESS)
     public void deleteAiDocument(Long id) {
-        validateAiDocumentExists(id);
+        AiDocumentDO doc = validateAiDocumentExists(id);
+        LogRecordContext.putVariable("doc", doc);
         // 级联清理片段数据(MySQL ai_chunk + ES + Milvus), 失败则中断删除
         CommonResult<Boolean> result = ingestionApi.deleteDocumentData(id);
         if (result.isError()) {
@@ -205,10 +214,12 @@ public class AiDocumentServiceImpl implements AiDocumentService {
         aiDocumentMapper.updateParseStatus(id, parseStatus, chunkCount, errorMsg);
     }
 
-    private void validateAiDocumentExists(Long id) {
-        if (aiDocumentMapper.selectById(id) == null) {
+    private AiDocumentDO validateAiDocumentExists(Long id) {
+        AiDocumentDO doc = aiDocumentMapper.selectById(id);
+        if (doc == null) {
             throw exception(DOCUMENT_NOT_EXISTS);
         }
+        return doc;
     }
 
 }
