@@ -67,6 +67,8 @@ public class EvidenceService {
     @Resource
     private RuleShortCircuit ruleShortCircuit;
     @Resource
+    private cn.iocoder.yudao.module.knowledge.api.KnowledgeApi knowledgeApi;
+    @Resource
     private EvidenceProperties properties;
 
     /**
@@ -154,18 +156,32 @@ public class EvidenceService {
         }
 
         // 0. 槽位检测(检索之前; 缺必填槽位 → 反问短路, 不检索; 检测失败/无定义 → 走原流程)
+        //    kbIds 为空(对话链路"全部可见"语义)时, 先解析用户可见知识库, 与检索同口径;
+        //    解析失败/空集 → 跳过检测(降级, 不阻断), 避免对话场景槽位反问门失效
         SlotDetectionResult slotResult = null;
+        List<Long> slotKbIds = kbIds;
         if (!Boolean.TRUE.equals(skipSlotDetection)
                 && Boolean.TRUE.equals(properties.getSlot().getEnabled())
-                && kbIds != null && !kbIds.isEmpty()) {
-            slotResult = slotDetector.detect(query, kbIds);
+                && (kbIds == null || kbIds.isEmpty())) {
+            try {
+                java.util.Set<Long> visible = knowledgeApi.getVisibleKbIds(userId).getCheckedData();
+                slotKbIds = visible == null ? List.of() : new java.util.ArrayList<>(visible);
+            } catch (Exception e) {
+                log.warn("[evaluate][可见知识库解析失败, 跳过槽位检测: {}]", e.getMessage());
+                slotKbIds = List.of();
+            }
+        }
+        if (!Boolean.TRUE.equals(skipSlotDetection)
+                && Boolean.TRUE.equals(properties.getSlot().getEnabled())
+                && slotKbIds != null && !slotKbIds.isEmpty()) {
+            slotResult = slotDetector.detect(query, slotKbIds);
             if (slotResult != null && slotResult.isApplicable() && !slotResult.getMissing().isEmpty()) {
                 String names = slotResult.getMissing().stream()
                         .map(SlotDetectionResult.MissingSlot::getName)
                         .collect(Collectors.joining("、"));
                 judgement = buildJudgement(false, 0.0, "需补充信息:" + names, 0, 0);
                 EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
-                resp.setSlotKbId(kbIds.get(0));
+                resp.setSlotKbId(slotKbIds.get(0));
                 resp.setExtractedSlots(toSlotValueList(slotResult.getExtracted()));
                 resp.setMissingSlots(slotResult.getMissing().stream()
                         .map(m -> toMissingSlotValue(m)).collect(Collectors.toList()));
@@ -210,8 +226,8 @@ public class EvidenceService {
         // 5. 组装响应(elapsed 不含落库耗时)
         EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, deduped, conflicts, generation, history);
         // 槽位检测结果回显(槽位完整时也回显, 供审计/后续合并用)
-        if (slotResult != null) {
-            resp.setSlotKbId(kbIds.get(0));
+        if (slotResult != null && slotKbIds != null && !slotKbIds.isEmpty()) {
+            resp.setSlotKbId(slotKbIds.get(0));
             resp.setExtractedSlots(toSlotValueList(slotResult.getExtracted()));
             if (!slotResult.getMissing().isEmpty()) {
                 String names = slotResult.getMissing().stream()
