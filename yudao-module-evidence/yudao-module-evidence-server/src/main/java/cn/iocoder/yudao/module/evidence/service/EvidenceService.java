@@ -177,7 +177,8 @@ public class EvidenceService {
         if (!Boolean.TRUE.equals(skipSlotDetection)
                 && Boolean.TRUE.equals(properties.getSlot().getEnabled())
                 && slotKbIds != null && !slotKbIds.isEmpty()) {
-            slotResult = slotDetector.detect(query, slotKbIds);
+            // 多轮槽位闭环: 传入 history, 检测器合并历史已提供的槽位值, 避免跨轮重复反问
+            slotResult = slotDetector.detect(query, slotKbIds, history);
             if (slotResult != null && slotResult.isApplicable() && !slotResult.getMissing().isEmpty()) {
                 String names = slotResult.getMissing().stream()
                         .map(SlotDetectionResult.MissingSlot::getName)

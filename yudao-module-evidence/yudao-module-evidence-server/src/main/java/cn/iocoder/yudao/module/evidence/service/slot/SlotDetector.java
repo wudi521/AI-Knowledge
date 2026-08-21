@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeSlotDefinitionDTO;
@@ -64,6 +65,22 @@ public class SlotDetector {
      * @return 检测结果; 无定义/失败 → null(调用方跳过检测)
      */
     public SlotDetectionResult detect(String query, List<Long> kbIds) {
+        return detect(query, kbIds, null);
+    }
+
+    /**
+     * 检测(支持多轮): 合并历史已提供的槽位值, 避免跨轮重复反问。
+     * <p>
+     * 槽位反问闭环: 上一轮缺槽位反问 → 客户补充 → 本轮 query 是补充内容(如"是摔碎的"),
+     * 仅看本轮会误判其它槽位(如购机时间)仍缺失。将历史 USER 消息中的已抽取值注入提示词,
+     * 让 LLM 按"历史已确认 + 本轮新增"合并判定, 已提供的槽位不再进入 missing。
+     *
+     * @param query   客户问题(可能为补充信息, 非完整描述)
+     * @param kbIds   目标知识库编号列表(非空由调用方保证)
+     * @param history 历史对话轮次(USER/AI; 用于恢复已提供的槽位值, 可为 null = 单轮)
+     * @return 检测结果; 无定义/失败 → null(调用方跳过检测)
+     */
+    public SlotDetectionResult detect(String query, List<Long> kbIds, List<ChatTurnDTO> history) {
         try {
             // 1. 取定义(RPC 失败由外层 catch 降级)
             List<KnowledgeSlotDefinitionDTO> defs = knowledgeApi.getSlotDefinitions(kbIds).getCheckedData();
@@ -77,8 +94,8 @@ public class SlotDetector {
             }
             List<KnowledgeSlotDefinitionDTO> slotDefs = new ArrayList<>(unique.values());
 
-            // 3. LLM 单次抽取
-            String resp = modelApi.chat(buildReq(query, slotDefs)).getCheckedData();
+            // 3. LLM 单次抽取(注入历史已提供信息, 支持多轮合并)
+            String resp = modelApi.chat(buildReq(query, slotDefs, history)).getCheckedData();
             JSONObject json = parseJson(resp);
             if (json == null) {
                 log.warn("[detect][query({}) LLM 输出无法解析, 跳过槽位检测]", query);
@@ -113,7 +130,7 @@ public class SlotDetector {
                         }
                     }
                 }
-                // 5b. 代码兜底: 必填但未抽到值
+                // 5b. 代码兜底: 必填但未抽到值(含历史合并后仍未提供的)
                 for (KnowledgeSlotDefinitionDTO def : slotDefs) {
                     if (Boolean.TRUE.equals(def.getRequired())
                             && StrUtil.isBlank(extracted.get(def.getSlotCode()))) {
@@ -142,8 +159,8 @@ public class SlotDetector {
         }
     }
 
-    /** 组装 LLM 请求: 提示词模板固定, 槽位定义序列化为 JSON 注入 */
-    private ModelChatReqDTO buildReq(String query, List<KnowledgeSlotDefinitionDTO> slotDefs) {
+    /** 组装 LLM 请求: 提示词模板固定, 槽位定义序列化为 JSON 注入; 历史已提供信息附加注入 */
+    private ModelChatReqDTO buildReq(String query, List<KnowledgeSlotDefinitionDTO> slotDefs, List<ChatTurnDTO> history) {
         List<Map<String, Object>> defsJson = slotDefs.stream().map(def -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("code", def.getSlotCode());
@@ -153,12 +170,32 @@ public class SlotDetector {
             m.put("sort", def.getSort());
             return m;
         }).collect(Collectors.toList());
+        StringBuilder user = new StringBuilder("问题: ").append(query);
+        // 历史已提供信息(多轮合并): 列出历史 USER 消息原文, 供 LLM 从中恢复已确认的槽位值
+        String historyText = extractHistory(history);
+        if (StrUtil.isNotBlank(historyText)) {
+            user.append("\n\n历史对话(客户此前已提供的信息, 用于合并判定, 不要重复反问):\n").append(historyText);
+        }
         ModelChatReqDTO req = new ModelChatReqDTO();
         String sys = promptSupport.get("slot-detect", SYSTEM_PROMPT);
         req.setSystem(sys.replace("{defs}", JSONUtil.toJsonStr(defsJson)));
-        req.setUser("问题: " + query);
+        req.setUser(user.toString());
         req.setTemperature(0.0); // 结构化抽取: 置 0 保证确定性(默认 0.2 采样会造成抽取得失不稳定)
         return req;
+    }
+
+    /** 提取历史对话原文(仅 USER 轮; 用于槽位合并判定) */
+    private String extractHistory(List<ChatTurnDTO> history) {
+        if (history == null || history.isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (ChatTurnDTO turn : history) {
+            if (turn != null && "USER".equals(turn.getRole()) && StrUtil.isNotBlank(turn.getContent())) {
+                sb.append("- ").append(turn.getContent()).append('\n');
+            }
+        }
+        return sb.length() == 0 ? null : sb.toString();
     }
 
     /** 截取首个 { 到最后一个 } 之间的内容并解析(兼容 LLM 输出带前后缀说明) */
