@@ -79,8 +79,15 @@ public class TransferHandler {
             return null;
         }
         // 1. 落库 SYSTEM 交接摘要消息(留痕; citations 置空)
-        messageService.addMessage(conversationId, "SYSTEM", decision.getSummary(),
-                null, null, null, null, decision.getTraceId());
+        //    幂等: 重复 handleTransfer(如并发/重试)时, 会话已有 SYSTEM 交接消息则跳过落库, 避免重复消息
+        boolean hasSystemMessage = messageService.getMessages(conversationId).stream()
+                .anyMatch(msg -> "SYSTEM".equals(msg.getRole()));
+        if (!hasSystemMessage) {
+            messageService.addMessage(conversationId, "SYSTEM", decision.getSummary(),
+                    null, null, null, null, decision.getTraceId());
+        } else {
+            log.info("[handleTransfer][会话({}) 已有 SYSTEM 交接消息, 跳过重复落库(幂等)]", conversationId);
+        }
         // 2. 状态迁移 + 摘要/原因(ACTIVE→TRANSFERRED; 并发已 TRANSFERRED 时守卫返回 0 行, 内部已 warn)
         conversationService.updateTransferInfo(conversationId, decision.getSummary(), decision.getTransferReason());
         // 3. 写入会话上下文摘要(近轮对话要点, 规则组装非 LLM; 与 decision.summary 的交接摘要互补)

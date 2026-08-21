@@ -30,5 +30,6 @@ public interface ErrorCodeConstants {
     ErrorCode KB_SLOT_NOT_EXISTS = new ErrorCode(1_004_000_020, "知识库槽位定义不存在");
     ErrorCode VERSION_GATE_BLOCKED = new ErrorCode(1_004_000_021, "评测闸门未通过, 禁止发布(请先运行评测且全指标达标)");
     ErrorCode KB_SLOT_CODE_EXISTS = new ErrorCode(1_004_000_022, "该知识库下槽位编码已存在");
+    ErrorCode VERSION_EMPTY_CHUNK = new ErrorCode(1_004_000_023, "版本下无内容片段, 无法发布");
 
 }

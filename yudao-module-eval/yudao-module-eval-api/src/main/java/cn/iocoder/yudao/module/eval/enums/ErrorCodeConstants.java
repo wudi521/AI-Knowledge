@@ -16,4 +16,6 @@ public interface ErrorCodeConstants {
 
     ErrorCode EVAL_TASK_NO_CASE = new ErrorCode(1_012_000_004, "评测任务无可执行用例");
 
+    ErrorCode EVAL_TASK_RUNNING = new ErrorCode(1_012_000_005, "该知识库已有评测任务运行中, 请等待完成后再发起");
+
 }

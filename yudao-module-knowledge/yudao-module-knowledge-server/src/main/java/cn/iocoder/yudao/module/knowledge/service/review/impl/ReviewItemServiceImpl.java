@@ -13,9 +13,12 @@ import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.review.vo.ReviewItemPageReqVO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
+import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.enums.review.ReviewItemStatusEnum;
 import cn.iocoder.yudao.module.knowledge.service.review.ReviewItemService;
@@ -43,6 +46,7 @@ import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.VERSION
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_ITEM_STATUS_ERROR;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.REVIEW_REASON_REQUIRED;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_NOT_VISIBLE;
 import static cn.iocoder.yudao.module.knowledge.enums.KnowledgeLogRecordConstants.*;
 
 /**
@@ -73,6 +77,10 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     @Resource
     private AiDocumentMapper aiDocumentMapper;
     @Resource
+    private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
+    @Resource
+    private KnowledgePermissionHelper knowledgePermissionHelper;
+    @Resource
     private IngestionApi ingestionApi;
     @Resource
     private ModelApi modelApi;
@@ -83,6 +91,19 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     @Transactional
     public void processAfterParsed(Long versionId) {
         Long docId = aiDocVersionService.getVersion(versionId).getDocId();
+        // P0 防线: 版本下无任何片段(解析失败/空文档)时禁止自动发布, 置 FAILED 供重试, 避免空内容上线
+        try {
+            List<ChunkRespDTO> chunks = ingestionApi.getChunksByVersion(versionId).getCheckedData();
+            if (chunks == null || chunks.isEmpty()) {
+                log.warn("[processAfterParsed][版本 {} 无内容片段, 置 FAILED(不自动发布)]", versionId);
+                aiDocumentMapper.updateParseStatus(docId, "FAILED", null, null);
+                return;
+            }
+        } catch (Exception e) {
+            log.error("[processAfterParsed][版本 {} 片段数校验异常, 置 FAILED 保守处理: {}]", versionId, e.getMessage(), e);
+            aiDocumentMapper.updateParseStatus(docId, "FAILED", null, null);
+            return;
+        }
         // EXTRACTING 已由入口(notifyParsed/retryExtractByDocId)在事务外落库, 此处不再设置(事务内不可见)
         List<ReviewItemDO> items = extractItems(versionId);
         // 提取文档涉及的产品/品牌(结构化元数据, 检索品牌一致性校验用; 失败不影响主流程)
@@ -111,6 +132,8 @@ public class ReviewItemServiceImpl implements ReviewItemService {
 
     @Override
     public void retryExtractByDocId(Long docId) {
+        // 越权防线: 文档所属知识库不可见时禁止重试抽取
+        validateDocKbVisible(docId);
         AiDocVersionDO version = aiDocVersionService.getLatestVersion(docId);
         if (version == null) {
             throw new ServiceException(VERSION_NOT_EXISTS);
@@ -315,6 +338,10 @@ public class ReviewItemServiceImpl implements ReviewItemService {
 
     @Override
     public PageResult<ReviewItemDO> getReviewItemPage(ReviewItemPageReqVO pageReqVO) {
+        // 越权防线: 按文档过滤时校验其知识库可见
+        if (pageReqVO.getDocId() != null) {
+            validateDocKbVisible(pageReqVO.getDocId());
+        }
         return reviewItemMapper.selectPage(pageReqVO, new LambdaQueryWrapperX<ReviewItemDO>()
                 .eqIfPresent(ReviewItemDO::getDocId, pageReqVO.getDocId())
                 .eqIfPresent(ReviewItemDO::getVersionId, pageReqVO.getVersionId())
@@ -330,6 +357,8 @@ public class ReviewItemServiceImpl implements ReviewItemService {
             success = REVIEW_APPROVE_SUCCESS)
     public void approve(Long id) {
         ReviewItemDO item = getItem(id);
+        // 越权防线: 审核条目所属知识库不可见时禁止通过
+        validateItemKbVisible(item);
         LogRecordContext.putVariable("item", item);
         if (!ReviewItemStatusEnum.PENDING.getStatus().equals(item.getStatus())) {
             throw new ServiceException(REVIEW_ITEM_STATUS_ERROR);
@@ -352,6 +381,8 @@ public class ReviewItemServiceImpl implements ReviewItemService {
             throw new ServiceException(REVIEW_REASON_REQUIRED);
         }
         ReviewItemDO item = getItem(id);
+        // 越权防线: 审核条目所属知识库不可见时禁止驳回
+        validateItemKbVisible(item);
         LogRecordContext.putVariable("item", item);
         if (!ReviewItemStatusEnum.PENDING.getStatus().equals(item.getStatus())) {
             throw new ServiceException(REVIEW_ITEM_STATUS_ERROR);
@@ -376,6 +407,44 @@ public class ReviewItemServiceImpl implements ReviewItemService {
 
     private String currentNickname() {
         return SecurityFrameworkUtils.getLoginUserNickname();
+    }
+
+    /** 越权防线: 审核条目所属知识库不可见时禁止操作(超管/无登录态直通) */
+    private void validateItemKbVisible(ReviewItemDO item) {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        if (userId == null || knowledgePermissionHelper.isSuperAdmin(userId)) {
+            return;
+        }
+        Long kbId = item.getDocId() != null ? docKbId(item.getDocId()) : null;
+        if (kbId == null) {
+            throw new ServiceException(KB_NOT_VISIBLE);
+        }
+        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(kbId);
+        if (kb == null || !knowledgePermissionHelper.isKbVisibleToUser(userId, kb)) {
+            throw new ServiceException(KB_NOT_VISIBLE);
+        }
+    }
+
+    /** 越权防线: 文档所属知识库不可见时禁止操作(超管/无登录态直通) */
+    private void validateDocKbVisible(Long docId) {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        if (userId == null || knowledgePermissionHelper.isSuperAdmin(userId)) {
+            return;
+        }
+        Long kbId = docKbId(docId);
+        if (kbId == null) {
+            throw new ServiceException(KB_NOT_VISIBLE);
+        }
+        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(kbId);
+        if (kb == null || !knowledgePermissionHelper.isKbVisibleToUser(userId, kb)) {
+            throw new ServiceException(KB_NOT_VISIBLE);
+        }
+    }
+
+    /** 查文档所属知识库(文档不存在/已删返回 null) */
+    private Long docKbId(Long docId) {
+        AiDocumentDO doc = aiDocumentMapper.selectById(docId);
+        return doc == null ? null : doc.getKbId();
     }
 
 }

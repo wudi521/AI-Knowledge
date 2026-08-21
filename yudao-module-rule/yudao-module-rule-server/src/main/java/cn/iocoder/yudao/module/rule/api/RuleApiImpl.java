@@ -51,7 +51,18 @@ public class RuleApiImpl implements RuleApi {
             return CommonResult.error(GlobalErrorCodeConstants.BAD_REQUEST.getCode(), "ruleKey 不能为空");
         }
         try {
-            Long tenantId = req.getTenantId() != null ? req.getTenantId() : TenantContextHolder.getTenantId();
+            // 租户校验(P0 防跨租户): RPC 为 permitAll, 请求体 tenantId 可被伪造。
+            // 框架 TenantContextWebFilter 已从 Header tenant-id 注入上下文(Feign 自动透传);
+            // 若请求体显式指定租户, 必须与上下文一致, 否则拒绝——防止未认证方读任意租户规则结论。
+            Long ctxTenantId = TenantContextHolder.getTenantId();
+            Long reqTenantId = req.getTenantId();
+            if (reqTenantId != null && ctxTenantId != null && !reqTenantId.equals(ctxTenantId)) {
+                log.warn("[evaluate][ruleKey({}) 请求体租户({}) 与上下文租户({}) 不一致, 拒绝跨租户访问]",
+                        req.getRuleKey(), reqTenantId, ctxTenantId);
+                return CommonResult.error(GlobalErrorCodeConstants.FORBIDDEN.getCode(), "租户不一致");
+            }
+            // 生效租户: 请求体显式指定优先(已校验一致), 否则用上下文(Feign 透传 header)
+            Long tenantId = reqTenantId != null ? reqTenantId : ctxTenantId;
             List<RuleResult> results = ruleEngine.evaluate(req.getRuleKey(), tenantId, req.getFacts());
             // 组装响应
             RuleEvaluateRespDTO resp = new RuleEvaluateRespDTO();

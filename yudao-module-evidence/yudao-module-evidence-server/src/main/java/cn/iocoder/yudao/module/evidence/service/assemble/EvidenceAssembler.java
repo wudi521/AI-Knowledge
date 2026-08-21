@@ -75,8 +75,8 @@ public class EvidenceAssembler {
             log.warn("[assemble][query({}) 调用检索 RPC 异常, 降级返回空证据]", query, e);
             return AssembledEvidence.empty();
         }
-        // 2. 业务失败/空响应: 优雅降级
-        if (resp == null || resp.getCode() != 0 || resp.getData() == null) {
+        // 2. 业务失败/空响应: 优雅降级(防御 code 为 null 的 NPE 逃逸)
+        if (resp == null || resp.getCode() == null || resp.getCode() != 0 || resp.getData() == null) {
             log.warn("[assemble][query({}) 检索 RPC 失败: code({}) msg({}), 降级返回空证据]", query,
                     resp != null ? resp.getCode() : null, resp != null ? resp.getMsg() : null);
             return AssembledEvidence.empty();

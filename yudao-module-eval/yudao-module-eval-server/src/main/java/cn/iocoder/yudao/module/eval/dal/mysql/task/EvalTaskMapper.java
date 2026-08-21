@@ -37,4 +37,15 @@ public interface EvalTaskMapper extends BaseMapperX<EvalTaskDO> {
                 .last("LIMIT 1"));
     }
 
+    /**
+     * 是否存在运行中的任务(可重入防护: 同知识库已有 RUNNING 任务时拒绝新任务)
+     * <p>
+     * kbId 为空(全部用例任务)时按"任意 RUNNING 任务"判断, 保证全局同一时刻仅一个评测在执行
+     */
+    default boolean existsRunning(Long kbId) {
+        return selectCount(new LambdaQueryWrapperX<EvalTaskDO>()
+                .eq(EvalTaskDO::getStatus, "RUNNING")
+                .eqIfPresent(EvalTaskDO::getKbId, kbId)) > 0;
+    }
+
 }

@@ -16,6 +16,7 @@ import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.service.conflict.ConflictService;
 import cn.iocoder.yudao.module.knowledge.service.intent.IntentSummarizer;
+import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.service.slot.SlotSummarizer;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
@@ -58,10 +59,14 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     @Resource
     private SlotSummarizer slotSummarizer;
     @Resource
+    private KnowledgePermissionHelper knowledgePermissionHelper;
+    @Resource
     private EvalApi evalApi;
 
     @Override
     public AiDocVersionDO createVersion(Long docId) {
+        // 越权防线: 文档所属知识库不可见时禁止创建版本
+        validateDocKbVisible(docId);
         AiDocVersionDO latest = aiDocVersionMapper.selectLatestByDocId(docId);
         int next = (latest == null ? 0 : parseVersionNo(latest.getVersionNo())) + 1;
         AiDocVersionDO version = AiDocVersionDO.builder()
@@ -104,6 +109,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
 
     @Override
     public List<AiDocVersionDO> getVersionList(Long docId) {
+        // 越权防线: 文档所属知识库不可见时禁止查看版本列表
+        validateDocKbVisible(docId);
         return aiDocVersionMapper.selectListByDocId(docId);
     }
 
@@ -135,6 +142,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     public void publish(Long versionId) {
         AiDocVersionDO version = getVersion(versionId);
         LogRecordContext.putVariable("version", version);
+        // 越权防线: 版本所属知识库不可见时禁止发布
+        validateVersionKbVisible(version);
         // 幂等(正常场景): 已发布则直接返回(notifyParsed 在 Kafka 重投/重试场景可能重复触发)
         // 例外修复: 版本已 PUBLISHED 但片段被重新抽取(新片段默认 REVIEW 未发布)时, 需重跑索引同步,
         //           否则新片段不进 Milvus/ES 且永远卡 REVIEW(检索不到)。indexVersion 幂等(覆盖式重写)。
@@ -182,6 +191,19 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         // 注册操作日志模板变量(知识库可能已删, 模板用安全导航)
         LogRecordContext.putVariable("doc", doc);
         LogRecordContext.putVariable("kb", aiKnowledgeBaseMapper.selectById(doc.getKbId()));
+        // 门禁 3.5: 版本下必须至少有 1 个内容片段, 否则发布 = 清空线上内容(空版本上线事故)
+        try {
+            List<cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO> chunks =
+                    ingestionApi.getChunksByVersion(versionId).getCheckedData();
+            if (chunks == null || chunks.isEmpty()) {
+                throw new ServiceException(VERSION_EMPTY_CHUNK);
+            }
+        } catch (ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[publish][版本 {} 片段数校验 RPC 异常, 保守阻断: {}]", versionId, e.getMessage(), e);
+            throw new ServiceException(VERSION_EMPTY_CHUNK);
+        }
         // 门禁 4: 评测闸门(仅首次发布路径; 上方幂等分支已 return, 重索引不受影响)
         // evalApi.checkGate: 闸门配置关闭 → true 放行; 无 DONE 评测或未全题达标 → false 阻断;
         // 内部实现不抛异常; 此处兜底 RPC 级故障(网络/序列化)保守阻断, 避免未评测内容上线
@@ -253,6 +275,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     public void reject(Long versionId, String comment) {
         AiDocVersionDO version = getVersion(versionId);
         LogRecordContext.putVariable("version", version);
+        // 越权防线: 版本所属知识库不可见时禁止驳回
+        validateVersionKbVisible(version);
         // 仅审核中可整体驳回, 避免已发布版本被误操作回退
         if (!VersionStatusEnum.REVIEW.getStatus().equals(version.getStatus())) {
             throw new ServiceException(VERSION_STATUS_ERROR);
@@ -278,6 +302,30 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
                 .ne(AiDocVersionDO::getId, exceptVersionId)
                 .set(AiDocVersionDO::getStatus, VersionStatusEnum.EXPIRED.getStatus())
                 .set(AiDocVersionDO::getEffectiveTo, LocalDateTime.now()));
+    }
+
+    /**
+     * 校验文档所属知识库对当前用户可见(越权 0 容忍; 内部调用/RPC 无登录态直通)。
+     * 知识库已删 → 文档校验为不可见(保守)。
+     */
+    private void validateDocKbVisible(Long docId) {
+        AiDocumentDO doc = aiDocumentMapper.selectById(docId);
+        if (doc == null) {
+            throw new ServiceException(DOCUMENT_NOT_EXISTS);
+        }
+        Long userId = cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils.getLoginUserId();
+        if (userId == null || knowledgePermissionHelper.isSuperAdmin(userId)) {
+            return; // 无登录态(内部调用/RPC)或超管直通
+        }
+        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(doc.getKbId());
+        if (kb == null || !knowledgePermissionHelper.isKbVisibleToUser(userId, kb)) {
+            throw new ServiceException(KB_NOT_VISIBLE);
+        }
+    }
+
+    /** 校验版本所属文档的知识库可见性(版本操作统一入口) */
+    private void validateVersionKbVisible(AiDocVersionDO version) {
+        validateDocKbVisible(version.getDocId());
     }
 
 }

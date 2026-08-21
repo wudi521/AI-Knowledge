@@ -38,6 +38,7 @@ import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.module.eval.enums.ErrorCodeConstants.EVAL_TASK_NO_CASE;
 import static cn.iocoder.yudao.module.eval.enums.ErrorCodeConstants.EVAL_TASK_NOT_EXISTS;
+import static cn.iocoder.yudao.module.eval.enums.ErrorCodeConstants.EVAL_TASK_RUNNING;
 
 /**
  * 评测报表服务: 任务发起 / 任务查询 / 逐题结果查询
@@ -80,6 +81,10 @@ public class EvalReportService {
         }
         if (CollUtil.isEmpty(cases)) {
             throw new ServiceException(EVAL_TASK_NO_CASE);
+        }
+        // 1.5 可重入防护: 同知识库(或全局, kbId 为空时)已有 RUNNING 任务 → 拒绝新任务
+        if (evalTaskMapper.existsRunning(reqVO.getKbId())) {
+            throw new ServiceException(EVAL_TASK_RUNNING);
         }
         // 2. 落任务(RUNNING)
         EvalTaskDO task = EvalTaskDO.builder()

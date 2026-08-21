@@ -83,6 +83,8 @@ public class EvalRunner {
     private EvalTaskMapper evalTaskMapper;
     @Resource
     private EvalMetricService evalMetricService;
+    @Resource
+    private cn.iocoder.yudao.module.eval.framework.eval.EvalProperties evalProperties;
 
     /**
      * 异步执行评测任务(非阻塞): 立即返回, 由守护线程逐题执行并落库;
@@ -225,9 +227,10 @@ public class EvalRunner {
             req.setSkipSlotDetection(true); // 评测测检索+回答质量, 不走对话层槽位反问门
             req.setTenantId(task.getTenantId() != null ? task.getTenantId() : TenantContextHolder.getTenantId());
             req.setUserId(userId); // 发起人 userId: 检索权限过滤需要(否则 fail-closed 空权限 → 检索为空)
-            CommonResult<EvidenceEvaluateRespDTO> resp = evidenceApi.evaluate(req);
-            // RPC 失败(网络异常由 catch 处理; 非 0 码/空数据在此处理)
-            if (resp == null || resp.getCode() != 0 || resp.getData() == null) {
+            // 单题超时控制(yudao.eval.runner.timeout-ms, 默认 300s): 防止单题 RPC 卡死拖垮整个评测任务
+            CommonResult<EvidenceEvaluateRespDTO> resp = callWithTimeout(evalCase, req);
+            // RPC 失败(网络异常由 catch 处理; 非 0 码/空数据/空 code 在此处理, 防 NPE 逃逸)
+            if (resp == null || resp.getCode() == null || resp.getCode() != 0 || resp.getData() == null) {
                 String detail = resp != null ? StrUtil.format("code({}) msg({})", resp.getCode(), resp.getMsg()) : "RPC 无响应";
                 log.warn("[evaluateOne][任务 {} 用例 {} 评估失败: {}]", task.getId(), evalCase.getId(), detail);
                 result.setFailReasons(truncate("评估异常: " + detail));
@@ -255,6 +258,32 @@ public class EvalRunner {
             log.error("[evaluateOne][任务 {} 用例 {} 评估异常]", task.getId(), evalCase.getId(), e);
             result.setFailReasons(truncate("评估异常: " + e.getMessage()));
             return result;
+        }
+    }
+
+    /**
+     * 带超时的证据评估调用(yudao.eval.runner.timeout-ms 配置生效; 超时抛异常由调用方按单题失败处理)
+     * <p>
+     * 线程池复用 TASK_EXECUTOR 的兄弟线程池不合适(会与任务执行竞争), 这里用当前线程 + Future 超时:
+     * 提交到临时单线程池并 get(timeoutMs), 超时中断并抛 TimeoutException → 该题标记失败, 不阻塞后续题。
+     */
+    private CommonResult<EvidenceEvaluateRespDTO> callWithTimeout(EvalCaseDO evalCase,
+                                                                 EvidenceEvaluateReqDTO req) throws Exception {
+        long timeoutMs = evalProperties.getRunner().getTimeoutMs();
+        java.util.concurrent.ExecutorService single = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "eval-case-" + evalCase.getId());
+            t.setDaemon(true);
+            return t;
+        });
+        try {
+            java.util.concurrent.Future<CommonResult<EvidenceEvaluateRespDTO>> future =
+                    single.submit(() -> evidenceApi.evaluate(req));
+            return future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            log.warn("[callWithTimeout][用例 {} 评估超时(>{}ms), 按失败处理]", evalCase.getId(), timeoutMs);
+            throw new RuntimeException("评估超时(>" + timeoutMs + "ms)", e);
+        } finally {
+            single.shutdownNow(); // 中断可能仍在执行的 RPC 线程(守护线程, 不阻止 JVM 退出)
         }
     }
 

@@ -16,6 +16,7 @@ import com.mzt.logapi.context.LogRecordContext;
 import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 
 import java.util.ArrayList;
@@ -72,6 +73,7 @@ public class AiPromptServiceImpl implements AiPromptService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     @LogRecord(type = PROMPT_TYPE, subType = PROMPT_ENABLE_SUB_TYPE, bizNo = "{{#id}}",
             success = PROMPT_ENABLE_SUCCESS)
     public void enablePrompt(Long id) {
@@ -91,6 +93,7 @@ public class AiPromptServiceImpl implements AiPromptService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     @LogRecord(type = PROMPT_TYPE, subType = PROMPT_GRAY_ENABLE_SUB_TYPE, bizNo = "{{#id}}",
             success = PROMPT_GRAY_ENABLE_SUCCESS)
     public void grayEnablePrompt(Long id, List<Long> tenantIds) {
@@ -118,6 +121,7 @@ public class AiPromptServiceImpl implements AiPromptService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     @LogRecord(type = PROMPT_TYPE, subType = PROMPT_GRAY_OFF_SUB_TYPE, bizNo = "{{#id}}",
             success = PROMPT_GRAY_OFF_SUCCESS)
     public void grayOffPrompt(Long id) {
