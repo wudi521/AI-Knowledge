@@ -11,6 +11,7 @@ import cn.iocoder.yudao.module.model.controller.admin.prompt.vo.AiPromptUpdateRe
 import cn.iocoder.yudao.module.model.dal.dataobject.prompt.AiPromptDO;
 import cn.iocoder.yudao.module.model.dal.mysql.prompt.AiPromptMapper;
 import cn.iocoder.yudao.module.model.service.prompt.AiPromptService;
+import cn.iocoder.yudao.module.model.service.prompt.PromptCache;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.mzt.logapi.context.LogRecordContext;
 import com.mzt.logapi.starter.annotation.LogRecord;
@@ -41,6 +42,8 @@ public class AiPromptServiceImpl implements AiPromptService {
 
     @Resource
     private AiPromptMapper aiPromptMapper;
+    @Resource
+    private PromptCache promptCache;
 
     @Override
     @LogRecord(type = PROMPT_TYPE, subType = PROMPT_CREATE_SUB_TYPE, bizNo = "{{#promptId}}",
@@ -53,6 +56,7 @@ public class AiPromptServiceImpl implements AiPromptService {
         prompt.setVersion(nextVersion);
         prompt.setStatus(0); // 新版本默认停用
         aiPromptMapper.insert(prompt);
+        promptCache.evict(req.getPromptKey()); // 新版本立即失效缓存
         LogRecordContext.putVariable("promptId", prompt.getId());
         LogRecordContext.putVariable("newVersion", nextVersion);
         return prompt.getId();
@@ -70,6 +74,7 @@ public class AiPromptServiceImpl implements AiPromptService {
         // 更新 name/description/content
         AiPromptDO updateObj = BeanUtils.toBean(req, AiPromptDO.class);
         aiPromptMapper.updateById(updateObj);
+        promptCache.evict(prompt.getPromptKey());
     }
 
     @Override
@@ -90,6 +95,7 @@ public class AiPromptServiceImpl implements AiPromptService {
                 .ne(AiPromptDO::getId, id)
                 .eq(AiPromptDO::getStatus, 1)
                 .set(AiPromptDO::getStatus, 0));
+        promptCache.evict(prompt.getPromptKey());
     }
 
     @Override
@@ -118,6 +124,7 @@ public class AiPromptServiceImpl implements AiPromptService {
                 .eq(AiPromptDO::getStatus, 2)
                 .set(AiPromptDO::getStatus, 0)
                 .set(AiPromptDO::getGrayTenantIds, null));
+        promptCache.evict(prompt.getPromptKey());
     }
 
     @Override
@@ -133,6 +140,7 @@ public class AiPromptServiceImpl implements AiPromptService {
                 .eq(AiPromptDO::getStatus, 2)
                 .set(AiPromptDO::getStatus, 0)
                 .set(AiPromptDO::getGrayTenantIds, null));
+        promptCache.evict(prompt.getPromptKey());
     }
 
     @Override
@@ -147,6 +155,7 @@ public class AiPromptServiceImpl implements AiPromptService {
         AiPromptDO prompt = validatePromptExists(id);
         LogRecordContext.putVariable("prompt", prompt);
         aiPromptMapper.deleteById(id); // 逻辑删除
+        promptCache.evict(prompt.getPromptKey());
     }
 
     @Override
