@@ -58,7 +58,8 @@ public class CostService {
             promptTokens += nullToZero(r.getPromptTokens());
             completionTokens += nullToZero(r.getCompletionTokens());
             elapsedMs += nullToZero(r.getElapsedMs());
-            if ("SUCCESS".equals(r.getStatus())) {
+            // DEGRADED 视为成功(降级走备选仍是可用调用), 避免全链路可用但成功率虚低
+            if ("SUCCESS".equals(r.getStatus()) || "DEGRADED".equals(r.getStatus())) {
                 success++;
             }
         }
@@ -92,7 +93,8 @@ public class CostService {
             item.setPromptTokens(item.getPromptTokens() + nullToZero(r.getPromptTokens()));
             item.setCompletionTokens(item.getCompletionTokens() + nullToZero(r.getCompletionTokens()));
             item.setElapsedMs(item.getElapsedMs() + nullToZero(r.getElapsedMs()));
-            if ("SUCCESS".equals(r.getStatus())) {
+            // DEGRADED 视为成功(降级走备选仍是可用调用)
+            if ("SUCCESS".equals(r.getStatus()) || "DEGRADED".equals(r.getStatus())) {
                 item.setSuccessCalls(item.getSuccessCalls() + 1);
             }
         }
@@ -144,7 +146,8 @@ public class CostService {
             item.setPromptTokens(item.getPromptTokens() + nullToZero(r.getPromptTokens()));
             item.setCompletionTokens(item.getCompletionTokens() + nullToZero(r.getCompletionTokens()));
             item.setElapsedMs(item.getElapsedMs() + nullToZero(r.getElapsedMs()));
-            if ("SUCCESS".equals(r.getStatus())) {
+            // DEGRADED 视为成功(降级走备选仍是可用调用)
+            if ("SUCCESS".equals(r.getStatus()) || "DEGRADED".equals(r.getStatus())) {
                 item.setSuccessCalls(item.getSuccessCalls() + 1);
             }
         }
