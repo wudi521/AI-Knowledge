@@ -147,7 +147,12 @@ public class KnowledgeApiImpl implements KnowledgeApi {
 
     @Override
     public CommonResult<Set<Long>> getVisibleKbIds(Long userId) {
-        if (userId == null || knowledgePermissionHelper.isSuperAdmin(userId)) {
+        // fail-closed(越权 0 容忍): userId 为空(未登录/未传)时拒绝返回全量可见,
+        // 返回空集, 由调用方(检索/证据)按现有短路逻辑降级为空结果, 不泄露任何知识库。
+        if (userId == null) {
+            return success(java.util.Collections.emptySet());
+        }
+        if (knowledgePermissionHelper.isSuperAdmin(userId)) {
             return success(aiKnowledgeBaseMapper.selectList().stream()
                     .map(AiKnowledgeBaseDO::getId).collect(Collectors.toSet()));
         }
