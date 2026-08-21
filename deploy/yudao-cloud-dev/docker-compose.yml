@@ -146,31 +146,27 @@ services:
       retries: 10
       start_period: 30s
 
-  # ---------- 文档解析 MinerU(可选, PDF/扫描件中文布局感知解析; 需 GPU 效果最佳) ----------
+  # ---------- 文档解析 MinerU(可选, PDF/扫描件中文布局感知解析) ----------
+  # 官方不在 Docker Hub 发布镜像, 部署方式见 deploy/mineru/README.md:
+  #   ① macOS/Linux: pip install mineru 后 mineru-api --port 8000 本地起服务(推荐)
+  #   ② 社区 Docker 镜像(如 alexsontop/mineru 等, 自行评估可信度), 端口映射 18111:8000
   # 接入方式: ingestion-server 配置 yudao.ingestion.parser.mineru.enabled=true + base-url=http://127.0.0.1:18111
-  # 镜像首次启动会下载模型(版面/OCR/表格, 数 GB), 可挂 MINERU_MODEL_ROOT 到已有模型目录
-  mineru:
-    image: opendatalab/mineru-api:latest
-    container_name: yudao-mineru
-    ports:
-      - "18111:8000"
-    environment:
-      TZ: Asia/Shanghai
-    volumes:
-      - mineru_models:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/ || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 10
-      start_period: 120s
+  # mineru:
+  #   image: alexsontop/mineru:latest   # 示例: 社区镜像, 请自行核实
+  #   container_name: yudao-mineru
+  #   command: ["mineru-api", "--port", "8000"] # FastAPI 服务(/file_parse + /get_task_result)
+  #   ports:
+  #     - "18111:8000"
+  #   environment:
+  #     TZ: Asia/Shanghai
+  #   volumes:
+  #     - mineru_models:/root/.cache/huggingface
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -sf http://localhost:8000/ || exit 1"]
+  #     interval: 20s
+  #     timeout: 10s
+  #     retries: 10
+  #     start_period: 180s
 
   # ---------- 视觉模型 Ollama(可选, 图片理解/扫描页识别; 拉取 qwen2.5-vl 等视觉模型) ----------
   # 接入方式: 模型管理页把 image 类型模型 base-url 配为 http://127.0.0.1:11434/v1, model=qwen2.5-vl 并启用
