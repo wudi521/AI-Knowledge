@@ -17,6 +17,7 @@ import cn.iocoder.yudao.module.evidence.service.assemble.EvidenceDeduplicator;
 import cn.iocoder.yudao.module.evidence.service.conflict.ConflictDetector;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
 import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
+import cn.iocoder.yudao.module.evidence.service.rule.RuleShortCircuit;
 import cn.iocoder.yudao.module.evidence.service.slot.SlotDetectionResult;
 import cn.iocoder.yudao.module.evidence.service.slot.SlotDetector;
 import cn.iocoder.yudao.module.evidence.service.sufficiency.SufficiencyJudge;
@@ -63,6 +64,8 @@ public class EvidenceService {
     private EvidenceRecorder recorder;
     @Resource
     private SlotDetector slotDetector;
+    @Resource
+    private RuleShortCircuit ruleShortCircuit;
     @Resource
     private EvidenceProperties properties;
 
@@ -137,6 +140,18 @@ public class EvidenceService {
         List<Conflict> conflicts = Collections.emptyList();
         Judgement judgement = null;
         GenerationResult generation = null;
+
+        // 0. 硬规则优先(命中规则直接给结论, 不走检索/生成; 未命中/RPC 失败 → null 继续原管线)
+        //    放在槽位检测之前: 硬规则是确定性事实(如 跨省→3天), 不应被缺槽位反问阻塞
+        RuleShortCircuit.RuleConclusion ruleConclusion = ruleShortCircuit.evaluate(query, Map.of("query", query));
+        if (ruleConclusion != null) {
+            judgement = buildJudgement(true, 1.0, null, 0, 0);
+            EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
+            resp.setAnswer(ruleConclusion.text());
+            resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+            recorder.record(resp, List.of(), List.of());
+            return resp;
+        }
 
         // 0. 槽位检测(检索之前; 缺必填槽位 → 反问短路, 不检索; 检测失败/无定义 → 走原流程)
         SlotDetectionResult slotResult = null;
