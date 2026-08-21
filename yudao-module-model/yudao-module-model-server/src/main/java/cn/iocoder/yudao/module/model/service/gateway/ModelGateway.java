@@ -82,6 +82,13 @@ public class ModelGateway {
                         failed.setElapsedMs((int) (System.currentTimeMillis() - t0));
                         meter.record(failed);
                         lastFailure = failed;
+                        // 永久性配置错误(401/403 鉴权失败): 跳过该候选且不消耗瞬态熔断预算,
+                        // 修复配置前无需反复探测; 其余失败正常走熔断
+                        if (e.isPermanent()) {
+                            log.warn("[invoke][模型 {} 永久性失败(鉴权/配置), 跳过该候选: {}]",
+                                    cfg.getName(), cn.hutool.core.util.StrUtil.maxLength(e.getMessage(), 200));
+                            break;
+                        }
                         circuitBreaker.onFailure(key);
                         if (!e.isRetryable() || attempt >= attempts) {
                             break;
