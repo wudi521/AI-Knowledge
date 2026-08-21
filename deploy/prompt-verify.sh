@@ -20,10 +20,12 @@ T1=$(tok $TENANT1 admin); T2=$(tok $TENANT2 aoteman)
 if [ -z "$T1" ] || [ -z "$T2" ]; then echo "❌ 登录失败"; exit 1; fi
 echo "✅ 双租户登录成功"
 
-pm_create() { # pm_create <key> <name> <content>
+pm_create() { # pm_create <key> <name> <content>(用 python 构造 JSON, 防内嵌引号炸 JSON)
+  local body
+  body=$(python3 -c "import json,sys; print(json.dumps({'promptKey':sys.argv[1],'name':sys.argv[2],'content':sys.argv[3]}, ensure_ascii=False))" "$1" "$2" "$3")
   curl -s -X POST "http://127.0.0.1:${MODEL}/admin-api/model/prompt/create" \
     -H "tenant-id: ${TENANT1}" -H "Authorization: Bearer ${T1}" -H "Content-Type: application/json" \
-    -d "{\"promptKey\":\"$1\",\"name\":\"$2\",\"content\":\"$3\"}" | python3 -c "import sys,json; print(json.load(sys.stdin)['data'])"
+    -d "$body" | python3 -c "import sys,json; print(json.load(sys.stdin)['data'])"
 }
 pm_enable() { # pm_enable <id>
   curl -s -X POST "http://127.0.0.1:${MODEL}/admin-api/model/prompt/enable?id=$1" \
