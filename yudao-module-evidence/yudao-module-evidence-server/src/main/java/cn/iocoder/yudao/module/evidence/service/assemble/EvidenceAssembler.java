@@ -111,10 +111,11 @@ public class EvidenceAssembler {
         // 5. 按得分降序(去重器依赖 "首个 = 最高分" 的先序)
         evidences.sort(Comparator.comparingDouble(Evidence::getScore).reversed());
 
-        // 6. 透传问题产品/一致性门禁信息(供冲突判定与充分性判定使用)
+        // 6. 透传问题产品/一致性门禁信息(供冲突判定与充分性判定使用) + 语义分析/通道统计(供评估响应透传)
         return new AssembledEvidence(evidences,
                 data.getQuestionProducts() != null ? new ArrayList<>(data.getQuestionProducts()) : new ArrayList<>(),
-                data.getAnswerBlocked(), data.getAnswerReason());
+                data.getAnswerBlocked(), data.getAnswerReason(),
+                data.getAnalysis(), data.getChannels());
     }
 
     /**

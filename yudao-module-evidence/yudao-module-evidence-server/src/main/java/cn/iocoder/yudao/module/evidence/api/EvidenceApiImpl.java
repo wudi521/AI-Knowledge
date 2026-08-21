@@ -7,8 +7,11 @@ import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateReqDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceSlotValueDTO;
+import cn.iocoder.yudao.module.evidence.api.dto.EvidenceAnalysisDTO;
+import cn.iocoder.yudao.module.evidence.api.dto.EvidenceChannelStatDTO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
 import cn.iocoder.yudao.module.evidence.service.EvidenceService;
+import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
@@ -89,6 +92,9 @@ public class EvidenceApiImpl implements EvidenceApi {
         dto.setExtractedSlots(toSlotValueDTOList(vo.getExtractedSlots()));
         dto.setMissingSlots(toSlotValueDTOList(vo.getMissingSlots()));
         dto.setClarifyQuestion(vo.getClarifyQuestion());
+        // 检索诊断透传(意图/实体/改写/通道统计; 供前端检索测试页单接口展示)
+        dto.setAnalysis(toAnalysisDTO(vo.getAnalysis()));
+        dto.setChannels(toChannelStatDTO(vo.getChannels()));
         // 上下文回显(evidence-api ChatTurnDTO, 与 VO 同类型, 直接透传)
         dto.setHistory(vo.getHistory());
         return success(dto);
@@ -107,6 +113,32 @@ public class EvidenceApiImpl implements EvidenceApi {
             }
         }
         return result;
+    }
+
+    /** 语义分析 VO → DTO 映射(null 安全; 跨模块 DTO 独立) */
+    private EvidenceAnalysisDTO toAnalysisDTO(RetrievalSearchRespDTO.RetrievalAnalysisDTO vo) {
+        if (vo == null) {
+            return null;
+        }
+        EvidenceAnalysisDTO dto = new EvidenceAnalysisDTO();
+        dto.setIntent(vo.getIntent());
+        dto.setEntities(vo.getEntities());
+        dto.setRewrites(vo.getRewrites());
+        dto.setSubQuestions(vo.getSubQuestions());
+        dto.setSuccess(vo.getSuccess());
+        return dto;
+    }
+
+    /** 通道统计 VO → DTO 映射(null 安全) */
+    private EvidenceChannelStatDTO toChannelStatDTO(RetrievalSearchRespDTO.RetrievalChannelStatDTO vo) {
+        if (vo == null) {
+            return null;
+        }
+        EvidenceChannelStatDTO dto = new EvidenceChannelStatDTO();
+        dto.setBm25(vo.getBm25());
+        dto.setVector(vo.getVector());
+        dto.setFused(vo.getFused());
+        return dto;
     }
 
 }

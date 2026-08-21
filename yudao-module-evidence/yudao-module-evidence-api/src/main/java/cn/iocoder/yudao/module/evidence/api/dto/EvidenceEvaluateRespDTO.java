@@ -61,4 +61,10 @@ public class EvidenceEvaluateRespDTO {
     /** 槽位检测: 反问句(缺必填槽位时填充) */
     private String clarifyQuestion;
 
+    /** 语义分析详情(意图/实体/改写/子问题; 透传检索结果, 供前端检索诊断) */
+    private EvidenceAnalysisDTO analysis;
+
+    /** 通道召回统计(BM25/向量/融合; 供前端检索诊断) */
+    private EvidenceChannelStatDTO channels;
+
 }

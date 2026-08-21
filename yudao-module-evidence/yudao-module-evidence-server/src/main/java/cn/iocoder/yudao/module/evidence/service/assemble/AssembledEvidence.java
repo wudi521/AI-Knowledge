@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.evidence.service.assemble;
 
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
+import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 
@@ -26,11 +27,17 @@ public class AssembledEvidence {
     /** 拒绝作答原因 */
     private String answerReason;
 
+    /** 语义分析详情(意图/实体/改写/子问题; 透传检索结果, 供评估响应透传给前端诊断) */
+    private RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis;
+
+    /** 通道召回统计(BM25/向量/融合; 供前端检索诊断) */
+    private RetrievalSearchRespDTO.RetrievalChannelStatDTO channels;
+
     /**
      * 空结果(检索 RPC 失败/异常时优雅降级返回, 不抛异常)
      */
     public static AssembledEvidence empty() {
-        return new AssembledEvidence(Collections.emptyList(), Collections.emptyList(), null, null);
+        return new AssembledEvidence(Collections.emptyList(), Collections.emptyList(), null, null, null, null);
     }
 
 }

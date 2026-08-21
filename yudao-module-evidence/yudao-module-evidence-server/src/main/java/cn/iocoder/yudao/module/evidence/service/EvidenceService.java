@@ -142,6 +142,9 @@ public class EvidenceService {
         List<Conflict> conflicts = Collections.emptyList();
         Judgement judgement = null;
         GenerationResult generation = null;
+        // 检索诊断透传(意图/实体/改写/通道统计; 供前端检索测试页单接口展示)
+        cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO.RetrievalAnalysisDTO evalAnalysis = null;
+        cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO.RetrievalChannelStatDTO evalChannels = null;
 
         // 0. 硬规则优先(命中规则直接给结论, 不走检索/生成; 未命中/RPC 失败 → null 继续原管线)
         //    放在槽位检测之前: 硬规则是确定性事实(如 跨省→3天), 不应被缺槽位反问阻塞
@@ -194,6 +197,8 @@ public class EvidenceService {
         try {
             // 1. 组装(检索 RPC → 归一化证据; RPC 失败/无结果返回空集, 不抛出)
             AssembledEvidence assembled = assembler.assemble(query, kbIds, topK, tenantId, userId, history);
+            evalAnalysis = assembled.getAnalysis();
+            evalChannels = assembled.getChannels();
             List<Evidence> evidences = assembled.getEvidences() != null
                     ? assembled.getEvidences() : Collections.emptyList();
             if (evidences.isEmpty()) {
@@ -225,6 +230,9 @@ public class EvidenceService {
 
         // 5. 组装响应(elapsed 不含落库耗时)
         EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, deduped, conflicts, generation, history);
+        // 检索诊断透传(意图/实体/改写/通道统计; 供前端检索测试页单接口展示)
+        resp.setAnalysis(evalAnalysis);
+        resp.setChannels(evalChannels);
         // 槽位检测结果回显(槽位完整时也回显, 供审计/后续合并用)
         if (slotResult != null && slotKbIds != null && !slotKbIds.isEmpty()) {
             resp.setSlotKbId(slotKbIds.get(0));

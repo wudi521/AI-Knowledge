@@ -58,6 +58,23 @@ public class RetrievalApiImpl implements RetrievalApi {
         dto.setQuestionProducts(vo.getAnalysis() != null ? vo.getAnalysis().getProducts() : null);
         // 语义分析意图(OUT_OF_SCOPE 显式透出, 供证据/聊天/前端识别超范围)
         dto.setIntent(vo.getAnalysis() != null ? vo.getAnalysis().getIntent() : null);
+        // 语义分析详情 + 通道统计(前端检索诊断 / 证据评估透传; 双回答者收敛后由评估接口统一对外)
+        if (vo.getAnalysis() != null) {
+            RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis = new RetrievalSearchRespDTO.RetrievalAnalysisDTO();
+            analysis.setIntent(vo.getAnalysis().getIntent());
+            analysis.setEntities(vo.getAnalysis().getEntities());
+            analysis.setRewrites(vo.getAnalysis().getRewrites());
+            analysis.setSubQuestions(vo.getAnalysis().getSubQuestions());
+            analysis.setSuccess(vo.getAnalysis().isSuccess());
+            dto.setAnalysis(analysis);
+        }
+        if (vo.getChannels() != null) {
+            RetrievalSearchRespDTO.RetrievalChannelStatDTO channels = new RetrievalSearchRespDTO.RetrievalChannelStatDTO();
+            channels.setBm25(vo.getChannels().getBm25());
+            channels.setVector(vo.getChannels().getVector());
+            channels.setFused(vo.getChannels().getFused());
+            dto.setChannels(channels);
+        }
         return success(dto);
     }
 

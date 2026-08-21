@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo;
 
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
+import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
 import lombok.Data;
 
 import java.util.List;
@@ -68,6 +69,12 @@ public class EvidenceEvaluateRespVO {
 
     /** 槽位检测: 反问句(缺必填槽位时填充; 如 "请补充以下信息:品牌型号、故障性质、购机时间") */
     private String clarifyQuestion;
+
+    /** 语义分析详情(意图/实体/改写/子问题; 透传检索结果, 供前端检索诊断) */
+    private RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis;
+
+    /** 通道召回统计(BM25/向量/融合; 供前端检索诊断) */
+    private RetrievalSearchRespDTO.RetrievalChannelStatDTO channels;
 
     @Data
     public static class SlotValueVO {
