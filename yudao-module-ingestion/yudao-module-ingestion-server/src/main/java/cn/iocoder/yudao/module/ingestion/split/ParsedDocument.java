@@ -58,6 +58,10 @@ public class ParsedDocument {
         /** 父标题链(如 ["3.2 权利要求书", "3.2.1 装置"]; 无则空列表) */
         List<String> titleChain();
 
+        /** 回填父标题链(默认空实现, 由可变实现覆盖) */
+        default void setTitleChain(List<String> chain) {
+        }
+
         /** 元素类型标识(SEMANTIC/TABLE/IMAGE/...) */
         default String elementType() {
             return "SEMANTIC";

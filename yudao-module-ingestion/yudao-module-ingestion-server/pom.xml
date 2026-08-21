@@ -84,6 +84,12 @@
             <artifactId>pdfbox</artifactId>
             <version>3.0.7</version>
         </dependency>
+        <!-- Office 结构化解析(Word/Excel/PPT: 段落/标题样式/表格/图片), 与 Tika 同版本线 -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml-full</artifactId>
+            <version>5.5.1</version>
+        </dependency>
         <!-- 向量库 Milvus -->
         <dependency>
             <groupId>io.milvus</groupId>

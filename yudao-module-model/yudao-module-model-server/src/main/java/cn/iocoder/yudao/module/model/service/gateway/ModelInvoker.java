@@ -82,6 +82,7 @@ public class ModelInvoker {
         try {
             ModelCallResult r = switch (type) {
                 case "chat" -> callChat(baseUrl, modelName, apiKey, req.chatReq());
+                case "image" -> callChat(baseUrl, modelName, apiKey, req.chatReq()); // 视觉模型走 chat/completions 多模态
                 case "embedding" -> callEmbedding(baseUrl, modelName, apiKey, req.texts());
                 case "rerank" -> callRerank(baseUrl, modelName, apiKey, req.rerankReq());
                 default -> throw new ModelInvokeException("未知模型类型: " + type, false);
@@ -122,7 +123,23 @@ public class ModelInvoker {
         }
         Map<String, Object> userMsg = new HashMap<>();
         userMsg.put("role", "user");
-        userMsg.put("content", req.getUser() == null ? "" : req.getUser());
+        if (req.getImages() != null && !req.getImages().isEmpty()) {
+            // 多模态: content 为数组(text + image_url), OpenAI 兼容
+            List<Map<String, Object>> content = new ArrayList<>();
+            Map<String, Object> textPart = new HashMap<>();
+            textPart.put("type", "text");
+            textPart.put("text", req.getUser() == null ? "" : req.getUser());
+            content.add(textPart);
+            for (String img : req.getImages()) {
+                Map<String, Object> imagePart = new HashMap<>();
+                imagePart.put("type", "image_url");
+                imagePart.put("image_url", Map.of("url", img));
+                content.add(imagePart);
+            }
+            userMsg.put("content", content);
+        } else {
+            userMsg.put("content", req.getUser() == null ? "" : req.getUser());
+        }
         messages.add(userMsg);
         body.put("messages", messages);
         body.put("temperature", req.getTemperature() != null ? req.getTemperature() : 0.2);

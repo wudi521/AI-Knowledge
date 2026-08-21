@@ -30,10 +30,11 @@ public class ModelGateway {
     @Resource
     private CallMeter meter;
 
-    /** chat(显式场景/追踪号; 缺省走默认路由) */
+    /** chat(显式场景/追踪号; 缺省走默认路由); 带图片时自动路由到 image 类型视觉模型 */
     public String chat(ModelChatReqDTO req, String scenario, String traceId) {
-        ModelCallResult r = invokeWithFallback("chat", scenario, traceId,
-                new ModelInvoker.InvokeRequest("chat", req, null, null));
+        String type = (req.getImages() != null && !req.getImages().isEmpty()) ? "image" : "chat";
+        ModelCallResult r = invokeWithFallback(type, scenario, traceId,
+                new ModelInvoker.InvokeRequest(type, req, null, null));
         return r.getChatContent();
     }
 
@@ -49,6 +50,12 @@ public class ModelGateway {
         ModelCallResult r = invokeWithFallback("rerank", scenario, traceId,
                 new ModelInvoker.InvokeRequest("rerank", null, null, req));
         return r.getScores();
+    }
+
+    /** 指定类型是否存在启用模型(图片理解等调用方探测) */
+    public boolean hasEnabled(String type) {
+        List<AiModelConfigDO> candidates = resolver.resolveCandidates(type, null);
+        return candidates != null && !candidates.isEmpty();
     }
 
     private ModelCallResult invokeWithFallback(String type, String scenario, String traceId,

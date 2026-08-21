@@ -6,8 +6,10 @@ import cn.iocoder.yudao.module.model.api.dto.ModelEmbeddingReqDTO;
 import cn.iocoder.yudao.module.model.api.dto.ModelRerankReqDTO;
 import cn.iocoder.yudao.module.model.enums.ApiConstants;
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.List;
 
@@ -53,5 +55,14 @@ public interface ModelApi {
      */
     @PostMapping(ApiConstants.PREFIX + "/rerank")
     CommonResult<List<Float>> rerank(@RequestBody ModelRerankReqDTO req);
+
+    /**
+     * 指定类型是否存在启用中的模型(图片理解等调用方探测用, 避免每图失败重试)
+     *
+     * @param type 模型类型: chat / embedding / rerank / image
+     * @return 是否有启用模型
+     */
+    @GetMapping(ApiConstants.PREFIX + "/has-enabled")
+    CommonResult<Boolean> hasEnabled(@RequestParam("type") String type);
 
 }

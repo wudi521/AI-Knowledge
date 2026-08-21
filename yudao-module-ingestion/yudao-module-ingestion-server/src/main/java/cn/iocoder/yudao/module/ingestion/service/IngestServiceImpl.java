@@ -6,7 +6,11 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.ingestion.dal.dataobject.ChunkDO;
 import cn.iocoder.yudao.module.ingestion.dal.mysql.ChunkMapper;
 import cn.iocoder.yudao.module.ingestion.embedding.EmbeddingClient;
+import cn.iocoder.yudao.module.ingestion.parse.ContextEnricher;
 import cn.iocoder.yudao.module.ingestion.parse.DocumentParser;
+import cn.iocoder.yudao.module.ingestion.parse.ImageParser;
+import cn.iocoder.yudao.module.ingestion.parse.MineruParser;
+import cn.iocoder.yudao.module.ingestion.parse.MineruProperties;
 import cn.iocoder.yudao.module.ingestion.parse.OfficeParser;
 import cn.iocoder.yudao.module.ingestion.parse.PdfParser;
 import cn.iocoder.yudao.module.ingestion.parse.TextParser;
@@ -39,6 +43,14 @@ public class IngestServiceImpl implements IngestService {
     private PdfParser pdfParser;
     @Resource
     private OfficeParser officeParser;
+    @Resource
+    private ImageParser imageParser;
+    @Resource
+    private MineruParser mineruParser;
+    @Resource
+    private MineruProperties mineruProperties;
+    @Resource
+    private ContextEnricher contextEnricher;
     @Resource
     private SplitterFactory splitterFactory;
     @Resource
@@ -84,10 +96,9 @@ public class IngestServiceImpl implements IngestService {
             }
 
             java.io.File tmpFile = downloadFromMinio(storagePath);
-            String text;
+            ParsedDocument parsed;
             try {
-                DocumentParser parser = chooseParser(docType);
-                text = parser.parse(tmpFile.getAbsolutePath(), docType);
+                parsed = parseDocument(docType, tmpFile);
             } finally {
                 // P2-14: 临时文件必须清理(失败也删, 不留垃圾)
                 try {
@@ -96,9 +107,12 @@ public class IngestServiceImpl implements IngestService {
                     log.warn("[ingestDocument][文档 {} 临时文件清理失败: {}]", documentId, cleanupEx.getMessage());
                 }
             }
+            parsed.setDocName(document.getName());
+            parsed.setDocType(docType);
+            // 上下文增强(切分前): 标题链回填 + 图片理解(描述生成) + 图片上下文绑定
+            contextEnricher.enrich(parsed);
             SplitParams splitParams = SplitParams.merge(SplitParams.of(500), document.getChunkStrategyParams());
-            List<Chunk> chunks = splitterFactory.getSplitter(chunkStrategy)
-                    .split(ParsedDocument.ofText(text), splitParams);
+            List<Chunk> chunks = splitterFactory.getSplitter(chunkStrategy).split(parsed, splitParams);
             List<String> contents = chunks.stream().map(Chunk::getContent).toList();
             List<List<Float>> vectors = embeddingClient.embed(contents);
 
@@ -197,8 +211,23 @@ public class IngestServiceImpl implements IngestService {
         return switch (docType) {
             case "PDF" -> pdfParser;
             case "WORD", "EXCEL", "PPT" -> officeParser;
+            case "IMAGE" -> imageParser;
             default -> textParser; // TXT / MD
         };
+    }
+
+    /**
+     * 结构化解析: PDF 且启用 MinerU 时优先走 MinerU(中文布局感知), 失败降级 PDFBox; 其余按类型解析。
+     */
+    private ParsedDocument parseDocument(String docType, java.io.File tmpFile) throws Exception {
+        if ("PDF".equalsIgnoreCase(docType) && mineruProperties.isEnabled()) {
+            try {
+                return mineruParser.parseStructured(tmpFile.getAbsolutePath(), docType);
+            } catch (Exception e) {
+                log.warn("[parseDocument][MinerU 解析失败, 降级 PDFBox: {}]", StrUtil.sub(e.getMessage(), 0, 300));
+            }
+        }
+        return chooseParser(docType).parseStructured(tmpFile.getAbsolutePath(), docType);
     }
 
     /**

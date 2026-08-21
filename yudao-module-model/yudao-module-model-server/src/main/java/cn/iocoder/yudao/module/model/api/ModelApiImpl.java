@@ -43,4 +43,9 @@ public class ModelApiImpl implements ModelApi {
         return success(modelGateway.rerank(req, req.getScenario(), req.getTraceId()));
     }
 
+    @Override
+    public CommonResult<Boolean> hasEnabled(String type) {
+        return success(modelGateway.hasEnabled(type));
+    }
+
 }
