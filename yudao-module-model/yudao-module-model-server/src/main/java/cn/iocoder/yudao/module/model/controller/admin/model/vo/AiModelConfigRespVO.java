@@ -1,5 +1,7 @@
 package cn.iocoder.yudao.module.model.controller.admin.model.vo;
 
+import cn.hutool.core.util.StrUtil;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -33,8 +35,22 @@ public class AiModelConfigRespVO {
     @Schema(description = "服务地址", example = "http://127.0.0.1:11434")
     private String baseUrl;
 
-    @Schema(description = "API 密钥")
+    /**
+     * 明文 API 密钥(仅服务端内部使用; 序列化时脱敏为 {@link #getMaskedApiKey()})
+     */
+    @JsonIgnore
     private String apiKey;
+
+    /** 脱敏后的密钥(如 sk-****abcd; 空密钥显示 "未配置") */
+    public String getMaskedApiKey() {
+        if (StrUtil.isBlank(apiKey)) {
+            return "未配置";
+        }
+        if (apiKey.length() <= 8) {
+            return "****";
+        }
+        return apiKey.substring(0, 3) + "****" + apiKey.substring(apiKey.length() - 4);
+    }
 
     @Schema(description = "向量维度", example = "1024")
     private Integer dimensions;

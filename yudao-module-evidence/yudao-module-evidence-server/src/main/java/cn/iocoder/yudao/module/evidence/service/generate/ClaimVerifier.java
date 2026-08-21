@@ -42,9 +42,12 @@ public class ClaimVerifier {
             2. verdict: 有证据支撑为 SUPPORTED, 无证据支撑为 UNSUPPORTED;
             3. evidenceIndex: 支撑该句的证据在证据列表中的序号(0起; 无支撑给 -1);
                回答中的引用 [C1] 对应 evidenceIndex=0, [C2] 对应 evidenceIndex=1, 依此类推;
-            4. 若句子是"根据现有资料无法确定"这类如实说明证据不足的结论, 且证据确实无法回答该问题, 判定为 SUPPORTED;
-            5. 衔接/过渡短语(如"您可以选择以下两种方式之一:""具体如下:""综上:"等不陈述事实的引导句)不算断言, 直接判定为 SUPPORTED;
-            6. 只有携带具体事实的断言(如价格/期限/次数/政策条款)才需要证据支撑, 无支撑才判 UNSUPPORTED;
+               判定 SUPPORTED 的句子必须给出实际支撑它的证据序号, 不得给 -1;
+            4. 衔接/过渡短语(如"您可以选择以下两种方式之一:""具体如下:""综上:"等不陈述事实的引导句)
+               不计入断言列表, 直接忽略, 不要输出;
+            5. 只有携带具体事实的断言(如价格/期限/次数/政策条款)才需要证据支撑;
+               "根据现有资料无法确定"这类如实说明证据不足的结论句, 判为 UNSUPPORTED 且 evidenceIndex=-1;
+            6. 严禁编造: 回答中出现的任何事实性表述, 若证据列表中找不到对应内容, 一律判 UNSUPPORTED;
             7. 若提供历史对话, 仅用于理解指代, 断言支撑判定只看证据列表。
             """;
 
@@ -109,14 +112,14 @@ public class ClaimVerifier {
                             claim.getEvidenceIndex(), size, StrUtil.maxLength(claim.getText(), 100));
                     claim.setEvidenceIndex(-1);
                 }
-                // 结构化兜底: 被判 UNSUPPORTED 且无证据指向(-1)的句子, 若不含事实性标记(数字/价格/日期/百分比/货币),
-                // 视为"衔接/过渡短语"(如"您可以选择以下两种方式之一:"), 不构成无据断言, 放行为 SUPPORTED。
-                // 依据: 无据断言必须携带具体事实; 纯引导句不会误导客户, 拦截它只会浪费重试次数。
-                if (claim != null && !"SUPPORTED".equals(claim.getVerdict())
-                        && claim.getEvidenceIndex() != null && claim.getEvidenceIndex() == -1
-                        && !containsFactualMarker(claim.getText())) {
-                    log.info("[verify][无据句判定为衔接短语, 放行: {}]", StrUtil.maxLength(claim.getText(), 100));
-                    claim.setVerdict("SUPPORTED");
+                // 交叉校验(防幻觉): SUPPORTED 断言必须指向实际证据。
+                // LLM 输出 verdict=SUPPORTED 但 evidenceIndex=-1(含被钳制的越界索引), 视为"有结论无依据",
+                // 一律降级 UNSUPPORTED——避免"SUPPORTED+-1"形态的无据断言绕过验证闸门。
+                if (claim != null && "SUPPORTED".equals(claim.getVerdict())
+                        && claim.getEvidenceIndex() != null && claim.getEvidenceIndex() == -1) {
+                    log.info("[verify][SUPPORTED 断言无证据指向, 降级 UNSUPPORTED: {}]",
+                            StrUtil.maxLength(claim.getText(), 100));
+                    claim.setVerdict("UNSUPPORTED");
                 }
             }
             return claims;
@@ -139,27 +142,6 @@ public class ClaimVerifier {
             }
         }
         return true;
-    }
-
-    /**
-     * 判断句子是否含"事实性标记"(数字/价格/日期/百分比/货币等具体信息)。
-     * 用于区分"无据断言"(必须携带具体事实, 如"免费 3 次")与"衔接/过渡短语"(纯引导, 如"您可以选择以下方式").
-     */
-    private boolean containsFactualMarker(String text) {
-        if (StrUtil.isBlank(text)) {
-            return false;
-        }
-        // 阿拉伯数字(含小数/千分位)
-        if (text.matches(".*[0-9]+.*")) {
-            return true;
-        }
-        // 中文数字(一~十 百千万)
-        if (text.matches(".*[一二三四五六七八九十百千万]+.*")) {
-            return true;
-        }
-        // 货币/百分比/折/期限单位
-        return text.matches(".*[¥￥%折].*")
-                || text.matches(".*(元|次|天|年|月|日|小时|分钟|工作日).*");
     }
 
     /** 组装用户提示词: (可选历史对话块) + 问题 + 待核查回答 + 证据列表(格式与生成器完全一致, 保证 [Ci] 编号对应) */

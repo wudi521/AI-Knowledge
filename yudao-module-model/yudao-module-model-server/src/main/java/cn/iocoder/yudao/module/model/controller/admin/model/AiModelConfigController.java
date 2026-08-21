@@ -74,6 +74,7 @@ public class AiModelConfigController {
     @GetMapping("/list")
     @Operation(summary = "获得指定类型的已启用模型列表(供下拉)")
     @Parameter(name = "type", description = "类型: chat/embedding/rerank", required = true)
+    @PreAuthorize("@ss.hasPermission('model:model-config:query')")
     public CommonResult<List<AiModelConfigRespVO>> getEnableModelList(@RequestParam("type") String type) {
         List<AiModelConfigDO> list = aiModelConfigService.getEnableModelListByType(type);
         return success(BeanUtils.toBean(list, AiModelConfigRespVO.class));
