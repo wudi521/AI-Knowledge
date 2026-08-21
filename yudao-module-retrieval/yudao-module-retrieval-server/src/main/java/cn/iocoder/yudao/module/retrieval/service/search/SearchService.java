@@ -199,10 +199,17 @@ public class SearchService {
         }
         resp.setResults(results);
         // 12. 产品/品牌一致性门禁(结构化代码判定, 不依赖 LLM 提示词):
-        //     问题明确涉及产品而证据文档均不覆盖该产品 -> 拒绝作答, 明示原因
+        //     问题明确涉及产品而证据文档均不覆盖该产品 -> 拒绝作答, 明示原因。
+        //     降级原则(degrade-never-block): 检索有结果但文档信息 RPC 失败(docInfoMap 为空)
+        //     时跳过门禁(无法判定=不误伤), 仅告警; 仅当确知结果集的产品归属且均不匹配时才阻断。
         List<String> questionProducts = analysis.getProducts() == null ? List.of() : analysis.getProducts();
-        Set<String> docProducts = collectDocProducts(results, docInfoMap);
-        boolean productMatch = questionProducts.isEmpty()
+        boolean docInfoUnavailable = !results.isEmpty() && (docInfoMap == null || docInfoMap.isEmpty());
+        if (docInfoUnavailable) {
+            log.warn("[search][query={} 文档信息获取失败, 跳过产品/品牌一致性门禁(降级)]", query);
+        }
+        Set<String> docProducts = docInfoUnavailable ? Set.of() : collectDocProducts(results, docInfoMap);
+        boolean productMatch = docInfoUnavailable
+                || questionProducts.isEmpty()
                 || questionProducts.stream().anyMatch(p ->
                         docProducts.stream().anyMatch(dp -> dp.contains(p) || p.contains(dp)));
         if (!productMatch) {
