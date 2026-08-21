@@ -1,0 +1,83 @@
+--- a/apps/web-antd/src/views/ai/knowledge/data.ts
++++ b/apps/web-antd/src/views/ai/knowledge/data.ts
+@@ -26,9 +26,11 @@
+       componentProps: {
+         placeholder: '请选择切分策略',
+         options: [
++          { label: '语义切分 (Semantic)', value: 'Semantic' },
+           { label: '父子切分 (ParentChild)', value: 'ParentChild' },
+-          { label: '滑动窗口 (SlideWindow)', value: 'SlideWindow' },
+-          { label: '句子切分 (Sentence)', value: 'Sentence' },
++          { label: '表格切分 (Table)', value: 'Table' },
++          { label: '问答切分 (FAQ)', value: 'FAQ' },
++          { label: '条款切分 (Policy)', value: 'Policy' },
+         ],
+       },
+       defaultValue: 'ParentChild',
+--- a/apps/web-antd/src/views/ai/document/data.ts
++++ b/apps/web-antd/src/views/ai/document/data.ts
+@@ -28,6 +28,22 @@
+         clearable: true,
+       },
+     },
++    {
++      fieldName: 'parseStatus',
++      label: '解析状态',
++      component: 'Select',
++      componentProps: {
++        placeholder: '请选择解析状态',
++        allowClear: true,
++        options: [
++          { label: '待解析', value: 'PENDING' },
++          { label: '解析中', value: 'PARSING' },
++          { label: '向量化中', value: 'EMBEDDING' },
++          { label: '已入库', value: 'INDEXED' },
++          { label: '失败', value: 'FAILED' },
++        ],
++      },
++    },
+   ];
+ }
+ 
+@@ -54,6 +70,13 @@
+       slots: { default: 'status' },
+     },
+     {
++      field: 'chunkCount',
++      title: '片段数',
++      width: 90,
++      align: 'center',
++      slots: { default: 'chunkCount' },
++    },
++    {
+       field: 'owner',
+       title: '上传人',
+       width: 110,
+--- a/apps/web-antd/src/views/ai/document/index.vue
++++ b/apps/web-antd/src/views/ai/document/index.vue
+@@ -136,7 +136,14 @@
+         <Tag :color="(row.parseStatus && STATUS_TAG[row.parseStatus]?.color) || 'default'">
+           {{ (row.parseStatus && STATUS_TAG[row.parseStatus]?.text) || row.parseStatus }}
+         </Tag>
++        <a-tooltip v-if="row.parseStatus === 'FAILED' && row.errorMsg" :title="row.errorMsg">
++          <span class="ml-1 cursor-help text-xs text-red-500">ⓘ</span>
++        </a-tooltip>
+       </template>
++      <template #chunkCount="{ row }">
++        <span v-if="row.parseStatus === 'INDEXED'">{{ row.chunkCount ?? '-' }}</span>
++        <span v-else class="text-gray-400">-</span>
++      </template>
+       <template #operation="{ row }">
+         <TableAction
+           :actions="[
+--- a/apps/web-antd/src/api/ai/knowledge/index.ts
++++ b/apps/web-antd/src/api/ai/knowledge/index.ts
+@@ -49,6 +49,8 @@
+   storagePath?: string;
+   fileHash?: string;
+   parseStatus?: string;
++  chunkCount?: number; // 片段数(解析结果)
++  errorMsg?: string; // 失败原因
+   owner?: string;
+   createTime?: string;
+ }

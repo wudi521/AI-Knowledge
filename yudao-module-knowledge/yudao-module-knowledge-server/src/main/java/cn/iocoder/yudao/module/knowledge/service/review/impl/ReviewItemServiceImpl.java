@@ -162,7 +162,7 @@ public class ReviewItemServiceImpl implements ReviewItemService {
                 sb.setLength(4000);
             }
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(promptSupport.get("review-extract", PRODUCT_SYSTEM_PROMPT));
+            req.setSystem(promptSupport.get("review-product", PRODUCT_SYSTEM_PROMPT));
             req.setUser(sb.toString());
             String resp = modelApi.chat(req).getCheckedData();
             int start = resp.indexOf('{');
