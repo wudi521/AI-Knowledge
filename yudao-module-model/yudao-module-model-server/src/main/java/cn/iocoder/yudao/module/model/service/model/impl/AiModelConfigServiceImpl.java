@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.model.controller.admin.model.vo.AiModelConfigSave
 import cn.iocoder.yudao.module.model.dal.dataobject.model.AiModelConfigDO;
 import cn.iocoder.yudao.module.model.dal.mysql.model.AiModelConfigMapper;
 import cn.iocoder.yudao.module.model.service.model.AiModelConfigService;
+import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
@@ -15,6 +16,7 @@ import java.util.List;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.model.enums.ErrorCodeConstants.MODEL_CONFIG_NOT_EXISTS;
+import static cn.iocoder.yudao.module.model.enums.ModelLogRecordConstants.*;
 
 /**
  * 模型配置 Service 实现
@@ -27,6 +29,8 @@ public class AiModelConfigServiceImpl implements AiModelConfigService {
     private AiModelConfigMapper aiModelConfigMapper;
 
     @Override
+    @LogRecord(type = MODEL_CONFIG_TYPE, subType = MODEL_CONFIG_CREATE_SUB_TYPE, bizNo = "{{#config.id}}",
+            success = MODEL_CONFIG_CREATE_SUCCESS)
     public Long createAiModelConfig(AiModelConfigSaveReqVO createReqVO) {
         AiModelConfigDO config = BeanUtils.toBean(createReqVO, AiModelConfigDO.class);
         aiModelConfigMapper.insert(config);
@@ -34,6 +38,8 @@ public class AiModelConfigServiceImpl implements AiModelConfigService {
     }
 
     @Override
+    @LogRecord(type = MODEL_CONFIG_TYPE, subType = MODEL_CONFIG_UPDATE_SUB_TYPE, bizNo = "{{#updateReqVO.id}}",
+            success = MODEL_CONFIG_UPDATE_SUCCESS)
     public void updateAiModelConfig(AiModelConfigSaveReqVO updateReqVO) {
         // 校验存在
         validateAiModelConfigExists(updateReqVO.getId());
@@ -43,9 +49,11 @@ public class AiModelConfigServiceImpl implements AiModelConfigService {
     }
 
     @Override
+    @LogRecord(type = MODEL_CONFIG_TYPE, subType = MODEL_CONFIG_DELETE_SUB_TYPE, bizNo = "{{#id}}",
+            success = MODEL_CONFIG_DELETE_SUCCESS)
     public void deleteAiModelConfig(Long id) {
         // 校验存在
-        validateAiModelConfigExists(id);
+        AiModelConfigDO config = validateAiModelConfigExists(id);
         // 删除
         aiModelConfigMapper.deleteById(id);
     }
@@ -68,10 +76,12 @@ public class AiModelConfigServiceImpl implements AiModelConfigService {
                 .orderByAsc(AiModelConfigDO::getId));
     }
 
-    private void validateAiModelConfigExists(Long id) {
-        if (aiModelConfigMapper.selectById(id) == null) {
+    private AiModelConfigDO validateAiModelConfigExists(Long id) {
+        AiModelConfigDO config = aiModelConfigMapper.selectById(id);
+        if (config == null) {
             throw exception(MODEL_CONFIG_NOT_EXISTS);
         }
+        return config;
     }
 
 }
