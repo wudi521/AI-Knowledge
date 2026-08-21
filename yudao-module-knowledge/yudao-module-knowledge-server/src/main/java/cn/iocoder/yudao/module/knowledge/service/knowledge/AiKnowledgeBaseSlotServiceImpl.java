@@ -8,9 +8,11 @@ import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowledgeBaseSlotPageReqVO;
 import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiKnowledgeBaseSlotSaveReqVO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseSlotDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseSlotMapper;
+import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +25,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.INTENT_KB_NOT_EXISTS;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_NOT_VISIBLE;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_SLOT_CODE_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_SLOT_NOT_EXISTS;
 
@@ -39,8 +42,13 @@ public class AiKnowledgeBaseSlotServiceImpl implements AiKnowledgeBaseSlotServic
     @Resource
     private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
 
+    @Resource
+    private KnowledgePermissionHelper knowledgePermissionHelper;
+
     @Override
     public Long createAiKnowledgeBaseSlot(AiKnowledgeBaseSlotSaveReqVO createReqVO) {
+        // 越权防线: 知识库不可见时禁止创建槽位
+        validateKbVisible(createReqVO.getKbId());
         // 校验知识库存在
         if (aiKnowledgeBaseMapper.selectById(createReqVO.getKbId()) == null) {
             throw new ServiceException(INTENT_KB_NOT_EXISTS);
@@ -63,6 +71,8 @@ public class AiKnowledgeBaseSlotServiceImpl implements AiKnowledgeBaseSlotServic
         if (db == null) {
             throw new ServiceException(KB_SLOT_NOT_EXISTS);
         }
+        // 越权防线: 槽位所属知识库不可见时禁止编辑
+        validateKbVisible(db.getKbId());
         // 重复编码校验(kbId/slotCode 变化时)
         if (!Objects.equals(db.getKbId(), updateReqVO.getKbId())
                 || !Objects.equals(db.getSlotCode(), updateReqVO.getSlotCode())) {
@@ -84,7 +94,25 @@ public class AiKnowledgeBaseSlotServiceImpl implements AiKnowledgeBaseSlotServic
 
     @Override
     public void deleteAiKnowledgeBaseSlot(Long id) {
+        AiKnowledgeBaseSlotDO db = mapper.selectById(id);
+        if (db == null) {
+            throw new ServiceException(KB_SLOT_NOT_EXISTS);
+        }
+        // 越权防线: 槽位所属知识库不可见时禁止删除
+        validateKbVisible(db.getKbId());
         mapper.deleteById(id);
+    }
+
+    /** 越权防线: 知识库对当前用户不可见时禁止操作(超管/无登录态直通) */
+    private void validateKbVisible(Long kbId) {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        if (userId == null || knowledgePermissionHelper.isSuperAdmin(userId)) {
+            return;
+        }
+        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(kbId);
+        if (kb == null || !knowledgePermissionHelper.isKbVisibleToUser(userId, kb)) {
+            throw new ServiceException(KB_NOT_VISIBLE);
+        }
     }
 
     @Override

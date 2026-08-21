@@ -6,14 +6,19 @@ import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.conflict.ConflictDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.review.ReviewItemDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.conflict.ConflictMapper;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.enums.conflict.ConflictStatusEnum;
 import cn.iocoder.yudao.module.knowledge.enums.review.ReviewItemStatusEnum;
 import cn.iocoder.yudao.module.knowledge.service.conflict.ConflictService;
+import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import cn.iocoder.yudao.module.model.api.ModelApi;
@@ -38,6 +43,7 @@ import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.CONFLICT_NOT_EXISTS;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.CONFLICT_STATUS_ERROR;
+import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_NOT_VISIBLE;
 import static cn.iocoder.yudao.module.knowledge.enums.KnowledgeLogRecordConstants.*;
 
 /**
@@ -77,6 +83,12 @@ public class ConflictServiceImpl implements ConflictService {
     private AiDocVersionMapper aiDocVersionMapper;
     @Resource
     private AiDocVersionService aiDocVersionService;
+    @Resource
+    private AiDocumentMapper aiDocumentMapper;
+    @Resource
+    private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
+    @Resource
+    private KnowledgePermissionHelper knowledgePermissionHelper;
     @Resource
     private ModelApi modelApi;
     @Resource
@@ -188,6 +200,8 @@ public class ConflictServiceImpl implements ConflictService {
         if (conflict == null) {
             throw new ServiceException(CONFLICT_NOT_EXISTS);
         }
+        // 越权防线: 冲突所属文档的知识库不可见时禁止裁决
+        validateConflictKbVisible(conflict);
         if (!ConflictStatusEnum.PENDING.getStatus().equals(conflict.getStatus())) {
             throw new ServiceException(CONFLICT_STATUS_ERROR);
         }
@@ -261,6 +275,23 @@ public class ConflictServiceImpl implements ConflictService {
 
     /** LLM 判定结果 */
     private record JudgeResult(String judgement, String reason) {
+    }
+
+    /** 越权防线: 冲突所属文档的知识库不可见时禁止裁决(超管/无登录态直通) */
+    private void validateConflictKbVisible(ConflictDO conflict) {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        if (userId == null || knowledgePermissionHelper.isSuperAdmin(userId)) {
+            return;
+        }
+        AiDocumentDO doc = conflict.getDocId() == null ? null : aiDocumentMapper.selectById(conflict.getDocId());
+        Long kbId = doc == null ? null : doc.getKbId();
+        if (kbId == null) {
+            throw new ServiceException(KB_NOT_VISIBLE);
+        }
+        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(kbId);
+        if (kb == null || !knowledgePermissionHelper.isKbVisibleToUser(userId, kb)) {
+            throw new ServiceException(KB_NOT_VISIBLE);
+        }
     }
 
 }

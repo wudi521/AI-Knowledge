@@ -9,6 +9,9 @@ import cn.iocoder.yudao.module.knowledge.dal.dataobject.intent.AiIntentDO;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.intent.AiIntentMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.service.intent.IntentService;
+import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
+import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +34,9 @@ public class IntentServiceImpl implements IntentService {
     @Resource
     private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
 
+    @Resource
+    private KnowledgePermissionHelper knowledgePermissionHelper;
+
     @Override
     public List<AiIntentDO> listByKb(Long kbId) {
         return aiIntentMapper.selectListByKbId(kbId);
@@ -43,6 +49,8 @@ public class IntentServiceImpl implements IntentService {
 
     @Override
     public Long createIntent(IntentSaveReqVO createReqVO) {
+        // 越权防线: 知识库不可见时禁止创建意图
+        validateKbVisible(createReqVO.getKbId());
         // 校验知识库存在
         if (aiKnowledgeBaseMapper.selectById(createReqVO.getKbId()) == null) {
             throw new ServiceException(INTENT_KB_NOT_EXISTS);
@@ -58,19 +66,37 @@ public class IntentServiceImpl implements IntentService {
     @Override
     public void updateIntent(IntentUpdateReqVO updateReqVO) {
         // 校验意图存在
-        if (aiIntentMapper.selectById(updateReqVO.getId()) == null) {
+        AiIntentDO db = aiIntentMapper.selectById(updateReqVO.getId());
+        if (db == null) {
             throw new ServiceException(INTENT_NOT_EXISTS);
         }
+        // 越权防线: 意图所属知识库不可见时禁止编辑
+        validateKbVisible(db.getKbId());
         AiIntentDO update = BeanUtils.toBean(updateReqVO, AiIntentDO.class);
         aiIntentMapper.updateById(update); // 空字段不更新(MP 默认 NOT_NULL 策略), 支持部分更新
     }
 
     @Override
     public void deleteIntent(Long id) {
-        if (aiIntentMapper.selectById(id) == null) {
+        AiIntentDO db = aiIntentMapper.selectById(id);
+        if (db == null) {
             throw new ServiceException(INTENT_NOT_EXISTS);
         }
+        // 越权防线: 意图所属知识库不可见时禁止删除
+        validateKbVisible(db.getKbId());
         aiIntentMapper.deleteById(id); // 逻辑删除
+    }
+
+    /** 越权防线: 知识库对当前用户不可见时禁止操作(超管/无登录态直通) */
+    private void validateKbVisible(Long kbId) {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        if (userId == null || knowledgePermissionHelper.isSuperAdmin(userId)) {
+            return;
+        }
+        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(kbId);
+        if (kb == null || !knowledgePermissionHelper.isKbVisibleToUser(userId, kb)) {
+            throw new ServiceException(KB_NOT_VISIBLE);
+        }
     }
 
     @Override

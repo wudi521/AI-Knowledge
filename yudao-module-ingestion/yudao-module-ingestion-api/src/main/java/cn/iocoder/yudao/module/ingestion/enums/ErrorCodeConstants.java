@@ -14,4 +14,6 @@ public interface ErrorCodeConstants {
 
     ErrorCode CHUNK_STATUS_ERROR = new ErrorCode(1_005_002_001, "知识片段状态不正确");
 
+    ErrorCode CHUNK_KB_NOT_VISIBLE = new ErrorCode(1_005_002_002, "无权访问该片段所属知识库");
+
 }

@@ -89,13 +89,15 @@ public class ModelInvoker {
         } catch (ModelInvokeException e) {
             throw e;
         } catch (RestClientException e) {
-            // 超时/连接失败/5xx: ResourceAccessException 是网络/超时; 其余 RestClientException 含 5xx(spring 抛 HttpServerErrorException)
-            boolean retryable = !(e instanceof org.springframework.web.client.HttpClientErrorException);
+            // 超时/连接失败/5xx: ResourceAccessException 是网络/超时; HttpServerErrorException 含 5xx;
+            // 429(限流)是瞬态错误, 应带退避重试而非放弃; 其余 4xx 不重试。
+            int statusCode = e instanceof org.springframework.web.client.HttpClientErrorException
+                    ? ((org.springframework.web.client.HttpClientErrorException) e).getStatusCode().value() : -1;
+            boolean retryable = !(e instanceof org.springframework.web.client.HttpClientErrorException)
+                    || statusCode == 429;
             // 401/403 = 鉴权失败(永久性配置错误): 缺 apiKey 或密钥无效, 修复配置前每次探测都是浪费,
             // 标记 permanent, 由网关跳过该候选且不消耗瞬态熔断预算(避免与瞬态故障共用熔断)。
-            boolean permanent = e instanceof org.springframework.web.client.HttpClientErrorException
-                    && (((org.springframework.web.client.HttpClientErrorException) e).getStatusCode().value() == 401
-                    || ((org.springframework.web.client.HttpClientErrorException) e).getStatusCode().value() == 403);
+            boolean permanent = statusCode == 401 || statusCode == 403;
             throw new ModelInvokeException("模型调用失败: " + safeMsg(e), retryable, permanent, e);
         } catch (Exception e) {
             throw new ModelInvokeException("模型调用异常: " + safeMsg(e), false, e);
