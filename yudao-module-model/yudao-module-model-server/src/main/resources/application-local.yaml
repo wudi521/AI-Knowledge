@@ -56,3 +56,15 @@ yudao:
     rerank:
       base-url: http://127.0.0.1:1236/v1   # llama.cpp server(bge-reranker-v2-m3 Q8_0, 见 deploy/llama-rerank.sh)
       model: bge-reranker-v2-m3
+    # 成本管理单价(每百万 token, 元; 未配置的模型不估算金额, 仅统计 token)。
+    # 本地 LM Studio 实际零成本, 这里填市场参考价用于成本可视化与预算测算, 可按实际采购价调整。
+    pricing:
+      default:
+        in-per-mtok: 1.0
+        out-per-mtok: 2.0
+      qwen/qwen3-8b:
+        in-per-mtok: 0.5
+        out-per-mtok: 1.5
+      text-embedding-bge-m3:
+        in-per-mtok: 0.1
+        out-per-mtok: 0.1
