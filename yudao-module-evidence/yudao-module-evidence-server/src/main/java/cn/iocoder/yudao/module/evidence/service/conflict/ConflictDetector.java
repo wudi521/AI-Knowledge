@@ -89,7 +89,7 @@ public class ConflictDetector {
         return parseConflicts(resp, pairs);
     }
 
-    /** 同主题候选对: 相似度 >= 0.5 且双方均有实质内容(空白无法构成矛盾), 按输入顺序取前 10 对 */
+    /** 同主题候选对: 相似度 >= 0.5 且双方均有实质内容(空白无法构成矛盾), 按相似度降序取前 10 对 */
     private List<int[]> buildCandidatePairs(List<Evidence> evidences) {
         List<int[]> all = new ArrayList<>();
         for (int i = 0; i < evidences.size() - 1; i++) {
@@ -105,7 +105,12 @@ public class ConflictDetector {
             }
         }
         if (all.size() > MAX_CANDIDATE_PAIRS) {
-            log.info("[detect][同主题候选对共 {} 对, 截断至前 {} 对]", all.size(), MAX_CANDIDATE_PAIRS);
+            // 截断前按相似度降序, 优先检最可能冲突的对(而非任意顺序); 截断升级为 warn
+            all.sort((a, b) -> Double.compare(
+                    EvidenceSimilarity.similarity(evidences.get(b[0]).getContent(), evidences.get(b[1]).getContent()),
+                    EvidenceSimilarity.similarity(evidences.get(a[0]).getContent(), evidences.get(a[1]).getContent())));
+            log.warn("[detect][同主题候选对共 {} 对, 按相似度降序截断至前 {} 对(未检对存在漏检冲突风险)]",
+                    all.size(), MAX_CANDIDATE_PAIRS);
             return new ArrayList<>(all.subList(0, MAX_CANDIDATE_PAIRS));
         }
         return all;

@@ -101,7 +101,9 @@ public class SlotDetector {
                 log.warn("[detect][query({}) LLM 输出无法解析, 跳过槽位检测]", query);
                 return null;
             }
-            boolean applicable = Boolean.TRUE.equals(json.getBool("applicable"));
+            // applicable 判定: 仅当 LLM 明确输出 false 才视为"领域无关"(跳过缺失判定);
+            // 缺失/解析异常视为 true(保守触发代码兜底 required 检查), 避免 fail-open 让缺必填信息的提问直接进入检索
+            boolean applicable = !Boolean.FALSE.equals(json.getBool("applicable"));
 
             // 4. 抽取值(容错: 空对象/空值按未抽取)
             Map<String, String> extracted = new LinkedHashMap<>();
