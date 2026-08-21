@@ -55,12 +55,21 @@ public class IngestionApiImpl implements IngestionApi {
         for (Long versionId : versionIds) {
             chunkIds.addAll(chunkMapper.selectListByVersionId(versionId).stream().map(ChunkDO::getId).toList());
         }
-        // 2. 删 ES
-        esChunkStore.deleteChunks(chunkIds);
-        // 3. 删 Milvus
-        milvusChunkStore.deleteVectors(chunkIds);
-        // 4. 删 MySQL(最后删, 失败可重试查)
+        // 2. MySQL 必删(本地事务, 幂等; 生产级语义: 删除文档必须成功)
         versionIds.forEach(chunkMapper::deleteByVersionId);
+        // 3. ES/Milvus 尽力而为(P2-16): 失败仅告警, 向量残留由日志/后续清理兜底, 不阻断删除
+        if (!chunkIds.isEmpty()) {
+            try {
+                esChunkStore.deleteChunks(chunkIds);
+            } catch (Exception e) {
+                log.warn("[deleteDocumentData][文档 {} ES 删除失败, 残留待清理: {}]", documentId, e.getMessage());
+            }
+            try {
+                milvusChunkStore.deleteVectors(chunkIds);
+            } catch (Exception e) {
+                log.warn("[deleteDocumentData][文档 {} Milvus 删除失败, 残留待清理: {}]", documentId, e.getMessage());
+            }
+        }
         return success(true);
     }
 
@@ -74,12 +83,14 @@ public class IngestionApiImpl implements IngestionApi {
         }
         List<Long> chunkIds = new ArrayList<>();
         List<List<Float>> vectors = new ArrayList<>();
+        // ES 批量写入(P2-19: _bulk 一次网络往返, 替代逐条 PUT)
+        List<Object[]> esItems = new ArrayList<>(chunks.size());
         for (ChunkDO chunk : chunks) {
             chunkIds.add(chunk.getId());
             vectors.add(parseEmbedding(chunk.getEmbedding()));
-            // ES 写入
-            esChunkStore.insertChunk(chunk.getId(), tenantId, kbId, chunk.getContent());
+            esItems.add(new Object[]{chunk.getId(), tenantId, kbId, chunk.getContent()});
         }
+        esChunkStore.insertChunks(esItems);
         // Milvus 批量写
         milvusChunkStore.insertVectors(chunkIds, vectors, tenantId, kbId);
         // 最后: chunk 状态置 PUBLISHED

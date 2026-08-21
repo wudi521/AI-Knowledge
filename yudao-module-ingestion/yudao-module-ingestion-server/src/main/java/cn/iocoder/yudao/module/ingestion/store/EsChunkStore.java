@@ -128,6 +128,40 @@ public class EsChunkStore {
     }
 
     /**
+     * 批量写入 BM25 文档(_bulk, 一次网络往返; P2-19 替代逐条 PUT)
+     *
+     * @param items 每项为 [chunkId, tenantId, kbId, content]
+     */
+    public void insertChunks(List<Object[]> items) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        try {
+            // _bulk NDJSON: 每行 {index} action + 每行文档体
+            StringBuilder bulk = new StringBuilder();
+            for (Object[] item : items) {
+                Long chunkId = (Long) item[0];
+                Long tenantId = (Long) item[1];
+                Long kbId = (Long) item[2];
+                String content = (String) item[3];
+                bulk.append("{\"index\":{\"_index\":\"").append(index).append("\",\"_id\":\"").append(chunkId).append("\"}}\n");
+                Map<String, Object> doc = new HashMap<>();
+                doc.put("chunk_id", chunkId);
+                doc.put("tenant_id", tenantId);
+                doc.put("kb_id", kbId);
+                doc.put("status", "PUBLISHED");
+                doc.put("content", content);
+                bulk.append(objectMapper.writeValueAsString(doc)).append("\n");
+            }
+            Request request = new Request("POST", "/_bulk");
+            request.setEntity(new StringEntity(bulk.toString(), ContentType.create("application/x-ndjson", StandardCharsets.UTF_8)));
+            client.performRequest(request);
+        } catch (Exception e) {
+            throw new RuntimeException("ES 批量写入失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * 按片段 id 批量删除 ES 文档
      *
      * @param chunkIds 片段 id(ES 文档 _id = chunkId)

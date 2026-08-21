@@ -18,11 +18,10 @@ import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -48,29 +47,24 @@ public class IngestServiceImpl implements IngestService {
     private KnowledgeApi knowledgeApi;
     @Resource
     private ChunkMapper chunkMapper;
+    @Resource
+    private TransactionTemplate transactionTemplate;
 
     /**
      * 入库主流程: 解析 → 切分 → 向量化 → 只写 MySQL(REVIEW) → 通知审核
      * <p>
+     * 事务边界(P2-13): 仅"删旧片段 + 写 MySQL"在事务内(短事务, 本地操作);
+     * Feign 查文档/状态回写、MinIO 下载、解析、LLM 向量化全部在事务外——
+     * 避免长事务持锁拖垮 MySQL(下载/LLM 是秒级耗时, 事务内会占连接/锁)。
      * Milvus/ES 由审核通过后的发布(indexVersion)写入, 不在本方法执行。
-     * MySQL 写入处于同一事务: 中途失败回滚已插行; FAILED 状态回写是 Feign 远程调用,
-     * 在 catch 中执行, 不受本地事务回滚影响
      */
     @Override
-    @Transactional
     public void ingestDocument(Long documentId) {
-        // 1. 置为解析中
+        // 1. 置为解析中(事务外: Feign 回写)
         updateStatus(documentId, "PARSING", null, null);
         try {
-            // 2. 查询文档信息
-            CommonResult<KnowledgeDocumentRespDTO> documentResult = knowledgeApi.getDocument(documentId);
-            if (documentResult.isError()) {
-                throw new ServiceException(documentResult.getCode(), documentResult.getMsg());
-            }
-            KnowledgeDocumentRespDTO document = documentResult.getData();
-            if (document == null) {
-                throw new RuntimeException("文档不存在: " + documentId);
-            }
+            // 2. 查询文档信息 + 解析 + 切分 + 向量化(全部事务外, 耗时步骤)
+            KnowledgeDocumentRespDTO document = loadDocument(documentId);
             String docType = document.getType();
             String storagePath = document.getStoragePath();
             Long kbId = document.getKbId();
@@ -78,30 +72,80 @@ public class IngestServiceImpl implements IngestService {
             if (tenantId == null) {
                 throw new RuntimeException("文档租户不存在: " + documentId);
             }
-            String chunkStrategy = getKnowledgeBaseStrategy(kbId);
-
-            // 3. 解析
-            String filePath = downloadFromMinio(storagePath);
-            DocumentParser parser = chooseParser(docType);
-            String text = parser.parse(filePath, docType);
-
-            // 4. 切分
-            List<Chunk> chunks = splitterFactory.getSplitter(chunkStrategy)
-                    .split(text, 500);
-
-            // 5. 向量化(批量)
-            List<String> contents = chunks.stream().map(Chunk::getContent).toList();
-            List<List<Float>> vectors = embeddingClient.embed(contents);
-
-            // 6. 清理旧片段(按真实版本 id, 幂等)
             Long versionId = document.getCurrentVersionId();
             if (versionId == null) {
                 throw new RuntimeException("文档无版本记录: " + documentId);
             }
-            chunkMapper.deleteByVersionId(versionId);
+            String chunkStrategy = getKnowledgeBaseStrategy(kbId);
 
-            // 7. 只写 MySQL(向量存 embedding; Milvus/ES 待审核通过发布时写)
-            List<Long> chunkIds = new ArrayList<>();
+            java.io.File tmpFile = downloadFromMinio(storagePath);
+            String text;
+            try {
+                DocumentParser parser = chooseParser(docType);
+                text = parser.parse(tmpFile.getAbsolutePath(), docType);
+            } finally {
+                // P2-14: 临时文件必须清理(失败也删, 不留垃圾)
+                try {
+                    java.nio.file.Files.deleteIfExists(tmpFile.toPath());
+                } catch (Exception cleanupEx) {
+                    log.warn("[ingestDocument][文档 {} 临时文件清理失败: {}]", documentId, cleanupEx.getMessage());
+                }
+            }
+            List<Chunk> chunks = splitterFactory.getSplitter(chunkStrategy)
+                    .split(text, 500);
+            List<String> contents = chunks.stream().map(Chunk::getContent).toList();
+            List<List<Float>> vectors = embeddingClient.embed(contents);
+
+            // 3. 短事务: 删旧片段 + 只写 MySQL(向量存 embedding; Milvus/ES 待审核通过发布时写)
+            //    通知审核的 afterCommit 注册在事务内(见 persistChunks), 保证事务提交后触发
+            persistChunks(documentId, versionId, tenantId, chunks, vectors);
+
+            // 4. 置为 REVIEW(事务外 Feign 回写)
+            updateStatus(documentId, "REVIEW", chunks.size(), null);
+            log.info("[ingestDocument][文档 {} 落库完成(REVIEW), {} 个片段, 待事务提交后通知审核]", documentId, chunks.size());
+        } catch (Exception e) {
+            log.error("[ingestDocument][文档 {} 入库失败]", documentId, e);
+            try {
+                updateStatus(documentId, "FAILED", null, StrUtil.sub(e.getMessage(), 0, 500));
+            } catch (Exception ex) {
+                log.error("[ingestDocument][文档 {} 回写 FAILED 状态失败]", documentId, ex);
+            }
+            // 异常继续传播: 触发 Kafka 重投(事务外无回滚需求; 短事务内失败已自行回滚)
+            if (e instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new RuntimeException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 查询文档信息(Feign, 事务外)
+     */
+    private KnowledgeDocumentRespDTO loadDocument(Long documentId) {
+        CommonResult<KnowledgeDocumentRespDTO> documentResult = knowledgeApi.getDocument(documentId);
+        if (documentResult.isError()) {
+            throw new ServiceException(documentResult.getCode(), documentResult.getMsg());
+        }
+        KnowledgeDocumentRespDTO document = documentResult.getData();
+        if (document == null) {
+            throw new RuntimeException("文档不存在: " + documentId);
+        }
+        return document;
+    }
+
+    /**
+     * 短事务: 删旧片段 + 批量写 MySQL + 注册 afterCommit 通知审核
+     * <p>
+     * P2-13: 仅本地 DB 操作在事务内(快速提交, 不持锁);
+     * 通知审核必须在事务提交后(afterCommit)调用——knowledge 会回读本版本 chunk(新连接新事务),
+     * 事务内调用会读到 0 行 -> 空抽取 -> 误判"无必审条目"自动发布空版本。
+     */
+    private void persistChunks(Long documentId, Long versionId, Long tenantId,
+                               List<Chunk> chunks, List<List<Float>> vectors) {
+        transactionTemplate.executeWithoutResult(status -> {
+            // 1. 清理旧片段(按真实版本 id, 幂等)
+            chunkMapper.deleteByVersionId(versionId);
+            // 2. 只写 MySQL(REVIEW 状态, 向量存 embedding)
             for (int i = 0; i < chunks.size(); i++) {
                 ChunkDO chunkDO = new ChunkDO();
                 chunkDO.setVersionId(versionId); // 真实版本 id(版本状态机)
@@ -112,17 +156,12 @@ public class IngestServiceImpl implements IngestService {
                 chunkDO.setParentId(chunks.get(i).getParentId());
                 chunkDO.setEmbedding(cn.hutool.json.JSONUtil.toJsonStr(vectors.get(i)));
                 mysqlChunkStore.insertChunks(List.of(chunkDO), tenantId);
-                chunkIds.add(chunkDO.getId());
             }
-
-            // 8. 置为 REVIEW(管线完成, 待审核); 通知 knowledge 处理审核放到事务提交后
-            updateStatus(documentId, "REVIEW", chunks.size(), null);
-            // ⚠️ 必须在事务提交后再调 notifyParsed: knowledge 会回读本版本 chunk(新连接新事务),
-            //    事务内调用会读到 0 行 -> 空抽取 -> 误判"无必审条目"自动发布空版本
+            // 3. 事务内注册 afterCommit(此时有活跃事务同步; 事务外注册会抛 IllegalStateException)
+            //    必须传管线实际使用的 versionId(不能由 knowledge 按最新推断)
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    // 必须传管线实际使用的 versionId(不能由 knowledge 按最新推断)
                     try {
                         // 失败只记日志不抛: 抛错会让 Kafka 重投本消息 -> 重复插 chunk(无幂等兜底)!
                         // 恢复路径: 文档保持 REVIEW/FAILED, 前端"重试抽取"(retry-extract)可重新触发
@@ -135,20 +174,7 @@ public class IngestServiceImpl implements IngestService {
                     }
                 }
             });
-            log.info("[ingestDocument][文档 {} 落库完成(REVIEW), {} 个片段, 待事务提交后通知审核]", documentId, chunks.size());
-        } catch (Exception e) {
-            log.error("[ingestDocument][文档 {} 入库失败]", documentId, e);
-            try {
-                updateStatus(documentId, "FAILED", null, StrUtil.sub(e.getMessage(), 0, 500));
-            } catch (Exception ex) {
-                log.error("[ingestDocument][文档 {} 回写 FAILED 状态失败]", documentId, ex);
-            }
-            // 异常继续传播: 触发 @Transactional 回滚 MySQL 已插行, 并交由 Kafka 重投
-            if (e instanceof RuntimeException runtimeException) {
-                throw runtimeException;
-            }
-            throw new RuntimeException(e.getMessage(), e);
-        }
+        });
     }
 
     /**
@@ -174,14 +200,22 @@ public class IngestServiceImpl implements IngestService {
         return knowledgeApi.getKnowledgeBaseStrategy(kbId).getCheckedData();
     }
 
-    private String downloadFromMinio(String storagePath) {
+    /**
+     * 从 MinIO 下载文档到临时文件(P2-14): UUID 文件名防并发冲突, 带超时, 调用方 finally 清理。
+     *
+     * @return 临时文件(调用方负责删除)
+     */
+    private java.io.File downloadFromMinio(String storagePath) {
         if (StrUtil.isBlank(storagePath)) {
             throw new RuntimeException("存储路径为空");
         }
         // MinIO URL 形如 http://127.0.0.1:9000/kb-docs/xxx
         String fileName = StrUtil.subAfter(storagePath, "/", true);
-        String tmpFile = System.getProperty("java.io.tmpdir") + "/" + fileName;
-        cn.hutool.http.HttpUtil.downloadFile(storagePath, tmpFile);
+        // UUID 前缀防多文档并发下载同名文件互相覆盖; 保留原扩展名供解析器识别
+        String tmpName = java.util.UUID.randomUUID() + "_" + fileName;
+        java.io.File tmpFile = new java.io.File(System.getProperty("java.io.tmpdir"), tmpName);
+        // 30s 连接/读取超时(默认无超时会永久挂起, 拖垮入库线程)
+        cn.hutool.http.HttpUtil.downloadFile(storagePath, tmpFile, 30_000);
         return tmpFile;
     }
 

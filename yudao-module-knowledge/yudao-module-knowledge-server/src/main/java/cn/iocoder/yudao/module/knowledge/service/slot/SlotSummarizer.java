@@ -21,7 +21,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * 知识库槽位总结器(LLM): 拉取知识库已发布内容 -> LLM 总结条件维度(槽位) -> 覆盖式写入 LLM_AUTO 槽位
@@ -33,12 +32,21 @@ import java.util.concurrent.Executors;
 @Component
 public class SlotSummarizer {
 
-    /** 槽位总结专用线程池(守护线程; 单线程避免并发重复总结同一知识库) */
-    private static final ExecutorService ASYNC_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "slot-summarizer");
-        t.setDaemon(true);
-        return t;
-    });
+    /**
+     * 槽位总结专用线程池(守护线程; 单线程避免并发重复总结同一知识库)
+     * <p>
+     * P2-18: 有界队列(100) + 拒绝告警——一个知识库总结卡死(LLM 挂起)时,
+     * 后续任务被拒绝并记录, 不无限堆积内存; 单线程语义保持(不并发重复总结)
+     */
+    private static final ExecutorService ASYNC_EXECUTOR = new java.util.concurrent.ThreadPoolExecutor(
+            1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+            new java.util.concurrent.ArrayBlockingQueue<>(100),
+            r -> {
+                Thread t = new Thread(r, "slot-summarizer");
+                t.setDaemon(true);
+                return t;
+            },
+            (r, executor) -> log.warn("[slot-summarizer][队列已满(100), 拒绝槽位总结任务: {}]", r));
 
     private static final String SYSTEM_PROMPT = """
             你是知识库条款分析师。根据下方知识库已发布内容, 总结该库条款/文档围绕的条件维度(槽位), 每个槽位含编码/名称/抽取说明/是否必填/排序。

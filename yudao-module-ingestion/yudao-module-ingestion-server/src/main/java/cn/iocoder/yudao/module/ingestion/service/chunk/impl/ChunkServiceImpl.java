@@ -101,11 +101,21 @@ public class ChunkServiceImpl implements ChunkService {
         if (ids == null || ids.isEmpty()) {
             return;
         }
-        // 批量场景不逐个校验: ids 不存在时 ES/Milvus 删除为幂等 no-op, MySQL deleteBatchIds 亦幂等
-        // 三处联动: ES 批量 → Milvus 批量 → MySQL 批量(最后删, 失败可重试)
-        esChunkStore.deleteChunks(ids);
-        milvusChunkStore.deleteVectors(ids);
+        // 生产级删除语义(P2-16): MySQL 必删(本地事务), ES/Milvus 尽力而为——
+        // 向量/倒排残留由日志记录待清理, 绝不因外部存储故障阻断文档删除
+        // 1. MySQL 先删(本地事务, 幂等)
         chunkMapper.deleteBatchIds(ids);
+        // 2. ES/Milvus 尽力而为: 失败仅告警(残留由后续清理任务兜底)
+        try {
+            esChunkStore.deleteChunks(ids);
+        } catch (Exception e) {
+            log.warn("[deleteChunks][ES 删除失败, 向量残留待清理: chunkIds={} 原因: {}]", ids, e.getMessage());
+        }
+        try {
+            milvusChunkStore.deleteVectors(ids);
+        } catch (Exception e) {
+            log.warn("[deleteChunks][Milvus 删除失败, 向量残留待清理: chunkIds={} 原因: {}]", ids, e.getMessage());
+        }
     }
 
     private void validateChunkExists(Long id) {

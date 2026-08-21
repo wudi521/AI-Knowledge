@@ -18,7 +18,6 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * 知识库意图总结器(LLM): 拉取知识库已发布内容 -> LLM 总结客户意图 -> 覆盖式写入 LLM_AUTO 意图
@@ -33,12 +32,19 @@ public class IntentSummarizer {
     /**
      * 意图总结专用线程池(守护线程, 不阻止 JVM 退出; 单线程避免并发重复总结同一知识库)
      * 任务包装 TtlRunnable, 传递发布/请求线程的租户上下文(TenantBaseDO 落库必需)
+     * <p>
+     * P2-18: 有界队列(100) + 拒绝告警——一个知识库总结卡死(LLM 挂起)时,
+     * 后续任务被拒绝并记录, 不无限堆积内存; 单线程语义保持(不并发重复总结)
      */
-    private static final ExecutorService ASYNC_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "intent-summarizer");
-        t.setDaemon(true);
-        return t;
-    });
+    private static final ExecutorService ASYNC_EXECUTOR = new java.util.concurrent.ThreadPoolExecutor(
+            1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+            new java.util.concurrent.ArrayBlockingQueue<>(100),
+            r -> {
+                Thread t = new Thread(r, "intent-summarizer");
+                t.setDaemon(true);
+                return t;
+            },
+            (r, executor) -> log.warn("[intent-summarizer][队列已满(100), 拒绝意图总结任务: {}]", r));
 
     private static final String SYSTEM_PROMPT = """
             你是知识库意图分析师。根据下方知识库已发布内容, 总结该知识库能回答的客户意图分类(2~8 个), 每个意图给简短说明(20字内)。
