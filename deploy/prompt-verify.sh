@@ -57,34 +57,34 @@ for r in (json.load(sys.stdin)['data']['list']): print(r['id'])" 2>/dev/null); d
   done
 }
 
-retrieve_intent() { # retrieve_intent <tenant> <token> → analysis.intent
+retrieve_rewrites() { # retrieve_rewrites <tenant> <token> → analysis.rewrites(可观测标记, 不受意图钳制)
   curl -s -m 120 -X POST "http://127.0.0.1:${RETRIEVAL}/admin-api/retrieval/search" \
     -H "tenant-id: $1" -H "Authorization: Bearer $2" -H "Content-Type: application/json" \
     -d '{"query":"碎屏能免费修吗","topK":3}' | python3 -c "
 import sys,json
 d=json.load(sys.stdin)['data']
-print(d.get('analysis',{}).get('intent','∅'))" 2>/dev/null
+print(json.dumps(d.get('analysis',{}).get('rewrites') or [], ensure_ascii=False))" 2>/dev/null
 }
 
 echo ""
-echo "========== PM-01 生效: 建 query-disambiguate DB prompt(强制 TEST_INTENT) =========="
-V1=$(pm_create query-disambiguate "测试版1" '你是测试用查询分析器。只输出合法 JSON: {"intent":"TEST_INTENT","entities":[],"products":[],"rewrites":["碎屏 保修"],"sub_questions":[]}')
+echo "========== PM-01 生效: 建 query-disambiguate DB prompt(改写标记 DB改写TEST) =========="
+V1=$(pm_create query-disambiguate "测试版1" '你是测试用查询分析器。只输出合法 JSON: {"intent":"保修","entities":[],"products":[],"rewrites":["DB改写TEST"],"sub_questions":[]}')
 pm_enable "$V1"
 sleep 32 # 缓存 30s
-echo "intent(应为 TEST_INTENT): $(retrieve_intent $TENANT1 $T1)"
+echo "rewrites(应含 DB改写TEST): $(retrieve_rewrites $TENANT1 $T1)"
 
 echo ""
 echo "========== PM-02 版本切换/回滚: 建 v2(OTHER) → 启用 → 回滚 v1 =========="
-V2=$(pm_create query-disambiguate "测试版2" '你是测试用查询分析器。只输出合法 JSON: {"intent":"OTHER_INTENT","entities":[],"products":[],"rewrites":[],"sub_questions":[]}')
+V2=$(pm_create query-disambiguate "测试版2" '你是测试用查询分析器。只输出合法 JSON: {"intent":"保修","entities":[],"products":[],"rewrites":["DB改写OTHER"],"sub_questions":[]}')
 pm_enable "$V2"; sleep 32
-echo "intent(v2 生效, 应为 OTHER_INTENT): $(retrieve_intent $TENANT1 $T1)"
+echo "rewrites(v2 生效, 应含 DB改写OTHER): $(retrieve_rewrites $TENANT1 $T1)"
 pm_enable "$V1"; sleep 32
-echo "intent(回滚 v1, 应为 TEST_INTENT): $(retrieve_intent $TENANT1 $T1)"
+echo "rewrites(回滚 v1, 应含 DB改写TEST): $(retrieve_rewrites $TENANT1 $T1)"
 
 echo ""
 echo "========== PM-03 租户灰度: v3 全量(BASE_INTENT) + v4 灰度租户2(GRAY_INTENT) =========="
-V3=$(pm_create query-disambiguate "全量版" '你是测试用查询分析器。只输出合法 JSON: {"intent":"BASE_INTENT","entities":[],"products":[],"rewrites":[],"sub_questions":[]}')
-V4=$(pm_create query-disambiguate "灰度版" '你是测试用查询分析器。只输出合法 JSON: {"intent":"GRAY_INTENT","entities":[],"products":[],"rewrites":[],"sub_questions":[]}')
+V3=$(pm_create query-disambiguate "全量版" '你是测试用查询分析器。只输出合法 JSON: {"intent":"保修","entities":[],"products":[],"rewrites":["DB改写BASE"],"sub_questions":[]}')
+V4=$(pm_create query-disambiguate "灰度版" '你是测试用查询分析器。只输出合法 JSON: {"intent":"保修","entities":[],"products":[],"rewrites":["DB改写GRAY"],"sub_questions":[]}')
 pm_enable "$V3"; pm_gray "$V4" "[122]"; sleep 32
 gpr() { # gpr <tenant> <token> → get-prompt 内容片段
   curl -s -m 10 "http://127.0.0.1:${MODEL}/admin-api/model/prompt/get-prompt?key=query-disambiguate&tenantId=$1" \
@@ -96,7 +96,7 @@ echo "租户122 get-prompt(应 GRAY_INTENT 内容): $(gpr $TENANT2 $T2)"
 echo ""
 echo "========== PM-04 降级: 删除全部 query-disambiguate 行 → 回退代码默认 =========="
 pm_delete_key query-disambiguate; sleep 32
-echo "intent(应回退代码默认, 非 TEST/BASE/GRAY): $(retrieve_intent $TENANT1 $T1)"
+echo "rewrites(应回退代码默认, 非 DB改写): $(retrieve_rewrites $TENANT1 $T1)"
 
 echo ""
 echo "========== PM-05 通用链路(非售后): 公司文档库问答仍通 =========="
