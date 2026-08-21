@@ -51,9 +51,12 @@ yudao:
 
 图片的语义描述与扫描页兜底识别依赖 `ai_model_config` 的 image 类型模型:
 
-| 方式 | 配置 |
-|---|---|
-| Ollama(Docker, compose 已含服务) | `docker compose up -d ollama` → `docker exec yudao-ollama ollama pull qwen2.5vl:7b` → 模型管理页 image 类型: base-url=`http://127.0.0.1:11434/v1`, model=`qwen2.5vl:7b`, 状态启用 |
-| 已有 LM Studio 视觉模型 | image 类型 base-url=`http://127.0.0.1:1234/v1`, model=`<视觉模型名>`, 启用 |
+| 方式 | 配置 | 适用 |
+|---|---|---|
+| **LM Studio(推荐 macOS)** | image 类型 base-url=`http://127.0.0.1:1234/v1`, model=`<视觉模型名, 如 qwen2.5-vl>`, 启用 | Apple Silicon 原生 Metal 加速, 推理快 |
+| Ollama(Docker, compose 已含服务) | `docker compose up -d ollama` → `docker exec yudao-ollama ollama pull qwen2.5vl:3b` → image 类型 base-url=`http://127.0.0.1:11434/v1`, model=`qwen2.5vl:3b`, 启用 | 有 GPU 服务器, 或可接受 CPU 慢速推理 |
+
+> ⚠️ 实测(M1 Pro): Docker 内 ollama 无法使用 Apple Metal, 视觉模型 CPU 推理单图 5 分钟+ 不可实用;
+> macOS 请用 LM Studio 跑视觉模型。Docker ollama 适合 GPU 环境。
 
 未启用 image 模型时: 图片不生成语义描述, 仅保留"所属章节/页码"占位(图片内容无法被检索命中), 入库不阻断。
