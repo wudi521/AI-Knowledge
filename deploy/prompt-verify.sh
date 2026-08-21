@@ -27,9 +27,10 @@ pm_create() { # pm_create <key> <name> <content>(用 python 构造 JSON, 防内�
     -H "tenant-id: ${TENANT1}" -H "Authorization: Bearer ${T1}" -H "Content-Type: application/json" \
     -d "$body" | python3 -c "import sys,json; print(json.load(sys.stdin)['data'])"
 }
-pm_enable() { # pm_enable <id>
-  curl -s -X POST "http://127.0.0.1:${MODEL}/admin-api/model/prompt/enable?id=$1" \
-    -H "tenant-id: ${TENANT1}" -H "Authorization: Bearer ${T1}" >/dev/null
+pm_enable() { # pm_enable <id>(enable 端点为 @RequestBody, 需传 body)
+  curl -s -X POST "http://127.0.0.1:${MODEL}/admin-api/model/prompt/enable" \
+    -H "tenant-id: ${TENANT1}" -H "Authorization: Bearer ${T1}" -H "Content-Type: application/json" \
+    -d "{\"id\":$1}" >/dev/null
 }
 pm_gray() { # pm_gray <id> <tenantIdsJson>
   curl -s -X POST "http://127.0.0.1:${MODEL}/admin-api/model/prompt/gray-enable" \
