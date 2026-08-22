@@ -142,6 +142,9 @@ public class IngestionApiImpl implements IngestionApi {
             dto.setVersionId(c.getVersionId());
             dto.setContent(c.getContent());
             dto.setChunkType(c.getChunkType());
+            dto.setChunkRole(c.getChunkRole());
+            dto.setStatus(c.getStatus());
+            dto.setMetadata(c.getMetadata());
             return dto;
         }).toList();
         return success(result);

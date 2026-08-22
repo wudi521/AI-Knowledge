@@ -71,6 +71,8 @@ public class IngestServiceImpl implements IngestService {
     private cn.iocoder.yudao.module.ingestion.service.job.IngestionJobService ingestionJobService;
     @Resource
     private cn.iocoder.yudao.module.ingestion.domain.DomainIngestionRegistry domainRegistry;
+    @Resource
+    private cn.iocoder.yudao.module.ingestion.trace.PipelineTraceRecorder pipelineTraceRecorder;
 
     /** embedding 批大小(C3 分批向量化, 防大文档一次性全量) */
     @org.springframework.beans.factory.annotation.Value("${yudao.ingestion.embedding.batch-size:32}")
@@ -110,10 +112,33 @@ public class IngestServiceImpl implements IngestService {
                 chunkStrategy = "auto"; // 文档未选策略默认自动
             }
 
+            // Knowledge Ops Trace 上下文(阶段级记录)
+            cn.iocoder.yudao.module.ingestion.trace.TraceContext traceContext =
+                    cn.iocoder.yudao.module.ingestion.trace.TraceContext.builder()
+                            .traceId(String.valueOf(documentId))
+                            .kbId(kbId)
+                            .documentId(documentId)
+                            .versionId(versionId)
+                            .jobId(jobId)
+                            .domainCode(document.getDomainCode())
+                            .tenantId(tenantId)
+                            .build();
+
             java.io.File tmpFile = downloadFromMinio(storagePath, docType);
             ParsedDocument parsed;
             try {
-                parsed = parseDocument(docType, tmpFile);
+                // 闭包使用下载后的本地临时文件(非 MinIO URL); inputSummary 用 URL 便于排障
+                java.io.File finalTmp = tmpFile;
+                String finalStoragePath = storagePath;
+                String finalDocType = docType;
+                parsed = pipelineTraceRecorder.recordStage(traceContext, "PARSE",
+                        "DocumentParser:" + docType, "download:" + finalStoragePath, () -> {
+                            try {
+                                return parseDocument(finalDocType, finalTmp);
+                            } catch (Exception e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
             } finally {
                 // P2-14: 临时文件必须清理(失败也删, 不留垃圾)
                 try {
@@ -138,11 +163,14 @@ public class IngestServiceImpl implements IngestService {
                 }
             }
             SplitParams splitParams = SplitParams.merge(SplitParams.of(500), document.getChunkStrategyParams());
-            List<Chunk> chunks = domainAdapter.split(parsed, splitParams, domainMetadata);
+            List<Chunk> chunks = pipelineTraceRecorder.recordStage(traceContext, "CHUNK",
+                    domainAdapter.getClass().getSimpleName(), "strategy:" + chunkStrategy,
+                    () -> domainAdapter.split(parsed, splitParams, domainMetadata));
             List<String> contents = chunks.stream().map(Chunk::getContent).toList();
             // C3 分批向量化(批大小可配, 默认 32; 防大文档一次性全量占满 JVM/模型请求)
             ingestionJobService.updateStage(jobId, "EMBED");
-            List<List<Float>> vectors = embedBatches(contents);
+            List<List<Float>> vectors = pipelineTraceRecorder.recordStage(traceContext, "EMBED",
+                    "EmbeddingClient", "texts:" + contents.size(), () -> embedBatches(contents));
 
             // 3. 短事务: 删旧片段 + 只写 MySQL(向量存 embedding; Milvus/ES 待审核通过发布时写)
             //    通知审核的 afterCommit 注册在事务内(见 persistChunks), 保证事务提交后触发
