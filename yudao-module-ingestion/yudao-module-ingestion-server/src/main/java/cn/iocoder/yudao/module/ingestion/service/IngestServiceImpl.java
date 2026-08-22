@@ -66,6 +66,12 @@ public class IngestServiceImpl implements IngestService {
     private ChunkMapper chunkMapper;
     @Resource
     private TransactionTemplate transactionTemplate;
+    @Resource
+    private cn.iocoder.yudao.module.ingestion.service.job.IngestionJobService ingestionJobService;
+
+    /** embedding 批大小(C3 分批向量化, 防大文档一次性全量) */
+    @org.springframework.beans.factory.annotation.Value("${yudao.ingestion.embedding.batch-size:32}")
+    private int embedBatchSize;
 
     /**
      * 入库主流程: 解析 → 切分 → 向量化 → 只写 MySQL(REVIEW) → 通知审核
@@ -76,10 +82,13 @@ public class IngestServiceImpl implements IngestService {
      * Milvus/ES 由审核通过后的发布(indexVersion)写入, 不在本方法执行。
      */
     @Override
-    public void ingestDocument(Long documentId) {
+    public void ingestDocument(Long documentId, Long jobId) {
+        // C3 任务状态机: 开始执行
+        ingestionJobService.markRunning(jobId);
         // 1. 置为解析中(事务外: Feign 回写)
         updateStatus(documentId, "PARSING", null, null);
         try {
+            ingestionJobService.updateStage(jobId, "PARSE");
             // 2. 查询文档信息 + 解析 + 切分 + 向量化(全部事务外, 耗时步骤)
             KnowledgeDocumentRespDTO document = loadDocument(documentId);
             String docType = document.getType();
@@ -114,20 +123,26 @@ public class IngestServiceImpl implements IngestService {
             parsed.setDocType(docType);
             // 上下文增强(切分前): 标题链回填 + 图片理解(描述生成) + 图片上下文绑定
             contextEnricher.enrich(parsed);
+            ingestionJobService.updateStage(jobId, "CHUNK");
             SplitParams splitParams = SplitParams.merge(SplitParams.of(500), document.getChunkStrategyParams());
             List<Chunk> chunks = splitterFactory.getSplitter(chunkStrategy).split(parsed, splitParams);
             List<String> contents = chunks.stream().map(Chunk::getContent).toList();
-            List<List<Float>> vectors = embeddingClient.embed(contents);
+            // C3 分批向量化(批大小可配, 默认 32; 防大文档一次性全量占满 JVM/模型请求)
+            ingestionJobService.updateStage(jobId, "EMBED");
+            List<List<Float>> vectors = embedBatches(contents);
 
             // 3. 短事务: 删旧片段 + 只写 MySQL(向量存 embedding; Milvus/ES 待审核通过发布时写)
             //    通知审核的 afterCommit 注册在事务内(见 persistChunks), 保证事务提交后触发
+            ingestionJobService.updateStage(jobId, "PERSIST");
             persistChunks(documentId, versionId, tenantId, chunks, vectors);
 
             // 4. 置为 REVIEW(事务外 Feign 回写)
             updateStatus(documentId, "REVIEW", chunks.size(), null);
+            ingestionJobService.markDone(jobId, chunks.size());
             log.info("[ingestDocument][文档 {} 落库完成(REVIEW), {} 个片段, 待事务提交后通知审核]", documentId, chunks.size());
         } catch (Exception e) {
             log.error("[ingestDocument][文档 {} 入库失败]", documentId, e);
+            ingestionJobService.markFailed(jobId, null, e.getMessage()); // C3 任务置 FAILED(可重试)
             try {
                 updateStatus(documentId, "FAILED", null, StrUtil.sub(e.getMessage(), 0, 500));
             } catch (Exception ex) {
@@ -139,6 +154,28 @@ public class IngestServiceImpl implements IngestService {
             }
             throw new RuntimeException(e.getMessage(), e);
         }
+    }
+
+    /**
+     * 分批向量化(C3): 批大小可配(默认 32), 防大文档一次性全量占满内存/模型请求;
+     * 校验向量数量与输入一致(模型返回缺失直接报错, 不静默错位落库)
+     */
+    private List<List<Float>> embedBatches(List<String> contents) {
+        if (contents == null || contents.isEmpty()) {
+            return List.of();
+        }
+        int batchSize = Math.max(1, embedBatchSize);
+        List<List<Float>> vectors = new java.util.ArrayList<>(contents.size());
+        for (int i = 0; i < contents.size(); i += batchSize) {
+            List<String> batch = contents.subList(i, Math.min(i + batchSize, contents.size()));
+            List<List<Float>> batchVectors = embeddingClient.embed(batch);
+            if (batchVectors == null || batchVectors.size() != batch.size()) {
+                throw new RuntimeException("embedding 返回数量与输入不一致: 期望 " + batch.size() + ", 实际 "
+                        + (batchVectors == null ? 0 : batchVectors.size()));
+            }
+            vectors.addAll(batchVectors);
+        }
+        return vectors;
     }
 
     /**

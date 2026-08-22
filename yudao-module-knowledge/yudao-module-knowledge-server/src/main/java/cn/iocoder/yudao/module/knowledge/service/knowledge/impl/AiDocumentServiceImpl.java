@@ -18,6 +18,7 @@ import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapp
 import cn.iocoder.yudao.module.knowledge.dal.mysql.review.ReviewItemMapper;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper;
 import cn.iocoder.yudao.module.knowledge.mq.KnowledgeIngestProducer;
+import cn.iocoder.yudao.module.knowledge.mq.OutboxService;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.service.review.ReviewItemService;
@@ -28,6 +29,7 @@ import com.mzt.logapi.starter.annotation.LogRecord;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KB_NOT_VISIBLE;
 import static cn.iocoder.yudao.module.knowledge.enums.ErrorCodeConstants.KNOWLEDGE_NOT_EXISTS;
@@ -63,6 +65,8 @@ public class AiDocumentServiceImpl implements AiDocumentService {
 
     @Resource
     private KnowledgeIngestProducer knowledgeIngestProducer;
+    @Resource
+    private cn.iocoder.yudao.module.knowledge.mq.OutboxService outboxService;
 
     @Resource
     private IngestionApi ingestionApi;
@@ -81,6 +85,7 @@ public class AiDocumentServiceImpl implements AiDocumentService {
     private ConflictMapper conflictMapper;
 
     @Override
+    @Transactional // C2 Outbox: 文档 + 版本 + Outbox 事件同事务
     @LogRecord(type = DOC_TYPE, subType = DOC_CREATE_SUB_TYPE, bizNo = "{{#doc.id}}",
             success = DOC_CREATE_SUCCESS)
     public Long createAiDocument(AiDocumentSaveReqVO createReqVO) {
@@ -107,12 +112,26 @@ public class AiDocumentServiceImpl implements AiDocumentService {
         if (doc.getParseStatus() == null) {
             doc.setParseStatus("PENDING");
         }
+        // C2 Outbox: 文档 + DRAFT 版本 + Outbox 事件在同一事务提交(事务内不得发 Kafka)
         aiDocumentMapper.insert(doc);
         LogRecordContext.putVariable("doc", doc);
         // 创建 DRAFT 版本(版本状态机)
         aiDocVersionService.createVersion(doc.getId());
-        // 发送入库任务消息(Kafka), ingestion-server 异步解析/切分/向量化
-        knowledgeIngestProducer.sendDocumentIngest(doc.getId());
+        // 事务内只写 Outbox 事件, 事务提交后由 OutboxService 发送 Kafka(可靠至少一次)
+        outboxService.record(OutboxService.AGGREGATE_DOCUMENT, doc.getId(),
+                OutboxService.EVENT_DOCUMENT_CREATED, java.util.Map.of("documentId", doc.getId()));
+        // 事务提交后立即发送(失败由定时补偿补发)
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        try {
+                            outboxService.publishPending(100);
+                        } catch (Exception e) {
+                            log.error("[createAiDocument][文档 {} Outbox 发送异常, 待补偿: {}]", doc.getId(), e.getMessage());
+                        }
+                    }
+                });
         return doc.getId();
     }
 

@@ -68,6 +68,8 @@ yudao:
     es:
       index: ai_chunk_bm25          # BM25 索引名
   ingestion:
+    embedding:
+      batch-size: 32 # C3 分批向量化批大小
     download: # 文件下载安全(SSRF防护): 只允许从白名单主机下载; MinIO 生产地址需加入白名单
       allowed-hosts: 127.0.0.1,localhost
       max-file-bytes: 104857600 # 100MB

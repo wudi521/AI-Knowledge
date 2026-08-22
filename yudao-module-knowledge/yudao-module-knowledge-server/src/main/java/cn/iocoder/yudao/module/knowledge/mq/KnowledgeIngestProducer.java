@@ -20,6 +20,15 @@ public class KnowledgeIngestProducer {
     @Resource
     private KafkaTemplate<String, Object> kafkaTemplate;
 
+    /** 同步发送(Outbox Publisher 用: 发送失败抛异常, 由 Outbox 保留事件待补偿) */
+    public void sendDocumentIngestSync(Long documentId) {
+        try {
+            kafkaTemplate.send(TOPIC_KNOWLEDGE_INGEST, String.valueOf(documentId), documentId).get(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            throw new RuntimeException("Kafka 发送失败: " + documentId, e);
+        }
+    }
+
     /** 发送入库任务消息, payload 为文档编号 */
     public void sendDocumentIngest(Long documentId) {
         kafkaTemplate.send(TOPIC_KNOWLEDGE_INGEST, String.valueOf(documentId), documentId)
