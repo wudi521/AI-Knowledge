@@ -22,6 +22,12 @@ public class QueryAnalysis {
     /** 涉及的产品/品牌(如 苹果13/X100 Pro; 品牌一致性校验用, 无则空) */
     private List<String> products;
 
+    /** 地域 slot: 省份(D2 检索硬过滤; 未提及空) */
+    private String province;
+
+    /** 地域 slot: 城市(精确度高于省份; 未提及空) */
+    private String city;
+
     /** 改写变体(不含原句) */
     private List<String> rewrites;
 

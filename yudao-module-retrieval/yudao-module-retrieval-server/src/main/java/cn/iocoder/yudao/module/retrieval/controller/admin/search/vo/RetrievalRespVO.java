@@ -51,6 +51,9 @@ public class RetrievalRespVO {
 
         /** 分析是否成功 */
         private boolean success;
+
+        /** 查询路由(D3): HYBRID_RAG / SCOPE_FILTER_HYBRID_RAG / ABSTAIN */
+        private String route;
     }
 
     @Data

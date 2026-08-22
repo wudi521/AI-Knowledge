@@ -131,6 +131,23 @@ public class SearchService {
             return blocked;
         }
 
+        // 3.6 D2 scope 硬过滤: 查询命中省市/产品 slot 时, 有 scope 配置的知识库必须匹配
+        //     (精确城市>省级; 无 scope 配置的知识库不受影响, 兼容现状; scope RPC 失败降级不过滤+告警)
+        java.util.List<Long> scopedKbIds = applyScopeFilter(analysis, kbIds);
+        if (scopedKbIds.isEmpty()) {
+            log.warn("[search][query={} 地域/产品范围过滤后无可用知识库, 拒绝混合不同地市规则, 转人工]", query);
+            RetrievalRespVO blocked = new RetrievalRespVO();
+            blocked.setQuery(query);
+            blocked.setAnalysis(buildAnalysis(analysis));
+            blocked.setChannels(new RetrievalRespVO.ChannelStatVO());
+            blocked.setAnswerBlocked(true);
+            blocked.setAnswerReason("问题涉及明确地域/产品范围, 但当前可见知识库均不覆盖该范围, 已转人工处理");
+            blocked.setResults(List.of());
+            blocked.setAnswer(null);
+            return blocked;
+        }
+        kbIds = scopedKbIds;
+
         // 4. BM25 通道: 逐变体召回, 去重取最高分
         List<Map.Entry<Long, Double>> bm25Hits = new ArrayList<>();
         for (String variant : variants) {
@@ -249,6 +266,66 @@ public class SearchService {
     }
 
     /**
+     * D2 scope 硬过滤: 查询命中省市/产品 slot 时, 有 scope 配置的知识库必须匹配;
+     * 无 scope 配置的知识库不受影响; scope RPC 失败降级不过滤(项目降级原则)并告警。
+     */
+    private java.util.List<Long> applyScopeFilter(QueryAnalysis analysis, java.util.List<Long> kbIds) {
+        boolean hasProvince = StrUtil.isNotBlank(analysis.getProvince());
+        boolean hasCity = StrUtil.isNotBlank(analysis.getCity());
+        boolean hasProduct = analysis.getProducts() != null && !analysis.getProducts().isEmpty();
+        if ((!hasProvince && !hasCity && !hasProduct) || kbIds == null || kbIds.isEmpty()) {
+            return kbIds;
+        }
+        java.util.Map<Long, List<cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO>> scopes;
+        try {
+            scopes = knowledgeApi.getKbScopes(kbIds).getCheckedData();
+        } catch (Exception e) {
+            log.warn("[applyScopeFilter][scope RPC 失败, 降级不过滤: {}]", e.getMessage());
+            return kbIds;
+        }
+        if (scopes == null || scopes.isEmpty()) {
+            return kbIds; // 无 scope 配置, 兼容现状
+        }
+        java.util.List<Long> filtered = new java.util.ArrayList<>();
+        for (Long kbId : kbIds) {
+            java.util.List<cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO> kbScopes = scopes.get(kbId);
+            if (kbScopes == null || kbScopes.isEmpty()) {
+                filtered.add(kbId);
+                continue;
+            }
+            if (scopeMatches(analysis, kbScopes)) {
+                filtered.add(kbId);
+            }
+        }
+        return filtered;
+    }
+
+    /** scope 匹配: 城市精确优先于省份; 产品 scope 有配置才过滤 */
+    private boolean scopeMatches(QueryAnalysis analysis,
+                                 java.util.List<cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO> kbScopes) {
+        boolean regionOk = true;
+        if (StrUtil.isNotBlank(analysis.getCity())) {
+            regionOk = kbScopes.stream().anyMatch(s -> "CITY".equals(s.getScopeType())
+                    && s.getScopeCode() != null && s.getScopeCode().contains(analysis.getCity()));
+        } else if (StrUtil.isNotBlank(analysis.getProvince())) {
+            regionOk = kbScopes.stream().anyMatch(s -> ("PROVINCE".equals(s.getScopeType()) || "CITY".equals(s.getScopeType()))
+                    && s.getScopeCode() != null && s.getScopeCode().contains(analysis.getProvince()));
+        }
+        boolean productOk = true;
+        if (analysis.getProducts() != null && !analysis.getProducts().isEmpty()) {
+            java.util.List<String> productScopes = kbScopes.stream()
+                    .filter(s -> "PRODUCT".equals(s.getScopeType()))
+                    .map(cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO::getScopeCode)
+                    .filter(java.util.Objects::nonNull).toList();
+            if (!productScopes.isEmpty()) {
+                productOk = analysis.getProducts().stream().anyMatch(p -> productScopes.stream()
+                        .anyMatch(sp -> sp.contains(p) || p.contains(sp)));
+            }
+        }
+        return regionOk && productOk;
+    }
+
+    /**
      * 解析知识库意图集(动态意图分类参考): kbIds 为空时回退用户可见知识库(需登录态)。
      *
      * @param kbIds 限定知识库编号列表(空 = 全部可见)
@@ -347,7 +424,19 @@ public class SearchService {
         vo.setRewrites(analysis.getRewrites());
         vo.setSubQuestions(analysis.getSubQuestions());
         vo.setSuccess(analysis.isSuccess());
+        vo.setRoute(resolveRoute(analysis)); // D3 路由标记
         return vo;
+    }
+
+    /** D3 路由标记(轻量 QueryPlanner): 超范围→ABSTAIN; scope 过滤过→SCOPE_FILTER_HYBRID_RAG; 默认混合检索 */
+    private String resolveRoute(QueryAnalysis analysis) {
+        if ("OUT_OF_SCOPE".equals(analysis.getIntent())) {
+            return "ABSTAIN";
+        }
+        if (StrUtil.isNotBlank(analysis.getProvince()) || StrUtil.isNotBlank(analysis.getCity())) {
+            return "SCOPE_FILTER_HYBRID_RAG";
+        }
+        return "HYBRID_RAG";
     }
 
     private RetrievalRespVO.ResultVO buildResult(Long chunkId, Map<Long, String> contentsMap,

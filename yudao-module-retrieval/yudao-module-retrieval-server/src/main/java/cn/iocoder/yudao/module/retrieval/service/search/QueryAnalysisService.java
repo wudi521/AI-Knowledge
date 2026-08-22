@@ -34,6 +34,8 @@ public class QueryAnalysisService {
             {"intent": "意图分类(WARRANTY/REFUND/LOGISTICS/REPAIR/PRICE/OTHER)",
              "entities": ["关键实体, 如产品名/部件/时间"],
              "products": ["问题明确涉及的产品/品牌名, 如 苹果13/iPhone 13/X100 Pro; 未提及给空数组"],
+             "province": "问题明确涉及的省份(如 广东; 未提及给null)",
+             "city": "问题明确涉及的城市(如 深圳; 未提及给null)",
              "rewrites": ["2~3条改写变体, 覆盖同义词/口语/省略, 用于召回更多相关片段"],
              "sub_questions": ["若问题是复合问题则拆成子问题; 简单问题给空数组"]}
             只输出合法 JSON, 不要其他文字。例: {"intent":"WARRANTY","entities":["碎屏","X100 Pro"],"products":["X100 Pro"],"rewrites":["碎屏 免费 维修","屏幕碎裂 保修政策"],"sub_questions":[]}
@@ -64,6 +66,8 @@ public class QueryAnalysisService {
             {"intent": "意图分类(从以下知识库意图中选择最匹配的一项; 都不匹配则输出 "OUT_OF_SCOPE")",
              "entities": ["关键实体, 如产品名/部件/时间"],
              "products": ["问题明确涉及的产品/品牌名, 如 苹果13/iPhone 13/X100 Pro; 未提及给空数组"],
+             "province": "问题明确涉及的省份(如 广东; 未提及给null)",
+             "city": "问题明确涉及的城市(如 深圳; 未提及给null)",
              "rewrites": ["2~3条改写变体, 覆盖同义词/口语/省略, 用于召回更多相关片段"],
              "sub_questions": ["若问题是复合问题则拆成子问题; 简单问题给空数组"]}
             只输出合法 JSON, 不要其他文字。例: {"intent":"保修","entities":["碎屏","X100 Pro"],"products":["X100 Pro"],"rewrites":["碎屏 免费 维修","屏幕碎裂 保修政策"],"sub_questions":[]}
@@ -134,6 +138,8 @@ public class QueryAnalysisService {
             result.setIntent(clampIntent(json.getStr("intent", "OTHER"), intents));
             result.setEntities(strList(json.getJSONArray("entities")));
             result.setProducts(strList(json.getJSONArray("products")));
+            result.setProvince(json.getStr("province"));
+            result.setCity(json.getStr("city"));
             result.setRewrites(strList(json.getJSONArray("rewrites")));
             result.setSubQuestions(strList(json.getJSONArray("sub_questions")));
             result.setSuccess(true);

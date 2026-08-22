@@ -24,6 +24,7 @@ import jakarta.annotation.Resource;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +57,8 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     private AiKnowledgeBaseSlotService aiKnowledgeBaseSlotService;
     @Resource
     private PublishedContentCollector publishedContentCollector;
+    @Resource
+    private cn.iocoder.yudao.module.knowledge.dal.mysql.scope.AiKnowledgeScopeMapper aiKnowledgeScopeMapper;
 
     @Override
     public Boolean checkKnowledgePermission(Long chunkId, Long userId) {
@@ -166,6 +169,24 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     public CommonResult<List<KnowledgeSlotDefinitionDTO>> getSlotDefinitions(List<Long> kbIds) {
         List<AiKnowledgeBaseSlotDO> slots = aiKnowledgeBaseSlotService.getEnabledByKbIds(kbIds);
         return success(BeanUtils.toBean(slots, KnowledgeSlotDefinitionDTO.class));
+    }
+
+    @Override
+    public CommonResult<Map<Long, List<cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO>>> getKbScopes(List<Long> kbIds) {
+        Map<Long, List<cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO>> map = new HashMap<>();
+        if (CollUtil.isEmpty(kbIds)) {
+            return success(map);
+        }
+        for (cn.iocoder.yudao.module.knowledge.dal.dataobject.scope.AiKnowledgeScopeDO scope
+                : aiKnowledgeScopeMapper.selectByKbIds(kbIds)) {
+            cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO dto = new cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO();
+            dto.setKbId(scope.getKbId());
+            dto.setScopeType(scope.getScopeType());
+            dto.setScopeCode(scope.getScopeCode());
+            dto.setScopePriority(scope.getScopePriority());
+            map.computeIfAbsent(scope.getKbId(), k -> new ArrayList<>()).add(dto);
+        }
+        return success(map);
     }
 
     @Override

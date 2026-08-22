@@ -4,6 +4,7 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgePublishedChunkDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeSlotDefinitionDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.enums.ApiConstants;
@@ -101,6 +102,15 @@ public interface KnowledgeApi {
      */
     @GetMapping(ApiConstants.PREFIX + "/get-visible-kb-ids")
     CommonResult<Set<Long>> getVisibleKbIds(@RequestParam("userId") Long userId);
+
+    /**
+     * 批量查询知识库业务范围(检索硬过滤: 命中省市/产品 slot 时按 scope 过滤知识库)
+     *
+     * @param kbIds 知识库编号列表
+     * @return kbId -> 范围列表(无配置的知识库不在返回中)
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-kb-scopes")
+    CommonResult<Map<Long, List<KnowledgeScopeDTO>>> getKbScopes(@RequestBody List<Long> kbIds);
 
     /**
      * 查询知识库启用中的意图列表(检索分类参考: LLM_AUTO + MANUAL 合并口径)
