@@ -1,3 +1,21 @@
+【重要修正：项目由两个独立 GitHub 仓库组成】
+
+后端仓库: wudi521/AI-Knowledge(当前仓库)
+前端仓库: wudi521/AI-Knowledge-admin(本地目录 yudao-ui-admin-vben-master, Vben Admin 5.7 pnpm monorepo)
+
+约束:
+- 两个仓库并列, 不创建 Submodule, 不将前端复制进后端;
+- 前端只改 apps/web-antd(不碰 web-ele/web-naive/web-tdesign/web-antdv-next);
+- 复用 apps/web-antd/src/views/ai/{knowledge,document,chat,workbench-vben} 与 api/ai/{knowledge,chat,chunk};
+- 前端 MVP 五块: ①知识库领域选择(domainCode) ②文档详情专利元数据 ③Chunk 弹窗(章节/权利要求/页码)
+  ④聊天强制选择知识库(kbIds, 未选禁止发送) ⑤回答来源卡片(文档名/申请号/公布号/章节/权利要求/页码/版本/引用);
+- 禁止把三份 PDF 的申请号/公布号/权利要求/答案硬编码进前端;
+- 前后端 DTO 字段完全一致, 先定接口契约;
+- 前端构建必须执行: pnpm install --frozen-lockfile && pnpm check:type && pnpm lint && pnpm build:antd;
+- 两个仓库独立提交, 各自 git status/branch/log + 建 feat/patent-mvp-v0.1 分支, 不自动 push。
+
+---
+
 # AI-Knowledge 专利领域 MVP v0.1：DeepSeek 实施任务书
 
 ## 0. 任务目标
