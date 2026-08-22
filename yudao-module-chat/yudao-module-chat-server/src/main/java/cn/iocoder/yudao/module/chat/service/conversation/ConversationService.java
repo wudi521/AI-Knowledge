@@ -160,4 +160,32 @@ public class ConversationService {
         return conversation;
     }
 
+
+    /** 获取会话绑定的知识库编号列表(逗号分隔字符串解析; 未绑定返回空) */
+    public java.util.List<Long> getBoundKbIds(Long conversationId) {
+        AiConversationDO conversation = getConversation(conversationId);
+        if (conversation == null || StrUtil.isBlank(conversation.getKbIds())) {
+            return java.util.Collections.emptyList();
+        }
+        java.util.List<Long> ids = new java.util.ArrayList<>();
+        for (String part : StrUtil.split(conversation.getKbIds(), ',')) {
+            String t = part.trim();
+            if (t.matches("\\d+")) {
+                ids.add(Long.valueOf(t));
+            }
+        }
+        return ids;
+    }
+
+    /** 绑定会话知识库(持久化, 后续轮次复用; 幂等覆盖) */
+    public void bindKbIds(Long conversationId, java.util.List<Long> kbIds) {
+        if (kbIds == null || kbIds.isEmpty()) {
+            return;
+        }
+        AiConversationDO update = new AiConversationDO();
+        update.setId(conversationId);
+        update.setKbIds(kbIds.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
+        aiConversationMapper.updateById(update);
+    }
 }
+

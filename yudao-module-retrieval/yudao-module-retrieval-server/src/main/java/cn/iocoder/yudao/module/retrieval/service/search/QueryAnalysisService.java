@@ -123,11 +123,17 @@ public class QueryAnalysisService {
      * @return 分析结果(失败时 success=false; 带历史且问题过短时附规则合并改写, 供降级召回)
      */
     public QueryAnalysis analyze(String query, List<ChatTurnDTO> history, List<IntentDTO> intents) {
+        return analyze(query, history, intents, null);
+    }
+
+    /** 带领域策略的分析(专利 MVP: 专利领域用专利查询提示词; 无策略用默认) */
+    public QueryAnalysis analyze(String query, List<ChatTurnDTO> history, List<IntentDTO> intents,
+                                 cn.iocoder.yudao.module.retrieval.service.domain.DomainQueryPolicy policy) {
         QueryAnalysis result = new QueryAnalysis();
         result.setSuccess(false);
         try {
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(buildSystemPrompt(intents));
+            req.setSystem(buildSystemPrompt(intents, policy));
             req.setUser(buildUserPrompt(query, history));
             String resp = modelApi.chat(req).getCheckedData();
             JSONObject json = parseJson(resp);
@@ -157,7 +163,16 @@ public class QueryAnalysisService {
      * 无意图集 → 固定 6 枚举提示词(兼容旧行为)。模板异常时防御性回退固定提示词。
      */
     private String buildSystemPrompt(List<IntentDTO> intents) {
+        return buildSystemPrompt(intents, null);
+    }
+
+    private String buildSystemPrompt(List<IntentDTO> intents,
+                                     cn.iocoder.yudao.module.retrieval.service.domain.DomainQueryPolicy policy) {
         if (intents == null || intents.isEmpty()) {
+            // 领域提示词优先(专利); 无则代码默认(客服)
+            if (policy != null && cn.hutool.core.util.StrUtil.isNotBlank(policy.queryAnalysisPrompt())) {
+                return promptSupport.get("query-analysis-patent", policy.queryAnalysisPrompt());
+            }
             return promptSupport.get("query-analysis", SYSTEM_PROMPT);
         }
         String dynamic = promptSupport.get("query-disambiguate", DYNAMIC_SYSTEM_PROMPT);

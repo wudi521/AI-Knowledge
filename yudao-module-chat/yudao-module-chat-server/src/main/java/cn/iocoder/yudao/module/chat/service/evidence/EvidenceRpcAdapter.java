@@ -52,6 +52,12 @@ public class EvidenceRpcAdapter {
      */
     public EvidenceEvaluateRespDTO evaluate(String query, Long tenantId, Long userId, Integer topK,
                                             List<ChatTurnDTO> history) {
+        return evaluate(query, tenantId, userId, topK, history, null);
+    }
+
+    /** 带知识库绑定的评估(专利 MVP: kbIds 限定检索范围, 不搜未选知识库) */
+    public EvidenceEvaluateRespDTO evaluate(String query, Long tenantId, Long userId, Integer topK,
+                                            List<ChatTurnDTO> history, List<Long> kbIds) {
         // 登录态兜底: 调用方未显式传租户/用户时, 从安全上下文补齐
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         if (tenantId == null && loginUser != null) {
@@ -62,11 +68,11 @@ public class EvidenceRpcAdapter {
         }
         EvidenceEvaluateReqDTO req = new EvidenceEvaluateReqDTO();
         req.setQuery(query);
-        req.setKbIds(null); // null = 全部可见知识库
         req.setTopK(topK != null ? topK : DEFAULT_TOP_K);
         req.setTenantId(tenantId);
         req.setUserId(userId);
         req.setHistory(history);
+        req.setKbIds(kbIds); // 专利 MVP 知识库绑定(空=全部可见, 由证据侧按现有语义处理)
         CommonResult<EvidenceEvaluateRespDTO> resp;
         try {
             resp = evidenceApi.evaluate(req);

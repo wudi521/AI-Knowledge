@@ -15,6 +15,9 @@ public class ChatSendReqVO {
     @NotBlank(message = "消息不能为空")
     private String message;
 
+    /** 知识库编号列表(专利 MVP: 必须选择, 未选禁止发送; 后端再做可见交集) */
+    private java.util.List<Long> kbIds;
+
     @Schema(description = "渠道(为空默认 WEB)", example = "WEB")
     private String channel;
 

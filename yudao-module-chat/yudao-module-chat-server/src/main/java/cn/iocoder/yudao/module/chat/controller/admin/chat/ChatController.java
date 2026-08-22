@@ -33,7 +33,7 @@ public class ChatController {
     @PreAuthorize("@ss.hasPermission('chat:chat:send')")
     public CommonResult<ChatSendRespVO> send(@Valid @RequestBody ChatSendReqVO req) {
         ChatSendResult result = chatPipeline.send(req.getConversationId(), req.getMessage(),
-                req.getChannel(), req.getCustomerId());
+                req.getChannel(), req.getCustomerId(), req.getKbIds());
         return success(BeanUtils.toBean(result, ChatSendRespVO.class));
     }
 

@@ -176,6 +176,18 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     }
 
     @Override
+    public CommonResult<Map<Long, String>> getKbDomainCodes(List<Long> kbIds) {
+        Map<Long, String> map = new HashMap<>();
+        if (CollUtil.isEmpty(kbIds)) {
+            return success(map);
+        }
+        for (AiKnowledgeBaseDO kb : aiKnowledgeBaseMapper.selectBatchIds(kbIds)) {
+            map.put(kb.getId(), kb.getDomainCode() == null ? "GENERAL" : kb.getDomainCode());
+        }
+        return success(map);
+    }
+
+    @Override
     public CommonResult<Map<Long, List<cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO>>> getKbScopes(List<Long> kbIds) {
         Map<Long, List<cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO>> map = new HashMap<>();
         if (CollUtil.isEmpty(kbIds)) {

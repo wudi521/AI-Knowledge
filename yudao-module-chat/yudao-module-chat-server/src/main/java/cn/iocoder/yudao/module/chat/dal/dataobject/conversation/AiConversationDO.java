@@ -39,6 +39,9 @@ public class AiConversationDO extends TenantBaseDO {
     /** 会话意图 */
     private String intent;
 
+    /** 绑定知识库编号列表(逗号分隔; 专利 MVP 会话级绑定, 后续轮次复用) */
+    private String kbIds;
+
     /** 会话摘要(转人工时记录) */
     private String summary;
 

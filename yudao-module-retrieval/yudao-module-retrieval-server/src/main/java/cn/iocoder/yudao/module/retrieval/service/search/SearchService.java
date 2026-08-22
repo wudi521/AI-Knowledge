@@ -55,6 +55,8 @@ public class SearchService {
     @Resource
     private ModelApi modelApi;
     @Resource
+    private cn.iocoder.yudao.module.retrieval.service.domain.DomainQueryPolicyRegistry domainPolicyRegistry;
+    @Resource
     private cn.iocoder.yudao.module.retrieval.dal.mysql.trace.RetrievalTraceMapper retrievalTraceMapper;
 
     public RetrievalRespVO search(RetrievalReqVO req) {
@@ -102,7 +104,8 @@ public class SearchService {
         //    Task 2: history 融入查询分析(指代展开/实体继承); LLM 失败时规则兜底改写仍参与召回
         //    Task 3: 按 kbIds 解析知识库意图集注入动态分类; 意图为空(RPC 失败/知识库无意图)回退固定枚举
         List<IntentDTO> intents = resolveIntents(kbIds, userId);
-        QueryAnalysis analysis = queryAnalysisService.analyze(query, history, intents);
+        cn.iocoder.yudao.module.retrieval.service.domain.DomainQueryPolicy domainPolicy = resolveDomainPolicy(kbIds);
+        QueryAnalysis analysis = queryAnalysisService.analyze(query, history, intents, domainPolicy);
         List<String> variants = new ArrayList<>();
         variants.add(query);
         if (analysis.isSuccess()) {
@@ -244,6 +247,10 @@ public class SearchService {
         //     降级原则(degrade-never-block): 检索有结果但文档信息 RPC 失败(docInfoMap 为空)
         //     时跳过门禁(无法判定=不误伤), 仅告警; 仅当确知结果集的产品归属且均不匹配时才阻断。
         List<String> questionProducts = analysis.getProducts() == null ? List.of() : analysis.getProducts();
+        // 领域策略: 专利领域关闭产品/品牌一致性门禁(不破坏 GENERAL 客服场景)
+        if (!domainPolicy.enableProductGate()) {
+            questionProducts = List.of();
+        }
         boolean docInfoUnavailable = !results.isEmpty() && (docInfoMap == null || docInfoMap.isEmpty());
         if (docInfoUnavailable) {
             log.warn("[search][query={} 文档信息获取失败, 跳过产品/品牌一致性门禁(降级)]", query);
@@ -267,6 +274,36 @@ public class SearchService {
             resp.setAnswer(null);
         }
         return resp;
+    }
+
+    /**
+     * 领域路由(任务书 8.1): 单知识库/多知识库同领域 → 该领域策略; 跨领域 → 拒绝;
+     * 无法获取/为空 → 回退 GENERAL。
+     */
+    private cn.iocoder.yudao.module.retrieval.service.domain.DomainQueryPolicy resolveDomainPolicy(java.util.List<Long> kbIds) {
+        if (kbIds == null || kbIds.isEmpty()) {
+            return domainPolicyRegistry.get("GENERAL");
+        }
+        try {
+            java.util.Map<Long, String> domains = knowledgeApi.getKbDomainCodes(kbIds).getCheckedData();
+            if (domains == null || domains.isEmpty()) {
+                return domainPolicyRegistry.get("GENERAL");
+            }
+            java.util.Set<String> unique = new java.util.HashSet<>(domains.values());
+            if (unique.size() == 1) {
+                return domainPolicyRegistry.get(unique.iterator().next());
+            }
+            if (unique.size() > 1) {
+                log.warn("[resolveDomainPolicy][跨领域知识库, 拒绝检索: {}]", domains);
+                throw new cn.iocoder.yudao.framework.common.exception.ServiceException(
+                        1_005_000_100, "一次只能检索同一领域(如专利)的知识库, 请先选择单个领域的知识库");
+            }
+        } catch (cn.iocoder.yudao.framework.common.exception.ServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            log.warn("[resolveDomainPolicy][领域解析失败, 回退 GENERAL: {}]", e.getMessage());
+        }
+        return domainPolicyRegistry.get("GENERAL");
     }
 
     /**

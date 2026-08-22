@@ -115,6 +115,12 @@ public interface KnowledgeApi {
                                                        @RequestParam("domainMetadata") String domainMetadata);
 
     /**
+     * 批量查询知识库领域代码(检索领域路由: kbId -> GENERAL/PATENT)
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-kb-domain-codes")
+    CommonResult<Map<Long, String>> getKbDomainCodes(@RequestBody List<Long> kbIds);
+
+    /**
      * 批量查询知识库业务范围(检索硬过滤: 命中省市/产品 slot 时按 scope 过滤知识库)
      *
      * @param kbIds 知识库编号列表

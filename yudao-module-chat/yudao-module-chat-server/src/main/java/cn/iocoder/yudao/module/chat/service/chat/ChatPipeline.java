@@ -100,6 +100,24 @@ public class ChatPipeline {
      * @return 回答或转人工决策(永不抛出, 除会话不存在外)
      */
     public ChatSendResult send(Long conversationId, String message, String channel, String customerId) {
+        return send(conversationId, message, channel, customerId, null);
+    }
+
+    /** 带知识库绑定的发送(专利 MVP: kbIds 限定检索范围; 未选时由会话绑定兜底, 仍无则提示) */
+    public ChatSendResult send(Long conversationId, String message, String channel, String customerId,
+                               List<Long> kbIds) {
+        // 0. 知识库绑定(专利 MVP): 请求未带 kbIds 时尝试会话绑定; 新会话且未选择 → 明确提示, 不搜索全部
+        List<Long> effectiveKbIds = kbIds;
+        if (effectiveKbIds == null || effectiveKbIds.isEmpty()) {
+            effectiveKbIds = conversationService.getBoundKbIds(conversationId);
+        }
+        if (effectiveKbIds == null || effectiveKbIds.isEmpty()) {
+            log.info("[send][会话({}) 未绑定知识库, 拒绝默认全库检索: {}]", conversationId, message);
+            return buildKbRequiredResult(conversationId);
+        }
+        if (kbIds != null && !kbIds.isEmpty()) {
+            conversationService.bindKbIds(conversationId, kbIds); // 持久化会话绑定, 后续轮次复用
+        }
         // 1. 渠道解析: 空 → WEB; 未注册渠道 → 降级 WEB(不报错)
         String resolvedChannel = resolveChannel(channel);
 
@@ -140,7 +158,7 @@ public class ChatPipeline {
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
         Long userId = loginUser != null ? loginUser.getId() : null;
-        EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null, history);
+        EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null, history, effectiveKbIds);
 
         // 5. 分流: 缺必填槽位 → 反问(不转人工); 可作答 → 回答; 否则 → 转人工决策
         if (isClarifyRequired(resp)) {
@@ -270,6 +288,16 @@ public class ChatPipeline {
      * CLOSED 为终态, 不落 SYSTEM 消息、不做状态迁移(会话本已关闭); 仅告警后返回
      * 该决策, 供前端提示"会话已结束"。
      */
+    /** 未绑定知识库提示(专利 MVP: 不默认搜索全部知识库) */
+    private ChatSendResult buildKbRequiredResult(Long conversationId) {
+        return ChatSendResult.builder()
+                .conversationId(conversationId)
+                .reply("请先选择要查询的知识库(专利 MVP 一次选择一个), 再发送问题。")
+                .answerable(false)
+                .transferRequired(false)
+                .build();
+    }
+
     private ChatSendResult buildClosedResult(Long conversationId) {
         return ChatSendResult.builder()
                 .conversationId(conversationId)
