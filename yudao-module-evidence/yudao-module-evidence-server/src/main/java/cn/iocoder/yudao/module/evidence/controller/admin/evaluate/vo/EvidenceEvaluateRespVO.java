@@ -99,6 +99,9 @@ public class EvidenceEvaluateRespVO {
         /** 片段内容 */
         private String content;
 
+        /** 片段元数据(JSON; 专利来源卡片) */
+        private String chunkMetadata;
+
         /** 来源文档名 */
         private String documentName;
 

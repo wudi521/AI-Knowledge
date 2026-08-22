@@ -285,6 +285,7 @@ public class EvidenceService {
         EvidenceEvaluateRespVO.EvidenceItemVO vo = new EvidenceEvaluateRespVO.EvidenceItemVO();
         vo.setChunkId(evidence.getChunkId());
         vo.setContent(evidence.getContent());
+        vo.setChunkMetadata(evidence.getChunkMetadata()); // 专利来源卡片
         vo.setDocumentName(evidence.getDocumentName());
         vo.setVersionNo(evidence.getVersionNo());
         vo.setScore(evidence.getScore());

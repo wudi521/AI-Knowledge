@@ -50,6 +50,7 @@ public class RetrievalApiImpl implements RetrievalApi {
                 item.setRrfScore(r.getRrfScore());
                 item.setRerankScore(r.getRerankScore());
                 item.setChannels(r.getChannels());
+                item.setChunkMetadata(r.getChunkMetadata());
                 results.add(item);
             }
         }

@@ -186,6 +186,9 @@ public class SearchService {
         // 9. 文档信息补全(chunkId -> documentId/documentName/versionNo)
         Map<Long, ChunkDocInfoDTO> docInfoMap = resultFilter.getChunkDocInfo(candidateIds);
 
+        // 9.1 片段元数据(专利来源卡片: applicationNo/publicationNo/sectionType/claimNo/pageStart 等)
+        Map<Long, String> metadataMap = resultFilter.getChunkMetadatas(candidateIds);
+
         // 9.5 父子扩展(B3): 命中子块批量取父块上下文(去重 + token 预算, 供引用时回带完整章节)
         Map<Long, Long> parentMap = resultFilter.getChunkParents(candidateIds);
         java.util.Set<Long> parentIds = parentMap.values().stream()
@@ -238,7 +241,7 @@ public class SearchService {
             }
             Long chunkId = candidates.get(idx).getKey();
             results.add(buildResult(chunkId, contentsMap, docInfoMap, rrfMap, r.getValue(),
-                    bm25HitIds, vectorHitIds, parentMap, truncatedParents));
+                    bm25HitIds, vectorHitIds, parentMap, truncatedParents, metadataMap));
         }
         resp.setResults(results);
         recordTrace(query, resp, variants.size(), startMs); // F5 检索追踪
@@ -505,7 +508,8 @@ public class SearchService {
     private RetrievalRespVO.ResultVO buildResult(Long chunkId, Map<Long, String> contentsMap,
             Map<Long, ChunkDocInfoDTO> docInfoMap, Map<Long, Double> rrfMap, Float rerankScore,
             Set<Long> bm25HitIds, Set<Long> vectorHitIds,
-            Map<Long, Long> parentMap, Map<Long, String> parentContents) {
+            Map<Long, Long> parentMap, Map<Long, String> parentContents,
+            Map<Long, String> metadataMap) {
         RetrievalRespVO.ResultVO vo = new RetrievalRespVO.ResultVO();
         vo.setChunkId(chunkId);
         vo.setContent(contentsMap.getOrDefault(chunkId, ""));
@@ -515,6 +519,7 @@ public class SearchService {
             vo.setDocumentName(docInfo.getDocumentName());
             vo.setVersionNo(docInfo.getVersionNo());
         }
+        vo.setChunkMetadata(metadataMap.get(chunkId));
         vo.setRrfScore(rrfMap.get(chunkId));
         vo.setRerankScore(rerankScore);
         // B3 父子扩展: 命中子块回带父块上下文(引用仍锚定命中子块, 父块仅上下文)

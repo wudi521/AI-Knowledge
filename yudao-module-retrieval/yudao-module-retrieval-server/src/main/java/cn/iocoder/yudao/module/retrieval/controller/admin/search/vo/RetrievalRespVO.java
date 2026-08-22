@@ -96,6 +96,9 @@ public class RetrievalRespVO {
         /** 命中通道: ["bm25"] / ["vector"] / ["bm25","vector"] */
         private List<String> channels;
 
+        /** 片段元数据(JSON; 专利来源卡片字段) */
+        private String chunkMetadata;
+
         /** 父块编号(父子检索扩展: 子块命中回带父块上下文; 无则 null) */
         private Long contextChunkId;
 

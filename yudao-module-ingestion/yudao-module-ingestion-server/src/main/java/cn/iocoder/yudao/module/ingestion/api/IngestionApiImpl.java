@@ -161,6 +161,18 @@ public class IngestionApiImpl implements IngestionApi {
     }
 
     @Override
+    public CommonResult<Map<Long, String>> getChunkMetadatas(List<Long> chunkIds) {
+        if (CollUtil.isEmpty(chunkIds)) {
+            return success(Map.of());
+        }
+        Map<Long, String> map = new HashMap<>();
+        for (ChunkDO c : chunkMapper.selectBatchIds(chunkIds)) {
+            map.put(c.getId(), c.getMetadata() == null ? "" : c.getMetadata());
+        }
+        return success(map);
+    }
+
+    @Override
     public CommonResult<Map<Long, Long>> getChunkParents(List<Long> chunkIds) {
         if (CollUtil.isEmpty(chunkIds)) {
             return success(Map.of());

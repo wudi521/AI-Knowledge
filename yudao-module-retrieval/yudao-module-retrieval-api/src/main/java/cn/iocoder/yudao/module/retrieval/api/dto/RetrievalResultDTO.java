@@ -34,4 +34,7 @@ public class RetrievalResultDTO {
     /** 命中通道: ["bm25"] / ["vector"] / ["bm25","vector"] */
     private List<String> channels;
 
+    /** 片段元数据(JSON; 专利: applicationNo/publicationNo/sectionType/claimNo/pageStart 等) */
+    private String chunkMetadata;
+
 }

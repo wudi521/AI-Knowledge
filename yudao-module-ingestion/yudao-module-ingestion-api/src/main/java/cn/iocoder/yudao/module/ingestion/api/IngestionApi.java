@@ -101,6 +101,15 @@ public interface IngestionApi {
     CommonResult<Map<Long, String>> getChunkContents(@RequestBody List<Long> chunkIds);
 
     /**
+     * 批量查询 chunk 元数据(专利来源卡片: applicationNo/publicationNo/sectionType/claimNo 等)
+     *
+     * @param chunkIds 片段编号列表
+     * @return chunkId -> metadata JSON(无则空串)
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-chunk-metadatas")
+    CommonResult<Map<Long, String>> getChunkMetadatas(@RequestBody List<Long> chunkIds);
+
+    /**
      * 批量查询 chunk 的父块编号(检索父子扩展: 子块命中回带父块上下文)
      *
      * @param chunkIds 片段编号列表
