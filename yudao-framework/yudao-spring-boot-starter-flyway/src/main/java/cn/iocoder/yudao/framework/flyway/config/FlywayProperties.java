@@ -35,4 +35,7 @@ public class FlywayProperties {
     /** 是否输出迁移日志 */
     private boolean logEnabled = true;
 
+    /** 启动时校验历史迁移 checksum(默认开; 手动迁移过的环境置 false, 否则 NULL checksum 会校验失败) */
+    private boolean validateOnMigrate = true;
+
 }

@@ -31,6 +31,7 @@ public class YudaoFlywayAutoConfiguration {
                 .table(properties.getTable())
                 .baselineOnMigrate(properties.isBaselineOnMigrate())
                 .baselineVersion(properties.getBaselineVersion())
+                .validateOnMigrate(properties.isValidateOnMigrate())
                 .load();
     }
 
