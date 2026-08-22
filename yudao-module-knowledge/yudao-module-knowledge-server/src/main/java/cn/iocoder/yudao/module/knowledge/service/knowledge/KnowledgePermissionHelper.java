@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.knowledge.service.knowledge;
 
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
+import cn.iocoder.yudao.module.knowledge.service.acl.KnowledgeAclService;
 import cn.iocoder.yudao.module.system.api.permission.PermissionApi;
 import cn.iocoder.yudao.module.system.enums.permission.RoleCodeEnum;
 import jakarta.annotation.Resource;
@@ -21,6 +22,8 @@ public class KnowledgePermissionHelper {
 
     @Resource
     private PermissionApi permissionApi;
+    @Resource
+    private cn.iocoder.yudao.module.knowledge.service.acl.KnowledgeAclService aclService;
 
     /** 超级管理员(system 内置 super_admin 角色)直通 */
     public boolean isSuperAdmin(Long userId) {
@@ -56,8 +59,14 @@ public class KnowledgePermissionHelper {
         if (kb == null) {
             return false;
         }
+        // D1 分层 ACL: 超管明确绕过(可审计); 无登录态内部调用直通
         if (userId == null || isSuperAdmin(userId)) {
             return true;
+        }
+        // 显式 ACL 优先(DENY>ALLOW), 无 ACL 记录回退 visible_roles 兼容
+        Boolean acl = aclService.isAllowed(userId, KnowledgeAclService.RESOURCE_KB, kb.getId(), KnowledgeAclService.ACTION_READ);
+        if (acl != null) {
+            return acl;
         }
         Set<String> codes = splitRoles(kb.getVisibleRoles());
         if (codes.isEmpty()) {
@@ -69,6 +78,12 @@ public class KnowledgePermissionHelper {
 
     /** 从知识库列表过滤出当前用户可见的子集(角色解析按全集一次完成) */
     public List<AiKnowledgeBaseDO> filterVisibleKbs(Long userId, List<AiKnowledgeBaseDO> kbs) {
+        if (userId == null) {
+            return kbs; // 内部调用直通(调用方按 RPC 契约显式传租户)
+        }
+        if (isSuperAdmin(userId)) {
+            return kbs; // 超管明确绕过(D1)
+        }
         Set<String> candidateCodes = kbs.stream()
                 .map(AiKnowledgeBaseDO::getVisibleRoles)
                 .filter(StrUtil::isNotBlank)
@@ -76,7 +91,19 @@ public class KnowledgePermissionHelper {
                 .map(String::trim).filter(StrUtil::isNotBlank)
                 .collect(Collectors.toSet());
         Set<String> myRoles = resolveUserRoles(userId, candidateCodes);
-        return kbs.stream().filter(kb -> visibleToUser(kb, myRoles)).toList();
+        // ① visible_roles 兼容过滤
+        List<AiKnowledgeBaseDO> compatible = kbs.stream().filter(kb -> visibleToUser(kb, myRoles)).toList();
+        // ② 显式 ACL: 主体级 ALLOW 判定(逐条; DENY 已由 filterDenied 批量移除)
+        List<AiKnowledgeBaseDO> aclChecked = new java.util.ArrayList<>();
+        for (AiKnowledgeBaseDO kb : compatible) {
+            Boolean acl = aclService.isAllowed(userId, KnowledgeAclService.RESOURCE_KB, kb.getId(), KnowledgeAclService.ACTION_READ);
+            if (acl == null || acl) {
+                aclChecked.add(kb); // 无 ACL 记录或显式 ALLOW
+            }
+        }
+        // ③ 批量移除 ALL 主体 DENY(跨用户黑名单)
+        Set<Long> allowedIds = aclService.filterDenied(aclChecked.stream().map(AiKnowledgeBaseDO::getId).collect(Collectors.toSet()));
+        return aclChecked.stream().filter(kb -> allowedIds.contains(kb.getId())).toList();
     }
 
     private Set<String> splitRoles(String visibleRoles) {
