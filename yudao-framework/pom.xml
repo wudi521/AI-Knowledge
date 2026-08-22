@@ -26,6 +26,7 @@
         <module>yudao-spring-boot-starter-rpc</module>
 
         <module>yudao-spring-boot-starter-excel</module>
+        <module>yudao-spring-boot-starter-flyway</module>
 
         <module>yudao-spring-boot-starter-biz-tenant</module>
         <module>yudao-spring-boot-starter-biz-data-permission</module>

@@ -33,7 +33,7 @@
 
 ## 3. 批次 A 完成情况
 
-- [x] A1 内部 RPC 认证与 login-user 防伪造(本批次已完成, 见 `01-internal-auth.md`)
-- [ ] A2 模型密钥加密(下一子批)
-- [ ] A3 文件下载与上传安全(下一子批)
-- [ ] A4 Flyway 正式迁移(下一子批)
+- [x] A1 内部 RPC 认证与 login-user 防伪造(`01-internal-auth.md`)
+- [x] A2 模型密钥加密(`02-model-secret.md`)
+- [x] A3 文件下载与上传安全(`03-download-security.md`)
+- [x] A4 Flyway 版本化迁移(`04-flyway.md`) — **批次 A 完成**
