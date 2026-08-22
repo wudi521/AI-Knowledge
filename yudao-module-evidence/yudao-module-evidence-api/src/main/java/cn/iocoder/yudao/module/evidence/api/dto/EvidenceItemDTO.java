@@ -28,4 +28,7 @@ public class EvidenceItemDTO {
     /** 命中通道: ["bm25"] / ["vector"] / ["bm25","vector"] */
     private List<String> channels;
 
+    /** 片段元数据(JSON; 专利来源卡片) */
+    private String chunkMetadata;
+
 }

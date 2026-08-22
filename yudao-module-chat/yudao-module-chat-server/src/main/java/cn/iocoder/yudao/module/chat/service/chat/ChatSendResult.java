@@ -35,6 +35,9 @@ public class ChatSendResult {
     /** 引用证据 chunkId 列表(claims 中 SUPPORTED 断言引用的证据, 保序去重) */
     private List<Long> citations;
 
+    /** 证据摘要列表(专利来源卡片: chunkId/文档名/元数据JSON/引用原文) */
+    private List<EvidenceSummary> evidenceList;
+
     /** 证据评估链路追踪号(ev- 前缀) */
     private String traceId;
 
@@ -46,5 +49,16 @@ public class ChatSendResult {
 
     /** 会话摘要(转人工时填充; 已由 TransferHandler 落库到 ai_conversation.summary 与 SYSTEM 消息) */
     private String summary;
+
+    /** 证据摘要(来源卡片数据) */
+    @lombok.Data
+    @lombok.Builder
+    public static class EvidenceSummary {
+        private Long chunkId;
+        private String documentName;
+        private String versionNo;
+        private String chunkMetadata; // 专利: applicationNo/publicationNo/sectionType/claimNo/pageStart
+        private String content;       // 引用原文(截断)
+    }
 
 }

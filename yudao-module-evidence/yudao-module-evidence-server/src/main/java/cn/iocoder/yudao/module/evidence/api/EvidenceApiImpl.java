@@ -59,6 +59,7 @@ public class EvidenceApiImpl implements EvidenceApi {
                 d.setVersionNo(item.getVersionNo());
                 d.setScore(item.getScore());
                 d.setChannels(item.getChannels() != null ? new ArrayList<>(item.getChannels()) : null);
+                d.setChunkMetadata(item.getChunkMetadata()); // 专利来源卡片
                 evidence.add(d);
             }
         }

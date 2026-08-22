@@ -238,9 +238,36 @@ public class ChatPipeline {
                 .answerable(true)
                 .confidence(resp.getConfidence())
                 .citations(citations)
+                .evidenceList(buildEvidenceSummaries(resp))
                 .traceId(resp.getTraceId())
                 .transferRequired(false)
                 .build();
+    }
+
+    /** 来源卡片数据: 从证据评估响应的 evidence 列表提取摘要(chunkMetadata 携带专利元数据) */
+    private List<ChatSendResult.EvidenceSummary> buildEvidenceSummaries(EvidenceEvaluateRespDTO resp) {
+        if (resp == null || resp.getEvidence() == null || resp.getEvidence().isEmpty()) {
+            return List.of();
+        }
+        java.util.List<ChatSendResult.EvidenceSummary> list = new java.util.ArrayList<>();
+        for (cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO e : resp.getEvidence()) {
+            if (e == null || e.getChunkId() == null) {
+                continue;
+            }
+            String meta = e.getChunkMetadata();
+            // 专利来源卡片只展示带领域元数据的证据(申请号/公布号/章节), 其余折叠为普通引用
+            if (meta == null || meta.isBlank() || !meta.contains("sectionType")) {
+                continue;
+            }
+            list.add(ChatSendResult.EvidenceSummary.builder()
+                    .chunkId(e.getChunkId())
+                    .documentName(e.getDocumentName())
+                    .versionNo(e.getVersionNo())
+                    .chunkMetadata(meta)
+                    .content(e.getContent() == null ? null : cn.hutool.core.util.StrUtil.sub(e.getContent(), 0, 500))
+                    .build());
+        }
+        return list;
     }
 
     /**

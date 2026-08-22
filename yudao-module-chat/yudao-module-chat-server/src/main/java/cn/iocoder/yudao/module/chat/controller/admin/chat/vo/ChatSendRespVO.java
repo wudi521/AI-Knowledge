@@ -24,6 +24,9 @@ public class ChatSendRespVO {
     @Schema(description = "引用证据 chunkId 列表(claims 中 SUPPORTED 断言引用的证据, 保序去重)")
     private List<Long> citations;
 
+    /** 证据摘要(专利来源卡片: chunkId/文档名/元数据/引用原文) */
+    private List<cn.iocoder.yudao.module.chat.service.chat.ChatSendResult.EvidenceSummary> evidenceList;
+
     @Schema(description = "证据评估链路追踪号(ev- 前缀)")
     private String traceId;
 
