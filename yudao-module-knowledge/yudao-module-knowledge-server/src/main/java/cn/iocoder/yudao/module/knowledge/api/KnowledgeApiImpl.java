@@ -194,6 +194,23 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     }
 
     @Override
+    public CommonResult<Boolean> updateDocumentDomainMetadata(Long documentId, String domainMetadata) {
+        // 仅更新当前租户文档(越权 0 容忍); 元数据上限 64KB(不把全文写进元数据)
+        if (domainMetadata != null && domainMetadata.length() > 65536) {
+            return success(false);
+        }
+        AiDocumentDO doc = aiDocumentMapper.selectById(documentId);
+        if (doc == null) {
+            return success(false);
+        }
+        AiDocumentDO update = new AiDocumentDO();
+        update.setId(documentId);
+        update.setDomainMetadata(domainMetadata);
+        aiDocumentMapper.updateById(update);
+        return success(true);
+    }
+
+    @Override
     public CommonResult<List<KnowledgePublishedChunkDTO>> getPublishedChunks(Long kbId) {
         return success(publishedContentCollector.collectPublishedChunks(kbId));
     }

@@ -14,6 +14,7 @@ import cn.iocoder.yudao.module.ingestion.parse.MineruProperties;
 import cn.iocoder.yudao.module.ingestion.parse.OfficeParser;
 import cn.iocoder.yudao.module.ingestion.parse.PdfParser;
 import cn.iocoder.yudao.module.ingestion.parse.TextParser;
+import cn.iocoder.yudao.module.ingestion.domain.DomainIngestionAdapter;
 import cn.iocoder.yudao.module.ingestion.split.Chunk;
 import cn.iocoder.yudao.module.ingestion.split.ParsedDocument;
 import cn.iocoder.yudao.module.ingestion.split.SplitParams;
@@ -68,6 +69,8 @@ public class IngestServiceImpl implements IngestService {
     private TransactionTemplate transactionTemplate;
     @Resource
     private cn.iocoder.yudao.module.ingestion.service.job.IngestionJobService ingestionJobService;
+    @Resource
+    private cn.iocoder.yudao.module.ingestion.domain.DomainIngestionRegistry domainRegistry;
 
     /** embedding 批大小(C3 分批向量化, 防大文档一次性全量) */
     @org.springframework.beans.factory.annotation.Value("${yudao.ingestion.embedding.batch-size:32}")
@@ -124,8 +127,18 @@ public class IngestServiceImpl implements IngestService {
             // 上下文增强(切分前): 标题链回填 + 图片理解(描述生成) + 图片上下文绑定
             contextEnricher.enrich(parsed);
             ingestionJobService.updateStage(jobId, "CHUNK");
+            // 领域接入(Batch B): 按知识库 domainCode 路由领域适配器(未找到回退 GENERAL)
+            DomainIngestionAdapter domainAdapter = domainRegistry.get(document.getDomainCode());
+            String domainMetadata = domainAdapter.extractMetadata(parsed, document);
+            if (domainMetadata != null) {
+                // 持久化领域元数据(失败即入库失败, 不允许元数据与 Chunk 静默不一致)
+                CommonResult<Boolean> metaResult = knowledgeApi.updateDocumentDomainMetadata(documentId, domainMetadata);
+                if (metaResult.isError() || !Boolean.TRUE.equals(metaResult.getCheckedData())) {
+                    throw new RuntimeException("领域元数据持久化失败: " + metaResult.getMsg());
+                }
+            }
             SplitParams splitParams = SplitParams.merge(SplitParams.of(500), document.getChunkStrategyParams());
-            List<Chunk> chunks = splitterFactory.getSplitter(chunkStrategy).split(parsed, splitParams);
+            List<Chunk> chunks = domainAdapter.split(parsed, splitParams, domainMetadata);
             List<String> contents = chunks.stream().map(Chunk::getContent).toList();
             // C3 分批向量化(批大小可配, 默认 32; 防大文档一次性全量占满 JVM/模型请求)
             ingestionJobService.updateStage(jobId, "EMBED");

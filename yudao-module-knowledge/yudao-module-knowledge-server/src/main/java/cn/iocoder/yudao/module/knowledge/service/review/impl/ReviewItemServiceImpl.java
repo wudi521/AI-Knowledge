@@ -91,6 +91,13 @@ public class ReviewItemServiceImpl implements ReviewItemService {
     @Transactional
     public void processAfterParsed(Long versionId) {
         Long docId = aiDocVersionService.getVersion(versionId).getDocId();
+        // 领域短路(专利 MVP): PATENT 文档跳过客服条目抽取/产品提取, 直接进入人工审核(文档级确认后发布)
+        if (isPatentDomain(docId)) {
+            aiDocVersionService.submitForReview(versionId);
+            aiDocumentMapper.updateParseStatus(docId, "REVIEW", null, null);
+            log.info("[processAfterParsed][版本 {} 为 PATENT 文档, 跳过客服抽取, 进入人工审核]", versionId);
+            return;
+        }
         // P0 防线: 版本下无任何片段(解析失败/空文档)时禁止自动发布, 置 FAILED 供重试, 避免空内容上线
         try {
             List<ChunkRespDTO> chunks = ingestionApi.getChunksByVersion(versionId).getCheckedData();
@@ -119,6 +126,21 @@ public class ReviewItemServiceImpl implements ReviewItemService {
             // 无必审条目(FAQ/SOP 且置信度达标) -> 自动发布
             aiDocVersionService.publish(versionId);
             log.info("[processAfterParsed][版本 {} 无必审条目, 自动发布]", versionId);
+        }
+    }
+
+    /** 文档所属知识库是否为 PATENT 领域(无文档/无知识库/非 PATENT 返回 false, 保持 GENERAL 流程) */
+    private boolean isPatentDomain(Long docId) {
+        try {
+            cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO doc = aiDocumentMapper.selectById(docId);
+            if (doc == null || doc.getKbId() == null) {
+                return false;
+            }
+            cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(doc.getKbId());
+            return kb != null && "PATENT".equals(kb.getDomainCode());
+        } catch (Exception e) {
+            log.warn("[isPatentDomain][领域判断异常, 按 GENERAL 处理: {}]", e.getMessage());
+            return false;
         }
     }
 

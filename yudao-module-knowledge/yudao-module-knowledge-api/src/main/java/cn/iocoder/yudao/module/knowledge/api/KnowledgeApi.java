@@ -104,6 +104,17 @@ public interface KnowledgeApi {
     CommonResult<Set<Long>> getVisibleKbIds(@RequestParam("userId") Long userId);
 
     /**
+     * 更新文档领域元数据(入库领域适配器回填; 仅当前租户文档, JSON 上限保护)
+     *
+     * @param documentId 文档编号
+     * @param domainMetadata 领域元数据 JSON
+     * @return 是否成功
+     */
+    @PostMapping(ApiConstants.PREFIX + "/update-document-domain-metadata")
+    CommonResult<Boolean> updateDocumentDomainMetadata(@RequestParam("documentId") Long documentId,
+                                                       @RequestParam("domainMetadata") String domainMetadata);
+
+    /**
      * 批量查询知识库业务范围(检索硬过滤: 命中省市/产品 slot 时按 scope 过滤知识库)
      *
      * @param kbIds 知识库编号列表
