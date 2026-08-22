@@ -87,6 +87,10 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         dto.setParseStatus(doc.getParseStatus());
         dto.setChunkStrategy(doc.getChunkStrategy());
         dto.setChunkStrategyParams(doc.getChunkStrategyParams());
+        dto.setDomainMetadata(doc.getDomainMetadata());
+        // 领域代码: 从知识库带(文档自身无领域字段; 知识库可能已删则 GENERAL)
+        AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(doc.getKbId());
+        dto.setDomainCode(kb != null && kb.getDomainCode() != null ? kb.getDomainCode() : "GENERAL");
         dto.setTenantId(doc.getTenantId());
         // 当前版本编号(管线写 chunk.version_id 用)
         AiDocVersionDO version = aiDocVersionService.getLatestVersion(doc.getId());

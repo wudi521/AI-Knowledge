@@ -24,6 +24,9 @@ public class AiDocumentRespVO {
     @Schema(description = "切分策略参数(JSON)")
     private String chunkStrategyParams;
 
+    @Schema(description = "领域文档元数据(JSON; 专利著录信息等)")
+    private String domainMetadata;
+
     @Schema(description = "文档名", example = "退换货政策.md")
     private String name;
 

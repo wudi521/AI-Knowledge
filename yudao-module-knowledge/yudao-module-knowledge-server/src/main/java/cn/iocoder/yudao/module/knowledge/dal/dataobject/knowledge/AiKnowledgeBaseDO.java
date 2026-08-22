@@ -26,6 +26,8 @@ public class AiKnowledgeBaseDO extends TenantBaseDO {
     private Long id;
     /** 名称 */
     private String name;
+    /** 知识领域: GENERAL/PATENT(默认 GENERAL) */
+    private String domainCode;
     /** 状态: 0 停用 1 启用 */
     private Integer status;
     /** 备注 */

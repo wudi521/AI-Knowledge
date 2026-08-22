@@ -33,4 +33,7 @@ public class AiDocumentSaveReqVO {
     @Schema(description = "切分策略参数(JSON, 可选; 如 {\"maxTokens\":500,\"overlap\":1})")
     private String chunkStrategyParams;
 
+    @Schema(description = "领域文档元数据(JSON, 可选; 入库时由领域适配器回填)")
+    private String domainMetadata;
+
 }

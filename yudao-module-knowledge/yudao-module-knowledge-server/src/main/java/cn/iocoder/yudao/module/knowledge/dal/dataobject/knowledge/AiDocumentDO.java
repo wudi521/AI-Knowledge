@@ -37,6 +37,8 @@ public class AiDocumentDO extends TenantBaseDO {
     private String chunkStrategy;
     /** 切分策略参数(JSON, 覆盖默认; 如 {"maxTokens":500,"overlap":1}) */
     private String chunkStrategyParams;
+    /** 领域文档元数据(JSON: 专利著录信息等; 非领域文档为 null) */
+    private String domainMetadata;
     /** 解析状态: PENDING/PARSING/EMBEDDING/INDEXED/FAILED */
     private String parseStatus;
     /** 失败原因 */

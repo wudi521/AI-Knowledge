@@ -15,6 +15,9 @@ public class AiKnowledgeBaseRespVO {
     @Schema(description = "名称", example = "产品与售后知识库")
     private String name;
 
+    @Schema(description = "知识领域: GENERAL/PATENT", example = "GENERAL")
+    private String domainCode;
+
     @Schema(description = "状态", example = "1")
     private Integer status;
 

@@ -17,6 +17,9 @@ public class AiKnowledgeBaseSaveReqVO {
     @NotEmpty(message = "名称不能为空")
     private String name;
 
+    @Schema(description = "知识领域: GENERAL/PATENT(默认 GENERAL)", example = "GENERAL")
+    private String domainCode;
+
     @Schema(description = "状态", example = "1")
     private Integer status;
 

@@ -29,6 +29,12 @@ public class KnowledgeDocumentRespDTO {
     /** 切分策略参数(JSON, 可选) */
     private String chunkStrategyParams;
 
+    /** 知识库领域代码(GENERAL/PATENT; 供 ingestion 领域适配器路由) */
+    private String domainCode;
+
+    /** 领域文档元数据(JSON; 专利著录信息等) */
+    private String domainMetadata;
+
     /** 租户编号 */
     private Long tenantId;
 
