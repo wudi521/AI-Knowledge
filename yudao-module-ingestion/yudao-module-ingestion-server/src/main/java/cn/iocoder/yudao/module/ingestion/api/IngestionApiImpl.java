@@ -39,6 +39,10 @@ public class IngestionApiImpl implements IngestionApi {
     @Resource
     private MilvusChunkStore milvusChunkStore;
     @Resource
+    private cn.iocoder.yudao.module.ingestion.dal.mysql.AiIngestionJobMapper ingestionJobMapper;
+    @Resource
+    private cn.iocoder.yudao.module.ingestion.dal.mysql.AiIngestionTaskMapper ingestionTaskMapper;
+    @Resource
     private KnowledgeApi knowledgeApi;
 
     @Override
@@ -71,6 +75,41 @@ public class IngestionApiImpl implements IngestionApi {
             }
         }
         return success(true);
+    }
+
+    @Override
+    public CommonResult<cn.iocoder.yudao.module.ingestion.api.dto.IngestionJobTraceDTO> getIngestionJobTrace(Long documentId) {
+        cn.iocoder.yudao.module.ingestion.dal.dataobject.AiIngestionJobDO job =
+                ingestionJobMapper.selectByDocument(documentId);
+        if (job == null) {
+            return success(null);
+        }
+        cn.iocoder.yudao.module.ingestion.api.dto.IngestionJobTraceDTO dto = new cn.iocoder.yudao.module.ingestion.api.dto.IngestionJobTraceDTO();
+        dto.setJobId(job.getId());
+        dto.setDocumentId(job.getDocumentId());
+        dto.setKbId(job.getKbId());
+        dto.setDomainCode(job.getDomainCode());
+        dto.setStatus(job.getStatus());
+        dto.setStage(job.getStage());
+        dto.setErrorMessage(job.getErrorMessage());
+        dto.setRetryCount(job.getRetryCount());
+        dto.setStartedAt(job.getStartedAt());
+        dto.setFinishedAt(job.getFinishedAt());
+        java.util.List<cn.iocoder.yudao.module.ingestion.api.dto.IngestionJobTraceDTO.Task> tasks = new java.util.ArrayList<>();
+        for (cn.iocoder.yudao.module.ingestion.dal.dataobject.AiIngestionTaskDO t : ingestionTaskMapper.selectByJobId(job.getId())) {
+            cn.iocoder.yudao.module.ingestion.api.dto.IngestionJobTraceDTO.Task task = new cn.iocoder.yudao.module.ingestion.api.dto.IngestionJobTraceDTO.Task();
+            task.setStageCode(t.getStageCode());
+            task.setHandler(t.getHandler());
+            task.setStatus(t.getStatus());
+            task.setOutputSummaryJson(t.getOutputSummaryJson());
+            task.setMetricsJson(t.getMetricsJson());
+            task.setErrorMessage(t.getErrorMessage());
+            task.setStartedAt(t.getStartedAt());
+            task.setFinishedAt(t.getFinishedAt());
+            tasks.add(task);
+        }
+        dto.setTasks(tasks);
+        return success(dto);
     }
 
     @Override

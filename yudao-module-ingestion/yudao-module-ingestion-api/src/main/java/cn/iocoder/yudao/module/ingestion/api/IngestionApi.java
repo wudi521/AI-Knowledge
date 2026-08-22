@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.ingestion.api;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
+import cn.iocoder.yudao.module.ingestion.api.dto.IngestionJobTraceDTO;
 import cn.iocoder.yudao.module.ingestion.enums.ApiConstants;
 import feign.FeignIgnore;
 import org.springframework.cloud.openfeign.FeignClient;
@@ -32,6 +33,15 @@ public interface IngestionApi {
      */
     @PostMapping(ApiConstants.PREFIX + "/delete-document-data")
     CommonResult<Boolean> deleteDocumentData(@RequestParam("documentId") Long documentId);
+
+    /**
+     * 查询文档入库任务 Trace(Knowledge Ops Document Trace: job + 阶段时间轴)
+     *
+     * @param documentId 文档编号
+     * @return 任务 Trace(无任务返回 null)
+     */
+    @GetMapping(ApiConstants.PREFIX + "/get-ingestion-job-trace")
+    CommonResult<IngestionJobTraceDTO> getIngestionJobTrace(@RequestParam("documentId") Long documentId);
 
     /**
      * 按版本移除检索索引(版本过期/回滚时调用): MySQL chunk 置 DISABLED(保留历史审计) + ES/Milvus 删除。

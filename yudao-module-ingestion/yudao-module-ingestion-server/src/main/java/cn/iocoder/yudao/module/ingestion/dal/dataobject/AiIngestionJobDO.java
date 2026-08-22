@@ -21,6 +21,12 @@ public class AiIngestionJobDO extends TenantBaseDO {
     /** 文档编号 */
     private Long documentId;
 
+    /** 知识库编号(Knowledge Ops 链路) */
+    private Long kbId;
+
+    /** 领域代码(GENERAL/PATENT) */
+    private String domainCode;
+
     /** 版本编号 */
     private Long versionId;
 
