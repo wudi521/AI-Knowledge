@@ -46,3 +46,12 @@ xxl:
 
 # 模型连接配置与成本单价已全部迁移至数据库 ai_model_config 表(模型管理页维护), 此处不再配置。
 # 启动后系统按 type/scenario 从数据库加载启用模型; 未配置时报错提示, 无 yaml 兜底。
+
+
+# 内部 RPC 认证(login-user 防伪造): 启用后带 login-user 头的请求必须附有效内部签名
+yudao:
+  security:
+    internal-auth:
+      enabled: true
+      secret-key: ${YUDAO_INTERNAL_AUTH_SECRET:dev-internal-secret-2026} # 生产必须环境变量覆盖
+      timestamp-window-seconds: 300

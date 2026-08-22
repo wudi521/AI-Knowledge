@@ -55,6 +55,11 @@ xxl:
 
 # 证据平台业务配置(接线任务 T1 落盘, 供后续任务读取)
 yudao:
+  security:
+    internal-auth: # 内部 RPC 认证(login-user 防伪造): 启用后带 login-user 头的请求必须附有效内部签名
+      enabled: true
+      secret-key: ${YUDAO_INTERNAL_AUTH_SECRET:dev-internal-secret-2026} # 生产必须环境变量覆盖
+      timestamp-window-seconds: 300
   evidence:
     sufficiency:
       answer-threshold: 0.75 # 可作答判定: 证据充分度得分阈值(得分在 0~1)

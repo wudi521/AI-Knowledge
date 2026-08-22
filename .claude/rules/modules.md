@@ -213,3 +213,26 @@
   - `yudao-ui/yudao-ui-mall-uniapp/README.md`
 - **File count**: 5
 
+
+## deploy
+- **Location**: `deploy/`
+- **Purpose**: Deployment configuration
+- **Key files**:
+  - `deploy/clarify-verify.sh`
+  - `deploy/evidence-verify.sh`
+  - `deploy/llama-rerank.sh`
+  - `deploy/mineru/README.md`
+  - `deploy/model-gateway-verify.sh`
+- **File count**: 10
+
+
+## docs
+- **Location**: `docs/`
+- **Purpose**: Documentation
+- **Key files**:
+  - `docs/.DS_Store`
+  - `docs/1-领域画像.md`
+  - `docs/2-需求确认单.md`
+  - `docs/3-PRD产品需求文档.md`
+  - `docs/4-技术方案.md`
+- **File count**: 46

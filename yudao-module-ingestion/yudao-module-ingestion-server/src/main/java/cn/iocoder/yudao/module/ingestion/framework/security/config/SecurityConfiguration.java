@@ -25,10 +25,12 @@ public class SecurityConfiguration {
                         .requestMatchers("/swagger-ui").permitAll()
                         .requestMatchers("/swagger-ui/**").permitAll();
                 // Spring Boot Actuator 的安全配置
-                registry.requestMatchers("/actuator").permitAll()
-                        .requestMatchers("/actuator/**").permitAll();
-                // Druid 监控
-                registry.requestMatchers("/druid/**").permitAll();
+                // Actuator 仅开放最小存活/就绪探针, 其余端点需登录(内部认证)
+                registry.requestMatchers("/actuator/health").permitAll()
+                        .requestMatchers("/actuator/health/**").permitAll()
+                        .requestMatchers("/actuator/readiness").permitAll()
+                        .requestMatchers("/actuator/liveness").permitAll();
+                // Druid 监控: 移除匿名放行, 需登录后访问(生产安全)
                 // 健康检查(骨架自定义)
                 registry.requestMatchers("/ingestion/health/**").permitAll();
                 // 管理后台 Chunk 接口需要登录鉴权(在下方 PREFIX permitAll 之前匹配)

@@ -55,6 +55,10 @@ public class TokenAuthenticationFilter implements GlobalFilter, Ordered {
 
     private final WebClient webClient;
 
+    /** 内部认证签名器(login-user 头可信来源标记) */
+    @jakarta.annotation.Resource
+    private InternalAuthSigner internalAuthSigner;
+
     /**
      * 登录用户的本地缓存
      *
@@ -103,9 +107,16 @@ public class TokenAuthenticationFilter implements GlobalFilter, Ordered {
 
             // 2.1 有用户，则设置登录用户
             SecurityFrameworkUtils.setLoginUser(finalExchange, user);
-            // 2.2 将 user 并设置到 login-user 的请求头，使用 json 存储值
+            // 2.2 将 user 并设置到 login-user 的请求头 + 内部签名(供业务服务校验 login-user 来源可信)
+            String loginUserValue = SecurityFrameworkUtils.encodeLoginUser(user);
             ServerWebExchange newExchange = finalExchange.mutate()
-                    .request(builder -> SecurityFrameworkUtils.setLoginUserHeader(builder, user)).build();
+                    .request(builder -> {
+                        builder.header(SecurityFrameworkUtils.LOGIN_USER_HEADER, loginUserValue);
+                        internalAuthSigner.sign(builder,
+                                finalExchange.getRequest().getMethod().name(),
+                                finalExchange.getRequest().getURI().getPath(),
+                                loginUserValue);
+                    }).build();
             return chain.filter(newExchange);
         });
     }

@@ -25,7 +25,7 @@ public class SecurityFrameworkUtils {
 
     private static final String AUTHORIZATION_BEARER = "Bearer";
 
-    private static final String LOGIN_USER_HEADER = "login-user";
+    public static final String LOGIN_USER_HEADER = "login-user";
 
     private static final String LOGIN_USER_ID_ATTR = "login-user-id";
     private static final String LOGIN_USER_TYPE_ATTR = "login-user-type";
@@ -105,12 +105,18 @@ public class SecurityFrameworkUtils {
      * @param user 用户
      */
     public static void setLoginUserHeader(ServerHttpRequest.Builder builder, LoginUser user) {
+        builder.header(LOGIN_USER_HEADER, encodeLoginUser(user));
+    }
+
+    /**
+     * 序列化并 URL 编码 LoginUser(供 login-user 头与内部签名使用同一值)
+     */
+    public static String encodeLoginUser(LoginUser user) {
         try {
             String userStr = JsonUtils.toJsonString(user);
-            userStr = URLEncoder.encode(userStr, StandardCharsets.UTF_8); // 编码，避免中文乱码
-            builder.header(LOGIN_USER_HEADER, userStr);
+            return URLEncoder.encode(userStr, StandardCharsets.UTF_8); // 编码，避免中文乱码
         } catch (Exception ex) {
-            log.error("[setLoginUserHeader][序列化 user({}) 发生异常]", user, ex);
+            log.error("[encodeLoginUser][序列化 user({}) 发生异常]", user, ex);
             throw ex;
         }
     }

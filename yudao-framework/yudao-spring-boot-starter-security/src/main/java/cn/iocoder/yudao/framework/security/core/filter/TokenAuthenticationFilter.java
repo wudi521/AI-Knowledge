@@ -8,11 +8,13 @@ import cn.iocoder.yudao.framework.common.util.json.JsonUtils;
 import cn.iocoder.yudao.framework.common.util.servlet.ServletUtils;
 import cn.iocoder.yudao.framework.security.config.SecurityProperties;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
+import cn.iocoder.yudao.framework.security.core.rpc.InternalAuthService;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.framework.web.core.handler.GlobalExceptionHandler;
 import cn.iocoder.yudao.framework.web.core.util.WebFrameworkUtils;
 import cn.iocoder.yudao.framework.common.biz.system.oauth2.OAuth2TokenCommonApi;
 import cn.iocoder.yudao.framework.common.biz.system.oauth2.dto.OAuth2AccessTokenCheckRespDTO;
+import org.springframework.beans.factory.annotation.Autowired;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -41,6 +43,10 @@ public class TokenAuthenticationFilter extends OncePerRequestFilter {
     private final GlobalExceptionHandler globalExceptionHandler;
 
     private final OAuth2TokenCommonApi oauth2TokenApi;
+
+    /** 内部认证服务(login-user 防伪造; 未引入该 starter 配置时为 null, 跳过校验) */
+    @Autowired(required = false)
+    private InternalAuthService internalAuthService;
 
     @Override
     @SuppressWarnings("NullableProblems")
@@ -131,6 +137,20 @@ public class TokenAuthenticationFilter extends OncePerRequestFilter {
     private LoginUser buildLoginUserByHeader(HttpServletRequest request) {
         String loginUserStr = request.getHeader(SecurityFrameworkUtils.LOGIN_USER_HEADER);
         if (StrUtil.isEmpty(loginUserStr)) {
+            return null;
+        }
+        // 内部认证(login-user 防伪造): 带 login-user 头的请求必须附有效内部签名(Feign 拦截器/网关生成),
+        // 否则视为外部伪造, 不信任该头(返回 null, 请求按匿名继续)。认证未启用时跳过(兼容现状)。
+        if (internalAuthService != null && internalAuthService.isReady()
+                && !internalAuthService.verify(
+                        request.getHeader(InternalAuthService.HEADER_APP),
+                        request.getMethod(),
+                        request.getRequestURI(),
+                        request.getHeader(InternalAuthService.HEADER_TIMESTAMP),
+                        loginUserStr,
+                        request.getHeader(InternalAuthService.HEADER_SIGNATURE))) {
+            log.warn("[buildLoginUserByHeader][login-user 头签名校验失败, 视为伪造并剥离: app={} path={}]",
+                    request.getHeader(InternalAuthService.HEADER_APP), request.getRequestURI());
             return null;
         }
         try {

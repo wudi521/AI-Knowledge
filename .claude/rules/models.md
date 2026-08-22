@@ -73,3 +73,39 @@
 
 ## Migration notes
 - No migrations detected
+
+## New Models (added 2026-08-22)
+- `yudao-module-model/.flattened-pom.xml`
+- `yudao-module-model/yudao-module-model-api/.flattened-pom.xml`
+- `yudao-module-model/yudao-module-model-api/src/main/java/cn/iocoder/yudao/module/model/api/PromptApi.java`
+- `yudao-module-model/yudao-module-model-api/src/main/java/cn/iocoder/yudao/module/model/api/dto/ModelChatReqDTO.java`
+- `yudao-module-model/yudao-module-model-api/src/main/java/cn/iocoder/yudao/module/model/api/dto/ModelEmbeddingReqDTO.java`
+- `yudao-module-model/yudao-module-model-api/src/main/java/cn/iocoder/yudao/module/model/api/dto/ModelRerankReqDTO.java`
+- `yudao-module-model/yudao-module-model-server/.flattened-pom.xml`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/api/PromptApiImpl.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/controller/admin/cost/AiCostController.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/controller/admin/prompt/AiPromptController.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/controller/admin/prompt/vo/AiPromptEnableReqVO.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/controller/admin/prompt/vo/AiPromptGrayReqVO.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/controller/admin/prompt/vo/AiPromptKeyInfoRespVO.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/controller/admin/prompt/vo/AiPromptPageReqVO.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/controller/admin/prompt/vo/AiPromptRespVO.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/controller/admin/prompt/vo/AiPromptSaveReqVO.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/controller/admin/prompt/vo/AiPromptUpdateReqVO.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/dal/dataobject/calllog/AiModelCallLogDO.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/dal/dataobject/prompt/AiPromptDO.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/dal/mysql/calllog/AiModelCallLogMapper.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/dal/mysql/prompt/AiPromptMapper.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/enums/ModelLogRecordConstants.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/cost/CostService.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/gateway/CallMeter.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/gateway/CircuitBreaker.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/gateway/ModelCallResult.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/gateway/ModelGateway.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/gateway/ModelInvokeException.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/gateway/ModelInvoker.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/gateway/ModelResolver.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/gateway/RetryPolicy.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/prompt/AiPromptService.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/prompt/PromptCache.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/prompt/impl/AiPromptServiceImpl.java`

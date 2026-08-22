@@ -1,5 +1,10 @@
 # 检索平台 本地开发配置
 yudao:
+  security:
+    internal-auth: # 内部 RPC 认证(login-user 防伪造): 启用后带 login-user 头的请求必须附有效内部签名
+      enabled: true
+      secret-key: ${YUDAO_INTERNAL_AUTH_SECRET:dev-internal-secret-2026} # 生产必须环境变量覆盖
+      timestamp-window-seconds: 300
   ai:
     es:
       index: ai_chunk_bm25        # ES BM25 索引(别名, 指向 ai_chunk_bm25_v2)

@@ -54,6 +54,11 @@ spring:
 
 # Milvus 2.4.13 :19530(向量召回, 技术方案 5.3)
 yudao:
+  security:
+    internal-auth: # 内部 RPC 认证(login-user 防伪造): 启用后带 login-user 头的请求必须附有效内部签名
+      enabled: true
+      secret-key: ${YUDAO_INTERNAL_AUTH_SECRET:dev-internal-secret-2026} # 生产必须环境变量覆盖
+      timestamp-window-seconds: 300
   ai:
     milvus:
       host: 127.0.0.1
