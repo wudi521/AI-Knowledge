@@ -42,6 +42,9 @@ public class ModelInvoker {
      */
     private RestTemplate restTemplate;
 
+    @Resource
+    private cn.iocoder.yudao.module.model.service.secret.SecretCryptoService secretCryptoService;
+
     @Value("${yudao.model.connect-timeout-ms:5000}")
     private int connectTimeoutMs;
 
@@ -70,10 +73,24 @@ public class ModelInvoker {
     }
 
     /**
-     * 调用注册表中的模型配置
+     * 调用注册表中的模型配置(API Key 调用瞬间解密, 不缓存到可序列化对象)
      */
     public ModelCallResult invoke(AiModelConfigDO cfg, InvokeRequest req) {
-        return doCall(req.type(), cfg.getBaseUrl(), cfg.getModelName(), cfg.getApiKey(), cfg, req);
+        return doCall(req.type(), cfg.getBaseUrl(), cfg.getModelName(), resolveApiKey(cfg), cfg, req);
+    }
+
+    /** 解析 API Key: 优先密文解密(A2 加密存储), 旧明文兼容(迁移前) */
+    private String resolveApiKey(AiModelConfigDO cfg) {
+        if (cfg == null) {
+            return null;
+        }
+        if (cn.hutool.core.util.StrUtil.isNotBlank(cfg.getApiKeyCipher())) {
+            String decrypted = secretCryptoService.decrypt(cfg.getApiKeyCipher(), cfg.getApiKeyNonce(), cfg.getApiKeyKeyVersion());
+            if (decrypted != null) {
+                return decrypted;
+            }
+        }
+        return cfg.getApiKey(); // 旧明文兼容
     }
 
     private ModelCallResult doCall(String type, String baseUrl, String modelName, String apiKey,

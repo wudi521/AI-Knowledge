@@ -31,4 +31,7 @@ public interface AiModelConfigService {
     /** 获得指定类型的已启用模型列表(供知识库等下拉使用) */
     List<AiModelConfigDO> getEnableModelListByType(String type);
 
+    /** 遗留明文 API Key 迁移为密文(幂等, 返回处理条数); 受保护管理操作 */
+    int encryptLegacyApiKeys();
+
 }

@@ -55,3 +55,6 @@ yudao:
       enabled: true
       secret-key: ${YUDAO_INTERNAL_AUTH_SECRET:dev-internal-secret-2026} # 生产必须环境变量覆盖
       timestamp-window-seconds: 300
+  model:
+    secret:
+      master-key: ${YUDAO_SECRET_MASTER_KEY:} # 敏感字段(AES-256-GCM)主密钥, 32字节hex; 生产必须环境变量提供

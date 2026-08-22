@@ -71,6 +71,13 @@ public class AiModelConfigController {
         return success(BeanUtils.toBean(pageResult, AiModelConfigRespVO.class));
     }
 
+    @PostMapping("/encrypt-legacy-api-keys")
+    @Operation(summary = "遗留明文 API Key 加密迁移(幂等; 需配置 YUDAO_SECRET_MASTER_KEY)")
+    @PreAuthorize("@ss.hasPermission('model:model-config:update')")
+    public CommonResult<Integer> encryptLegacyApiKeys() {
+        return success(aiModelConfigService.encryptLegacyApiKeys());
+    }
+
     @GetMapping("/list")
     @Operation(summary = "获得指定类型的已启用模型列表(供下拉)")
     @Parameter(name = "type", description = "类型: chat/embedding/rerank", required = true)

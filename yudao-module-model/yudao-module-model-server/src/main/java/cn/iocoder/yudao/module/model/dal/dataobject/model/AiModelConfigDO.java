@@ -36,8 +36,14 @@ public class AiModelConfigDO extends BaseDO {
     private String modelName;
     /** 服务地址 */
     private String baseUrl;
-    /** API 密钥 */
+    /** API 密钥(旧明文兼容字段; 新写只写密文, 迁移后置空) */
     private String apiKey;
+    /** API Key 密文(base64; AES-256-GCM, 见 SecretCryptoService) */
+    private String apiKeyCipher;
+    /** API Key 加密 nonce(base64) */
+    private String apiKeyNonce;
+    /** API Key 密钥版本(轮换兼容) */
+    private Integer apiKeyKeyVersion;
     /** 向量维度(embedding 类型用) */
     private Integer dimensions;
     /** 输入单价(每百万 token, 元; 成本估算用, 未配置不估金额) */
