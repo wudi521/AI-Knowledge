@@ -97,7 +97,7 @@ public class IngestionApiImpl implements IngestionApi {
     }
 
     @Override
-    public CommonResult<Boolean> indexVersion(Long versionId, Long kbId, Long tenantId) {
+    public CommonResult<Boolean> indexVersion(Long versionId, Long kbId, Long tenantId, Long documentId) {
         // 幂等契约: 覆盖式重写 Milvus/ES; "置 chunk PUBLISHED"必须是最后一步
         List<ChunkDO> chunks = chunkMapper.selectListByVersionId(versionId);
         if (CollUtil.isEmpty(chunks)) {
@@ -111,7 +111,8 @@ public class IngestionApiImpl implements IngestionApi {
         for (ChunkDO chunk : chunks) {
             chunkIds.add(chunk.getId());
             vectors.add(parseEmbedding(chunk.getEmbedding()));
-            esItems.add(new Object[]{chunk.getId(), tenantId, kbId, chunk.getContent()});
+            esItems.add(new Object[]{chunk.getId(), tenantId, kbId, chunk.getContent(),
+                    versionId, documentId, chunk.getChunkRole()});
         }
         esChunkStore.insertChunks(esItems);
         // Milvus 批量写

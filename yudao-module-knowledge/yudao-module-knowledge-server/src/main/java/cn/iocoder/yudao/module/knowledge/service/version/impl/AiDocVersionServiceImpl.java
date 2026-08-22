@@ -56,6 +56,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     @Resource
     private ConflictService conflictService;
     @Resource
+    private org.springframework.transaction.support.TransactionTemplate transactionTemplate;
+    @Resource
     private IntentSummarizer intentSummarizer;
     @Resource
     private SlotSummarizer slotSummarizer;
@@ -137,7 +139,8 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
     }
 
     @Override
-    @Transactional
+    // C5 两阶段发布: 不再整体 @Transactional(事务内禁远程 ES/Milvus);
+    // 校验门禁 → 事务外索引(失败不发布, 旧版本继续服务) → 短事务状态流转
     @LogRecord(type = PUBLISH_TYPE, subType = PUBLISH_SUB_TYPE, bizNo = "{{#versionId}}",
             success = PUBLISH_SUCCESS)
     public void publish(Long versionId) {
@@ -157,7 +160,7 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
             }
             if (doc != null && hasUnpublishedChunks(versionId)) {
                 log.warn("[publish][版本 {} 已发布但存在未发布片段, 重跑索引同步]", versionId);
-                CommonResult<Boolean> result = ingestionApi.indexVersion(versionId, doc.getKbId(), doc.getTenantId());
+                CommonResult<Boolean> result = ingestionApi.indexVersion(versionId, doc.getKbId(), doc.getTenantId(), doc.getId());
                 if (result.isError()) {
                     throw new ServiceException(result.getCode(), result.getMsg());
                 }
@@ -221,35 +224,30 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
             log.error("[publish][版本 {} 评测闸门 RPC 异常, 保守阻断: {}]", versionId, e.getMessage(), e);
             throw new ServiceException(VERSION_GATE_BLOCKED);
         }
-        // 三写: 由 ingestion 从 MySQL embedding 写 Milvus/ES(Task 4 填充实现)
-        CommonResult<Boolean> result = ingestionApi.indexVersion(versionId, doc.getKbId(), doc.getTenantId());
+        // C5 阶段2(事务外): 由 ingestion 从 MySQL embedding 写 Milvus/ES(幂等覆盖式);
+        // 失败 → 不置 PUBLISHED, 旧 PUBLISHED 版本继续服务(调用方可重试)
+        CommonResult<Boolean> result = ingestionApi.indexVersion(versionId, doc.getKbId(), doc.getTenantId(), doc.getId());
         if (result.isError()) {
             throw new ServiceException(result.getCode(), result.getMsg());
         }
-        // 状态流转
-        AiDocVersionDO update = new AiDocVersionDO();
-        update.setId(versionId);
-        update.setStatus(VersionStatusEnum.PUBLISHED.getStatus());
-        update.setEffectiveFrom(LocalDateTime.now());
-        update.setReviewer(currentNickname());
-        aiDocVersionMapper.updateById(update);
-        // 旧版本过期
-        expireOldVersions(version.getDocId(), versionId);
-        // 文档置已发布
-        aiDocumentMapper.updateParseStatus(doc.getId(), "PUBLISHED", null, null);
-        // 异步 LLM 意图/槽位总结: 等发布事务提交后再触发(保证异步线程能读到 PUBLISHED 版本), 不阻断发布响应; 失败仅告警, 可手动 summarize 重跑
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    intentSummarizer.summarizeByKbAsync(doc.getKbId());
-                    slotSummarizer.summarizeByKbAsync(doc.getKbId());
-                }
-            });
-        } else {
-            intentSummarizer.summarizeByKbAsync(doc.getKbId());
-            slotSummarizer.summarizeByKbAsync(doc.getKbId());
-        }
+        // C5 阶段3(短事务): 状态流转 + 旧版本过期(纯 SQL) + 文档状态
+        transactionTemplate.executeWithoutResult(status -> {
+            AiDocVersionDO update = new AiDocVersionDO();
+            update.setId(versionId);
+            update.setStatus(VersionStatusEnum.PUBLISHED.getStatus());
+            update.setEffectiveFrom(LocalDateTime.now());
+            update.setReviewer(currentNickname());
+            aiDocVersionMapper.updateById(update);
+            // 旧版本过期(仅版本状态, 索引清理在事务外)
+            expireOldVersions(version.getDocId(), versionId);
+            // 文档置已发布
+            aiDocumentMapper.updateParseStatus(doc.getId(), "PUBLISHED", null, null);
+        });
+        // C5 阶段3.5(事务外): 级联清理被过期版本的检索索引(MySQL chunk 置 DISABLED + ES/Milvus 删除)
+        cleanupExpiredVersionIndexes(version.getDocId(), versionId);
+        // 异步 LLM 意图/槽位总结(无活跃事务, 直接触发; 失败仅告警, 可手动 summarize 重跑)
+        intentSummarizer.summarizeByKbAsync(doc.getKbId());
+        slotSummarizer.summarizeByKbAsync(doc.getKbId());
         log.info("[publish][版本 {} 发布完成, 文档 {}]", versionId, doc.getId());
     }
 
@@ -296,28 +294,34 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
 
     @Override
     public void expireOldVersions(Long docId, Long exceptVersionId) {
-        // 先查被过期的已发布版本(用于级联清理检索索引)
-        List<AiDocVersionDO> expiredVersions = aiDocVersionMapper.selectList(
-                new LambdaQueryWrapper<AiDocVersionDO>()
-                        .eq(AiDocVersionDO::getDocId, docId)
-                        .eq(AiDocVersionDO::getStatus, VersionStatusEnum.PUBLISHED.getStatus())
-                        .ne(AiDocVersionDO::getId, exceptVersionId));
-        // 单条 UPDATE 原子过期旧已发布版本, 收窄并发发布竞态窗口
+        // 单条 UPDATE 原子过期旧已发布版本, 收窄并发发布竞态窗口(纯 SQL, 可在事务内执行)
         aiDocVersionMapper.update(null, new LambdaUpdateWrapper<AiDocVersionDO>()
                 .eq(AiDocVersionDO::getDocId, docId)
                 .eq(AiDocVersionDO::getStatus, VersionStatusEnum.PUBLISHED.getStatus())
                 .ne(AiDocVersionDO::getId, exceptVersionId)
                 .set(AiDocVersionDO::getStatus, VersionStatusEnum.EXPIRED.getStatus())
                 .set(AiDocVersionDO::getEffectiveTo, LocalDateTime.now()));
-        // P0-2 修复: 旧版本 chunk 从检索层移除(MySQL 置 DISABLED + ES/Milvus 删除), 失败仅告警不阻断
+    }
+
+    /**
+     * 事务外级联清理被过期版本的检索索引(C5 两阶段发布: 提交事务后调用)。
+     * 旧版本 chunk 从检索层移除(MySQL 置 DISABLED + ES/Milvus 删除), 失败仅告警不阻断。
+     */
+    private void cleanupExpiredVersionIndexes(Long docId, Long exceptVersionId) {
+        List<AiDocVersionDO> expiredVersions = aiDocVersionMapper.selectList(
+                new LambdaQueryWrapper<AiDocVersionDO>()
+                        .eq(AiDocVersionDO::getDocId, docId)
+                        .eq(AiDocVersionDO::getStatus, VersionStatusEnum.EXPIRED.getStatus())
+                        .ne(AiDocVersionDO::getId, exceptVersionId)
+                        .orderByDesc(AiDocVersionDO::getUpdateTime));
         for (AiDocVersionDO v : expiredVersions) {
             try {
                 CommonResult<Boolean> result = ingestionApi.deleteVersionIndex(v.getId());
                 if (result.isError()) {
-                    log.error("[expireOldVersions][版本 {} 索引清理失败: {}]", v.getId(), result.getMsg());
+                    log.error("[cleanupExpiredVersionIndexes][版本 {} 索引清理失败: {}]", v.getId(), result.getMsg());
                 }
             } catch (Exception e) {
-                log.error("[expireOldVersions][版本 {} 索引清理异常: {}]", v.getId(), e.getMessage());
+                log.error("[cleanupExpiredVersionIndexes][版本 {} 索引清理异常: {}]", v.getId(), e.getMessage());
             }
         }
     }

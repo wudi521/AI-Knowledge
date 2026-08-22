@@ -101,6 +101,16 @@ public class MilvusChunkStore {
      * @param kbId 知识库
      */
     public void insertVectors(List<Long> chunkIds, List<List<Float>> vectors, Long tenantId, Long kbId) {
+        // C6 写入校验: 数量一致 + 向量维度与集合维度一致(防错位/维度错误静默写入)
+        if (chunkIds == null || vectors == null || chunkIds.size() != vectors.size()) {
+            throw new RuntimeException("Milvus 写入数量不匹配: chunkIds=" + (chunkIds == null ? 0 : chunkIds.size())
+                    + ", vectors=" + (vectors == null ? 0 : vectors.size()));
+        }
+        for (List<Float> v : vectors) {
+            if (v == null || v.size() != dim) {
+                throw new RuntimeException("Milvus 向量维度错误: 期望 " + dim + ", 实际 " + (v == null ? 0 : v.size()));
+            }
+        }
         // 写入前确保集合存在(幂等): 集合被外部删除/清空后运行期可自愈
         ensureCollection();
         List<InsertParam.Field> fields = new ArrayList<>();

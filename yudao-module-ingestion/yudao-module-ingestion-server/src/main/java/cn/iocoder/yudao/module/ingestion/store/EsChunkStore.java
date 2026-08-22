@@ -96,6 +96,10 @@ public class EsChunkStore {
                     "chunk_id", Map.of("type", "long"),
                     "tenant_id", Map.of("type", "long"),
                     "kb_id", Map.of("type", "long"),
+                    "document_id", Map.of("type", "long"),
+                    "version_id", Map.of("type", "long"),
+                    "parent_id", Map.of("type", "long"),
+                    "chunk_role", Map.of("type", "keyword"),
                     "status", Map.of("type", "keyword"),
                     "content", Map.of("type", "text", "analyzer", "ik_max_word", "search_analyzer", "ik_smart")
             )));
@@ -130,7 +134,8 @@ public class EsChunkStore {
     /**
      * 批量写入 BM25 文档(_bulk, 一次网络往返; P2-19 替代逐条 PUT)
      *
-     * @param items 每项为 [chunkId, tenantId, kbId, content]
+     * @param items 每项为 [chunkId, tenantId, kbId, content, versionId, documentId, chunkRole]
+     *              (C6: 携带版本/文档/角色标量, 供版本过滤与审计)
      */
     public void insertChunks(List<Object[]> items) {
         if (items == null || items.isEmpty()) {
@@ -144,20 +149,58 @@ public class EsChunkStore {
                 Long tenantId = (Long) item[1];
                 Long kbId = (Long) item[2];
                 String content = (String) item[3];
+                Long versionId = item.length > 4 ? (Long) item[4] : null;
+                Long documentId = item.length > 5 ? (Long) item[5] : null;
+                String chunkRole = item.length > 6 ? (String) item[6] : null;
                 bulk.append("{\"index\":{\"_index\":\"").append(index).append("\",\"_id\":\"").append(chunkId).append("\"}}\n");
                 Map<String, Object> doc = new HashMap<>();
                 doc.put("chunk_id", chunkId);
                 doc.put("tenant_id", tenantId);
                 doc.put("kb_id", kbId);
+                doc.put("document_id", documentId);
+                doc.put("version_id", versionId);
+                doc.put("chunk_role", chunkRole);
                 doc.put("status", "PUBLISHED");
                 doc.put("content", content);
                 bulk.append(objectMapper.writeValueAsString(doc)).append("\n");
             }
             Request request = new Request("POST", "/_bulk");
             request.setEntity(new StringEntity(bulk.toString(), ContentType.create("application/x-ndjson", StandardCharsets.UTF_8)));
-            client.performRequest(request);
+            org.elasticsearch.client.Response response = client.performRequest(request);
+            // C6: 解析 bulk 响应——HTTP 200 不代表全部成功, item 级 error 必须识别并重试
+            int failedItems = countBulkFailures(response);
+            if (failedItems > 0) {
+                throw new RuntimeException("ES bulk 写入部分失败: " + failedItems + " 条 item 失败");
+            }
+        } catch (RuntimeException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException("ES 批量写入失败: " + e.getMessage(), e);
+        }
+    }
+
+    /** 解析 _bulk 响应 items 中的失败数(HTTP 200 但 item 级 error) */
+    private int countBulkFailures(org.elasticsearch.client.Response response) {
+        try {
+            Map<String, Object> body = objectMapper.readValue(
+                    org.apache.http.util.EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8), Map.class);
+            Object itemsObj = body.get("items");
+            if (!(itemsObj instanceof List<?> items)) {
+                return 0;
+            }
+            int failed = 0;
+            for (Object itemObj : items) {
+                if (itemObj instanceof Map<?, ?> item) {
+                    Object op = item.values().stream().findFirst().orElse(null);
+                    if (op instanceof Map<?, ?> opMap && opMap.get("error") != null) {
+                        failed++;
+                    }
+                }
+            }
+            return failed;
+        } catch (Exception e) {
+            // 响应解析失败: 保守视为全部失败(可重试), 不静默放行
+            return Integer.MAX_VALUE;
         }
     }
 
