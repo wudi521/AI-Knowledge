@@ -4,6 +4,8 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
+import cn.iocoder.yudao.module.evidence.dal.dataobject.evidence.AnswerClaimDO;
+import cn.iocoder.yudao.module.evidence.dal.dataobject.evidence.AnswerCitationDO;
 import cn.iocoder.yudao.module.evidence.dal.dataobject.evidence.EvidenceEvalDO;
 import cn.iocoder.yudao.module.evidence.dal.dataobject.evidence.EvidenceRecordDO;
 import cn.iocoder.yudao.module.evidence.dal.mysql.evidence.EvidenceEvalMapper;
@@ -43,6 +45,10 @@ public class EvidenceRecorder {
     private EvidenceEvalMapper evalMapper;
     @Resource
     private EvidenceRecordMapper recordMapper;
+    @Resource
+    private cn.iocoder.yudao.module.evidence.dal.mysql.evidence.AnswerClaimMapper answerClaimMapper;
+    @Resource
+    private cn.iocoder.yudao.module.evidence.dal.mysql.evidence.AnswerCitationMapper answerCitationMapper;
 
     /**
      * 落库(会话级 + 证据级)
@@ -90,10 +96,49 @@ public class EvidenceRecorder {
                     recordMapper.insert(record);
                 }
             }
+
+            // 3. F1 Evidence Lineage: claim 逐条落库 + 引用汇总(失败不阻断)
+            recordClaimsAndCitations(resp, evidences);
         } catch (Exception e) {
             // 落库失败不阻断响应
             log.warn("[record][traceId({}) 证据落库失败, 跳过: {}]",
                     resp != null ? resp.getTraceId() : null, e.getMessage(), e);
+        }
+    }
+
+    /** F1: 断言逐条 + 引用汇总落库(claim → 证据片段可追溯; 引用锚定 SUPPORTED 证据) */
+    private void recordClaimsAndCitations(EvidenceEvaluateRespVO resp, List<Evidence> evidences) {
+        if (resp == null || resp.getClaims() == null || resp.getClaims().isEmpty()) {
+            return;
+        }
+        java.util.List<Long> citedChunkIds = new java.util.ArrayList<>();
+        for (EvidenceEvaluateRespVO.ClaimVO claim : resp.getClaims()) {
+            if (claim == null || StrUtil.isBlank(claim.getText())) {
+                continue;
+            }
+            AnswerClaimDO claimDO = new AnswerClaimDO();
+            claimDO.setTraceId(resp.getTraceId());
+            claimDO.setClaimText(StrUtil.maxLength(claim.getText(), 1024));
+            claimDO.setVerdict(StrUtil.isBlank(claim.getVerdict()) ? "UNSUPPORTED" : claim.getVerdict());
+            Long chunkId = null;
+            if (claim.getEvidenceIndex() != null && claim.getEvidenceIndex() >= 0
+                    && evidences != null && claim.getEvidenceIndex() < evidences.size()) {
+                chunkId = evidences.get(claim.getEvidenceIndex()).getChunkId();
+            }
+            claimDO.setEvidenceChunkId(chunkId);
+            answerClaimMapper.insert(claimDO);
+            if ("SUPPORTED".equalsIgnoreCase(claim.getVerdict()) && chunkId != null) {
+                citedChunkIds.add(chunkId);
+            }
+        }
+        // 引用汇总(一次回答一行, 唯一 trace)
+        if (!citedChunkIds.isEmpty()) {
+            AnswerCitationDO citation = new AnswerCitationDO();
+            citation.setTraceId(resp.getTraceId());
+            citation.setQuery(StrUtil.maxLength(resp.getQuery(), 500));
+            citation.setAnswerHash(resp.getAnswer() == null ? null : cn.hutool.crypto.SecureUtil.sha256(resp.getAnswer()));
+            citation.setCitationChunkIds(cn.hutool.json.JSONUtil.toJsonStr(citedChunkIds));
+            answerCitationMapper.insert(citation);
         }
     }
 

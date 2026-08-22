@@ -54,6 +54,8 @@ public class SearchService {
     private ResultFilter resultFilter;
     @Resource
     private ModelApi modelApi;
+    @Resource
+    private cn.iocoder.yudao.module.retrieval.dal.mysql.trace.RetrievalTraceMapper retrievalTraceMapper;
 
     public RetrievalRespVO search(RetrievalReqVO req) {
         return search(req.getQuery(), req.getKbIds(), req.getTopK(),
@@ -75,6 +77,7 @@ public class SearchService {
      */
     public RetrievalRespVO search(String query, List<Long> reqKbIds, Integer topK, Long tenantId, Long userId,
                                   List<ChatTurnDTO> history) {
+        long startMs = System.currentTimeMillis(); // F5 检索追踪耗时
         // 1. 参数归一: topK 默认 5, 上限 20
         int topKFinal = topK == null || topK <= 0 ? 5 : Math.min(topK, RECALL_TOP_K);
 
@@ -235,6 +238,7 @@ public class SearchService {
                     bm25HitIds, vectorHitIds, parentMap, truncatedParents));
         }
         resp.setResults(results);
+        recordTrace(query, resp, variants.size(), startMs); // F5 检索追踪
         // 12. 产品/品牌一致性门禁(结构化代码判定, 不依赖 LLM 提示词):
         //     问题明确涉及产品而证据文档均不覆盖该产品 -> 拒绝作答, 明示原因。
         //     降级原则(degrade-never-block): 检索有结果但文档信息 RPC 失败(docInfoMap 为空)
@@ -437,6 +441,28 @@ public class SearchService {
             return "SCOPE_FILTER_HYBRID_RAG";
         }
         return "HYBRID_RAG";
+    }
+
+    /** F5 检索追踪落库(审计/评测; 失败不阻断) */
+    private void recordTrace(String query, RetrievalRespVO resp, int variantCount, long startMs) {
+        try {
+            cn.iocoder.yudao.module.retrieval.dal.dataobject.trace.RetrievalTraceDO t =
+                    new cn.iocoder.yudao.module.retrieval.dal.dataobject.trace.RetrievalTraceDO();
+            t.setTraceId(java.util.UUID.randomUUID().toString().replace("-", ""));
+            t.setQuery(StrUtil.maxLength(query, 500));
+            t.setRoute(resp.getAnalysis() != null ? resp.getAnalysis().getRoute() : null);
+            t.setIntent(resp.getAnalysis() != null ? resp.getAnalysis().getIntent() : null);
+            t.setVariantCount(variantCount);
+            t.setBm25Hits(resp.getChannels() != null ? resp.getChannels().getBm25() : 0);
+            t.setVectorHits(resp.getChannels() != null ? resp.getChannels().getVector() : 0);
+            t.setFused(resp.getChannels() != null ? resp.getChannels().getFused() : 0);
+            t.setResultCount(resp.getResults() != null ? resp.getResults().size() : 0);
+            t.setElapsedMs((int) (System.currentTimeMillis() - startMs));
+            t.setBlocked(Boolean.TRUE.equals(resp.getAnswerBlocked()));
+            retrievalTraceMapper.insert(t);
+        } catch (Exception e) {
+            log.warn("[recordTrace][检索追踪落库失败: {}]", e.getMessage());
+        }
     }
 
     private RetrievalRespVO.ResultVO buildResult(Long chunkId, Map<Long, String> contentsMap,
