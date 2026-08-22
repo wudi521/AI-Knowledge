@@ -65,6 +65,19 @@ public class ResultFilter {
     }
 
     /** 批量查询片段所属文档信息(chunkId -> documentId/documentName/versionNo; 失败返回空 Map) */
+    /** 批量查询 chunk → 父块编号(父子检索扩展; 失败返回空, 不阻断) */
+    public Map<Long, Long> getChunkParents(Collection<Long> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            return ingestionApi.getChunkParents(chunkIds.stream().toList()).getCheckedData();
+        } catch (Exception e) {
+            log.warn("[getChunkParents][父块查询失败, 返回空: {}]", e.getMessage());
+            return Map.of();
+        }
+    }
+
     public Map<Long, ChunkDocInfoDTO> getChunkDocInfo(Collection<Long> chunkIds) {
         if (chunkIds == null || chunkIds.isEmpty()) {
             return Map.of();

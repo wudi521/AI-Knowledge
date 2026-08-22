@@ -92,6 +92,12 @@ public class RetrievalRespVO {
 
         /** 命中通道: ["bm25"] / ["vector"] / ["bm25","vector"] */
         private List<String> channels;
+
+        /** 父块编号(父子检索扩展: 子块命中回带父块上下文; 无则 null) */
+        private Long contextChunkId;
+
+        /** 父块内容(上下文, 截断防撑爆; 无则 null) */
+        private String contextContent;
     }
 
 }

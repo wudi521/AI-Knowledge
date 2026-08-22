@@ -163,6 +163,25 @@ public class SearchService {
         // 9. 文档信息补全(chunkId -> documentId/documentName/versionNo)
         Map<Long, ChunkDocInfoDTO> docInfoMap = resultFilter.getChunkDocInfo(candidateIds);
 
+        // 9.5 父子扩展(B3): 命中子块批量取父块上下文(去重 + token 预算, 供引用时回带完整章节)
+        Map<Long, Long> parentMap = resultFilter.getChunkParents(candidateIds);
+        java.util.Set<Long> parentIds = parentMap.values().stream()
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> parentContents = parentIds.isEmpty() ? Map.of()
+                : resultFilter.getChunkContents(parentIds);
+        int contextBudget = 1000; // 父块上下文总预算(字符)
+        int contextUsed = 0;
+        java.util.Map<Long, String> truncatedParents = new java.util.HashMap<>();
+        for (java.util.Map.Entry<Long, String> e : parentContents.entrySet()) {
+            if (contextUsed >= contextBudget) {
+                break;
+            }
+            String content = e.getValue() == null ? "" : e.getValue();
+            String truncated = content.length() > 300 ? content.substring(0, 300) : content;
+            truncatedParents.put(e.getKey(), truncated);
+            contextUsed += truncated.length();
+        }
+
         // 10. 重排(候选为空或全部内容缺失时跳过模型调用, 避免无意义开销)
         List<Map.Entry<Integer, Float>> reranked;
         boolean allBlank = contents.isEmpty() || contents.stream().allMatch(StrUtil::isBlank);
@@ -195,7 +214,8 @@ public class SearchService {
                 continue;
             }
             Long chunkId = candidates.get(idx).getKey();
-            results.add(buildResult(chunkId, contentsMap, docInfoMap, rrfMap, r.getValue(), bm25HitIds, vectorHitIds));
+            results.add(buildResult(chunkId, contentsMap, docInfoMap, rrfMap, r.getValue(),
+                    bm25HitIds, vectorHitIds, parentMap, truncatedParents));
         }
         resp.setResults(results);
         // 12. 产品/品牌一致性门禁(结构化代码判定, 不依赖 LLM 提示词):
@@ -332,7 +352,8 @@ public class SearchService {
 
     private RetrievalRespVO.ResultVO buildResult(Long chunkId, Map<Long, String> contentsMap,
             Map<Long, ChunkDocInfoDTO> docInfoMap, Map<Long, Double> rrfMap, Float rerankScore,
-            Set<Long> bm25HitIds, Set<Long> vectorHitIds) {
+            Set<Long> bm25HitIds, Set<Long> vectorHitIds,
+            Map<Long, Long> parentMap, Map<Long, String> parentContents) {
         RetrievalRespVO.ResultVO vo = new RetrievalRespVO.ResultVO();
         vo.setChunkId(chunkId);
         vo.setContent(contentsMap.getOrDefault(chunkId, ""));
@@ -344,6 +365,12 @@ public class SearchService {
         }
         vo.setRrfScore(rrfMap.get(chunkId));
         vo.setRerankScore(rerankScore);
+        // B3 父子扩展: 命中子块回带父块上下文(引用仍锚定命中子块, 父块仅上下文)
+        Long parentId = parentMap.get(chunkId);
+        if (parentId != null) {
+            vo.setContextChunkId(parentId);
+            vo.setContextContent(parentContents.get(parentId));
+        }
         // 命中通道按各通道去重后的命中集合精确标记
         List<String> channels = new ArrayList<>();
         if (bm25HitIds.contains(chunkId)) {

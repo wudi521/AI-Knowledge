@@ -17,6 +17,12 @@
 - chunkKey=c%06d(版本内唯一), contentHash=sha256, tokenCount=估算
 - 冒烟 10 项 ALL PASSED(章节路径/页码/角色/chunkKey/seq/hash/token/TABLE推导)
 
-## 后续
-- B3 检索扩展闭环(子块命中带父块上下文) 待实施
-- C 批: chunk 的 index_status/embedding 版本字段 + 向量持久化策略(C4)
+## B3: 检索父子扩展闭环
+- IngestionApi 新增 `getChunkParents(chunkId→parentId)` RPC
+- SearchService: 候选过滤后批量取父块映射 → 去重取父块内容(单块截断300字, 总预算1000字)
+  → ResultVO 新增 contextChunkId/contextContent(引用仍锚定命中子块, 父块仅上下文)
+- 失败降级: RPC 异常返回空, 不阻断检索
+- 编译通过(ingestion+retrieval)
+
+## 批次 B 完成
+- B1/B2/B3 全部交付; 下一批 C(Outbox/IngestionJob/IndexJob/两阶段发布)

@@ -99,6 +99,15 @@ public interface IngestionApi {
     CommonResult<Map<Long, String>> getChunkContents(@RequestBody List<Long> chunkIds);
 
     /**
+     * 批量查询 chunk 的父块编号(检索父子扩展: 子块命中回带父块上下文)
+     *
+     * @param chunkIds 片段编号列表
+     * @return chunkId -> parentId(无父块的不在返回中)
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-chunk-parents")
+    CommonResult<Map<Long, Long>> getChunkParents(@RequestBody List<Long> chunkIds);
+
+    /**
      * 批量查询片段所属文档信息(检索结果补全: 文档名/版本号)
      *
      * @param chunkIds 片段编号列表
