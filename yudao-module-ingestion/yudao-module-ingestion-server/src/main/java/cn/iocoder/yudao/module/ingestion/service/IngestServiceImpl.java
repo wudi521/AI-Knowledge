@@ -166,16 +166,27 @@ public class IngestServiceImpl implements IngestService {
             // 1. 清理旧片段(按真实版本 id, 幂等)
             chunkMapper.deleteByVersionId(versionId);
             // 2. 只写 MySQL(REVIEW 状态, 向量存 embedding)
+            //    P0-1 修复: 切分器的 parentId 是"父块在切分结果列表中的下标", 落库时回填父块真实 DB id
+            //    (父块先于子块插入, insertedIds 按下标可取到父块 id)
+            java.util.List<Long> insertedIds = new java.util.ArrayList<>(chunks.size());
             for (int i = 0; i < chunks.size(); i++) {
+                Chunk c = chunks.get(i);
                 ChunkDO chunkDO = new ChunkDO();
                 chunkDO.setVersionId(versionId); // 真实版本 id(版本状态机)
-                chunkDO.setContent(chunks.get(i).getContent());
-                chunkDO.setChunkType(chunks.get(i).getChunkType());
+                chunkDO.setContent(c.getContent());
+                chunkDO.setChunkType(c.getChunkType());
                 chunkDO.setStatus(cn.iocoder.yudao.module.ingestion.enums.ChunkStatusEnum.REVIEW.getStatus()); // 待审核, 发布时置 PUBLISHED
-                chunkDO.setMetadata(chunks.get(i).getMetadata());
-                chunkDO.setParentId(chunks.get(i).getParentId());
+                chunkDO.setMetadata(c.getMetadata());
+                Long parentRef = c.getParentId();
+                if (parentRef != null && parentRef.intValue() >= 0 && parentRef.intValue() < insertedIds.size()
+                        && insertedIds.get(parentRef.intValue()) != null) {
+                    chunkDO.setParentId(insertedIds.get(parentRef.intValue()));
+                } else {
+                    chunkDO.setParentId(null); // 父块自身/引用无效: 置空
+                }
                 chunkDO.setEmbedding(cn.hutool.json.JSONUtil.toJsonStr(vectors.get(i)));
                 mysqlChunkStore.insertChunks(List.of(chunkDO), tenantId);
+                insertedIds.add(chunkDO.getId());
             }
             // 3. 事务内注册 afterCommit(此时有活跃事务同步; 事务外注册会抛 IllegalStateException)
             //    必须传管线实际使用的 versionId(不能由 knowledge 按最新推断)

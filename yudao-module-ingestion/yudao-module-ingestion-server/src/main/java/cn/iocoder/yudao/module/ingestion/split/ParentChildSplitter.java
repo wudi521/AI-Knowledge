@@ -25,13 +25,13 @@ public class ParentChildSplitter implements ChunkSplitter {
         // 复用结构切分的章节分组: 整组作为父块, 超长切子块
         String text = doc.toPlainText();
         String[] paragraphs = text.split("\\n\\s*\\n");
-        long parentSeq = 0;
         for (String para : paragraphs) {
             String trimmed = para.trim();
             if (trimmed.isEmpty()) {
                 continue;
             }
-            parentSeq++;
+            // 父块在结果列表中的下标(子块按此下标回填真实 DB id; 父块先于子块插入, 见 IngestServiceImpl.persistChunks)
+            int parentIndex = result.size();
             Chunk parent = new Chunk(trimmed, "SEMANTIC");
             parent.setMetadata("{\"parent\":true}");
             result.add(parent);
@@ -39,7 +39,7 @@ public class ParentChildSplitter implements ChunkSplitter {
                 List<String> subChunks = SplitUtils.splitBySentences(trimmed, maxTokens);
                 for (String sub : subChunks) {
                     Chunk child = new Chunk(sub, "SEMANTIC");
-                    child.setParentId(parentSeq);
+                    child.setParentId((long) parentIndex);
                     child.setMetadata("{\"parent\":false}");
                     result.add(child);
                 }

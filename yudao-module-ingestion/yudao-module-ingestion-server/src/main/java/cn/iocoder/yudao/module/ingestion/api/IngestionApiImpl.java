@@ -74,6 +74,29 @@ public class IngestionApiImpl implements IngestionApi {
     }
 
     @Override
+    public CommonResult<Boolean> deleteVersionIndex(Long versionId) {
+        // P0-2: 版本过期/回滚时把该版本 chunk 从检索层移除——MySQL 置 DISABLED(保留审计, 检索只放行 PUBLISHED)
+        // + ES/Milvus 删除, 保证旧版本内容不再参与检索(版本→chunk→索引 失效链闭环)
+        List<Long> chunkIds = chunkMapper.selectListByVersionId(versionId).stream()
+                .map(ChunkDO::getId).toList();
+        chunkMapper.updateStatusByVersionId(versionId,
+                cn.iocoder.yudao.module.ingestion.enums.ChunkStatusEnum.DISABLED.getStatus());
+        if (!chunkIds.isEmpty()) {
+            try {
+                esChunkStore.deleteChunks(chunkIds);
+            } catch (Exception e) {
+                log.warn("[deleteVersionIndex][版本 {} ES 删除失败, 残留待清理: {}]", versionId, e.getMessage());
+            }
+            try {
+                milvusChunkStore.deleteVectors(chunkIds);
+            } catch (Exception e) {
+                log.warn("[deleteVersionIndex][版本 {} Milvus 删除失败, 残留待清理: {}]", versionId, e.getMessage());
+            }
+        }
+        return success(true);
+    }
+
+    @Override
     public CommonResult<Boolean> indexVersion(Long versionId, Long kbId, Long tenantId) {
         // 幂等契约: 覆盖式重写 Milvus/ES; "置 chunk PUBLISHED"必须是最后一步
         List<ChunkDO> chunks = chunkMapper.selectListByVersionId(versionId);

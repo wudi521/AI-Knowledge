@@ -19,6 +19,7 @@ import cn.iocoder.yudao.module.knowledge.service.intent.IntentSummarizer;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.service.slot.SlotSummarizer;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.mzt.logapi.context.LogRecordContext;
 import com.mzt.logapi.starter.annotation.LogRecord;
@@ -295,6 +296,12 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
 
     @Override
     public void expireOldVersions(Long docId, Long exceptVersionId) {
+        // 先查被过期的已发布版本(用于级联清理检索索引)
+        List<AiDocVersionDO> expiredVersions = aiDocVersionMapper.selectList(
+                new LambdaQueryWrapper<AiDocVersionDO>()
+                        .eq(AiDocVersionDO::getDocId, docId)
+                        .eq(AiDocVersionDO::getStatus, VersionStatusEnum.PUBLISHED.getStatus())
+                        .ne(AiDocVersionDO::getId, exceptVersionId));
         // 单条 UPDATE 原子过期旧已发布版本, 收窄并发发布竞态窗口
         aiDocVersionMapper.update(null, new LambdaUpdateWrapper<AiDocVersionDO>()
                 .eq(AiDocVersionDO::getDocId, docId)
@@ -302,6 +309,17 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
                 .ne(AiDocVersionDO::getId, exceptVersionId)
                 .set(AiDocVersionDO::getStatus, VersionStatusEnum.EXPIRED.getStatus())
                 .set(AiDocVersionDO::getEffectiveTo, LocalDateTime.now()));
+        // P0-2 修复: 旧版本 chunk 从检索层移除(MySQL 置 DISABLED + ES/Milvus 删除), 失败仅告警不阻断
+        for (AiDocVersionDO v : expiredVersions) {
+            try {
+                CommonResult<Boolean> result = ingestionApi.deleteVersionIndex(v.getId());
+                if (result.isError()) {
+                    log.error("[expireOldVersions][版本 {} 索引清理失败: {}]", v.getId(), result.getMsg());
+                }
+            } catch (Exception e) {
+                log.error("[expireOldVersions][版本 {} 索引清理异常: {}]", v.getId(), e.getMessage());
+            }
+        }
     }
 
     /**

@@ -34,6 +34,16 @@ public interface IngestionApi {
     CommonResult<Boolean> deleteDocumentData(@RequestParam("documentId") Long documentId);
 
     /**
+     * 按版本移除检索索引(版本过期/回滚时调用): MySQL chunk 置 DISABLED(保留历史审计) + ES/Milvus 删除。
+     * 保证旧版本内容不再参与检索(版本 → chunk → 索引 失效链闭环)。
+     *
+     * @param versionId 版本编号
+     * @return 是否成功(ES/Milvus 失败仅告警不返回错误, 残留待清理)
+     */
+    @PostMapping(ApiConstants.PREFIX + "/delete-version-index")
+    CommonResult<Boolean> deleteVersionIndex(@RequestParam("versionId") Long versionId);
+
+    /**
      * 发布索引: 按版本从 MySQL 读 chunk + embedding, 写 Milvus/ES, 置 chunk PUBLISHED
      * <p>
      * 幂等契约(发布可重试): 同版本重复调用为"覆盖式"重写 Milvus/ES, 不产生重复数据;
