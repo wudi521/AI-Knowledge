@@ -52,6 +52,8 @@ public class IngestServiceImpl implements IngestService {
     @Resource
     private ContextEnricher contextEnricher;
     @Resource
+    private cn.iocoder.yudao.module.ingestion.parse.DownloadGuard downloadGuard;
+    @Resource
     private SplitterFactory splitterFactory;
     @Resource
     private EmbeddingClient embeddingClient;
@@ -95,7 +97,7 @@ public class IngestServiceImpl implements IngestService {
                 chunkStrategy = "auto"; // 文档未选策略默认自动
             }
 
-            java.io.File tmpFile = downloadFromMinio(storagePath);
+            java.io.File tmpFile = downloadFromMinio(storagePath, docType);
             ParsedDocument parsed;
             try {
                 parsed = parseDocument(docType, tmpFile);
@@ -246,17 +248,25 @@ public class IngestServiceImpl implements IngestService {
      *
      * @return 临时文件(调用方负责删除)
      */
-    private java.io.File downloadFromMinio(String storagePath) {
-        if (StrUtil.isBlank(storagePath)) {
-            throw new RuntimeException("存储路径为空");
-        }
+    private java.io.File downloadFromMinio(String storagePath, String docType) {
+        // A3 安全防护: 下载源白名单(SSRF) + 大小限制 + magic number 类型校验
+        downloadGuard.validateUrl(storagePath);
         // MinIO URL 形如 http://127.0.0.1:9000/kb-docs/xxx
         String fileName = StrUtil.subAfter(storagePath, "/", true);
         // UUID 前缀防多文档并发下载同名文件互相覆盖; 保留原扩展名供解析器识别
         String tmpName = java.util.UUID.randomUUID() + "_" + fileName;
         java.io.File tmpFile = new java.io.File(System.getProperty("java.io.tmpdir"), tmpName);
-        // 30s 连接/读取超时(默认无超时会永久挂起, 拖垮入库线程)
-        cn.hutool.http.HttpUtil.downloadFile(storagePath, tmpFile, 30_000);
+        try {
+            downloadGuard.download(storagePath, tmpFile);
+            downloadGuard.validateMagic(tmpFile, docType);
+        } catch (RuntimeException e) {
+            // 校验/下载失败: 清理临时文件再抛(不留垃圾)
+            try {
+                java.nio.file.Files.deleteIfExists(tmpFile.toPath());
+            } catch (Exception ignored) {
+            }
+            throw e;
+        }
         return tmpFile;
     }
 

@@ -68,6 +68,9 @@ yudao:
     es:
       index: ai_chunk_bm25          # BM25 索引名
   ingestion:
+    download: # 文件下载安全(SSRF防护): 只允许从白名单主机下载; MinIO 生产地址需加入白名单
+      allowed-hosts: 127.0.0.1,localhost
+      max-file-bytes: 104857600 # 100MB
     parser:
       mineru: # MinerU 文档解析服务(docker-compose mineru 服务, 需 GPU 效果最佳)
         enabled: false              # 部署 MinerU 后改为 true, PDF/扫描件自动走 MinerU 结构化解析
