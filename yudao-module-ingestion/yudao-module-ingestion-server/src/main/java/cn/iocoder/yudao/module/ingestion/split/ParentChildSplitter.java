@@ -33,12 +33,14 @@ public class ParentChildSplitter implements ChunkSplitter {
             // 父块在结果列表中的下标(子块按此下标回填真实 DB id; 父块先于子块插入, 见 IngestServiceImpl.persistChunks)
             int parentIndex = result.size();
             Chunk parent = new Chunk(trimmed, "SEMANTIC");
+            parent.setChunkRole("PARENT");
             parent.setMetadata("{\"parent\":true}");
             result.add(parent);
             if (SplitUtils.estimateTokens(trimmed) > maxTokens) {
                 List<String> subChunks = SplitUtils.splitBySentences(trimmed, maxTokens);
                 for (String sub : subChunks) {
                     Chunk child = new Chunk(sub, "SEMANTIC");
+                    child.setChunkRole("CHILD");
                     child.setParentId((long) parentIndex);
                     child.setMetadata("{\"parent\":false}");
                     result.add(child);
