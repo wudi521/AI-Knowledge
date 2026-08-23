@@ -1,11 +1,11 @@
 package cn.iocoder.yudao.module.evidence.service.conflict;
 
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
+import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
-import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
-import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -17,7 +17,6 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
@@ -26,8 +25,8 @@ import static org.mockito.Mockito.when;
 
 /**
  * 冲突检测器单测:
- * 1. LLM 输出 conflict=true 但 reason 含"无矛盾/一致" → 自相矛盾, 不产生 Conflict;
- * 2. 同一专利同一权利要求(applicationNo+sectionType=CLAIMS+claimNo 相同) → 不调用冲突模型。
+ * 1. GENERAL: LLM 输出 conflict=true 但 reason 含“无矛盾/一致”时必须忽略;
+ * 2. PATENT: v0.1 整组专利证据跳过通用客服冲突检测，不区分 claim 是否相同。
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -71,9 +70,7 @@ class ConflictDetectorTest {
         when(modelApi.chat(any(ModelChatReqDTO.class))).thenReturn(CommonResult.success(
                 "{\"conflicts\":[{\"pair\":[0,1],\"conflict\":true,\"reason\":\"两者描述一致，无矛盾\"}]}"));
 
-        List<cn.iocoder.yudao.module.evidence.domain.Conflict> conflicts = detector.detect(List.of(a, b));
-
-        assertTrue(conflicts.isEmpty(), "conflict=true + reason 无矛盾 必须被识别为自相矛盾并降级为无冲突");
+        assertTrue(detector.detect(List.of(a, b)).isEmpty());
     }
 
     @Test
@@ -82,22 +79,16 @@ class ConflictDetectorTest {
         Evidence a = evidence(1L, "权利要求1第一行", meta);
         Evidence b = evidence(2L, "权利要求1第二行", meta);
 
-        List<cn.iocoder.yudao.module.evidence.domain.Conflict> conflicts = detector.detect(List.of(a, b));
-
-        assertTrue(conflicts.isEmpty());
+        assertTrue(detector.detect(List.of(a, b)).isEmpty());
         verify(modelApi, never()).chat(any(ModelChatReqDTO.class));
     }
 
     @Test
-    void differentClaimsDoNotSkip() {
+    void differentPatentClaimsAlsoSkipGenericConflictModel() {
         Evidence a = evidence(1L, "权利要求1内容", patentClaimMeta("202311344028.2", 1));
         Evidence b = evidence(2L, "权利要求2内容", patentClaimMeta("202311344028.2", 2));
-        when(modelApi.chat(any(ModelChatReqDTO.class))).thenReturn(CommonResult.success(
-                "{\"conflicts\":[{\"pair\":[0,1],\"conflict\":false,\"reason\":\"\"}]}"));
 
-        List<cn.iocoder.yudao.module.evidence.domain.Conflict> conflicts = detector.detect(List.of(a, b));
-
-        assertEquals(0, conflicts.size());
-        verify(modelApi).chat(any(ModelChatReqDTO.class));
+        assertTrue(detector.detect(List.of(a, b)).isEmpty());
+        verify(modelApi, never()).chat(any(ModelChatReqDTO.class));
     }
 }
