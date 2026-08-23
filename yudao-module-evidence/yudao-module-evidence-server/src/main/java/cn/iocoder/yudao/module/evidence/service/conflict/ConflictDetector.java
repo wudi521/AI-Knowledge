@@ -29,7 +29,6 @@ public class ConflictDetector {
     private static final int MAX_CANDIDATE_PAIRS = 10;
     private static final int CONTENT_MAX_LEN = 300;
 
-    /** LLM 错把“一致/无冲突”标为 conflict=true 时的保护词。 */
     private static final List<String> NON_CONFLICT_REASON_MARKERS = List.of(
             "无矛盾", "没有矛盾", "不存在矛盾", "无冲突", "没有冲突", "不存在冲突",
             "描述一致", "说法一致", "内容一致", "两者一致", "相同", "一致，无", "一致,无"
@@ -57,6 +56,12 @@ public class ConflictDetector {
         if (evidences == null || evidences.size() < 2) {
             return List.of();
         }
+        // 专利精确 Claim 查询: 同一申请、同一 claim 的多个命中本质是同一法定文本的重复/补充表示，
+        // 不应调用通用“客服冲突检测”产生额外延迟或误杀。
+        if (isSamePatentExactClaim(evidences)) {
+            log.debug("[detect][同一专利同一权利要求证据, 跳过冲突检测]");
+            return List.of();
+        }
         List<int[]> pairs = buildCandidatePairs(evidences);
         if (pairs.isEmpty()) {
             return List.of();
@@ -72,6 +77,39 @@ public class ConflictDetector {
             return List.of();
         }
         return parseConflicts(resp, pairs);
+    }
+
+    private boolean isSamePatentExactClaim(List<Evidence> evidences) {
+        String applicationNo = null;
+        Integer claimNo = null;
+        boolean sawPatentClaim = false;
+        for (Evidence evidence : evidences) {
+            if (evidence == null || StrUtil.isBlank(evidence.getChunkMetadata())) {
+                return false;
+            }
+            try {
+                JSONObject meta = JSONUtil.parseObj(evidence.getChunkMetadata());
+                if (!"PATENT".equalsIgnoreCase(meta.getStr("domainCode"))
+                        || !"CLAIMS".equalsIgnoreCase(meta.getStr("sectionType"))) {
+                    return false;
+                }
+                String app = meta.getStr("applicationNo");
+                Integer claim = meta.getInt("claimNo");
+                if (StrUtil.isBlank(app) || claim == null) {
+                    return false;
+                }
+                if (!sawPatentClaim) {
+                    applicationNo = app;
+                    claimNo = claim;
+                    sawPatentClaim = true;
+                } else if (!applicationNo.equals(app) || !claimNo.equals(claim)) {
+                    return false;
+                }
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        return sawPatentClaim;
     }
 
     private List<int[]> buildCandidatePairs(List<Evidence> evidences) {
@@ -175,7 +213,6 @@ public class ConflictDetector {
             if (!Boolean.TRUE.equals(entry.getBool("conflict", false))) {
                 return null;
             }
-
             String reason = StrUtil.nullToEmpty(entry.getStr("reason")).trim();
             if (isSelfContradictoryConflictReason(reason)) {
                 log.warn("[detect][LLM 冲突判定自相矛盾, 降级为无冲突: pair=[{},{}], reason={}]", a, b, reason);
@@ -185,7 +222,6 @@ public class ConflictDetector {
                 log.warn("[detect][LLM conflict=true 但缺少原因, 降级为无冲突: pair=[{},{}]]", a, b);
                 return null;
             }
-
             return Conflict.builder()
                     .evidenceIndexA(a)
                     .evidenceIndexB(b)
