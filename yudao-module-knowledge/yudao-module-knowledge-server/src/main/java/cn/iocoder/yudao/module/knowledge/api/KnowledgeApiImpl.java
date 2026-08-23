@@ -206,7 +206,9 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     }
 
     @Override
-    public CommonResult<Boolean> updateDocumentDomainMetadata(Long documentId, String domainMetadata) {
+    public CommonResult<Boolean> updateDocumentDomainMetadata(java.util.Map<String, Object> body) {
+        Long documentId = body == null ? null : ((Number) body.get("documentId")).longValue();
+        String domainMetadata = body == null ? null : (String) body.get("domainMetadata");
         // 仅更新当前租户文档(越权 0 容忍); 元数据上限 64KB(不把全文写进元数据)
         if (domainMetadata != null && domainMetadata.length() > 65536) {
             return success(false);

@@ -157,7 +157,8 @@ public class IngestServiceImpl implements IngestService {
             String domainMetadata = domainAdapter.extractMetadata(parsed, document);
             if (domainMetadata != null) {
                 // 持久化领域元数据(失败即入库失败, 不允许元数据与 Chunk 静默不一致)
-                CommonResult<Boolean> metaResult = knowledgeApi.updateDocumentDomainMetadata(documentId, domainMetadata);
+                CommonResult<Boolean> metaResult = knowledgeApi.updateDocumentDomainMetadata(
+                        java.util.Map.of("documentId", documentId, "domainMetadata", domainMetadata));
                 if (metaResult.isError() || !Boolean.TRUE.equals(metaResult.getCheckedData())) {
                     throw new RuntimeException("领域元数据持久化失败: " + metaResult.getMsg());
                 }

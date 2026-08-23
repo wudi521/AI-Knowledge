@@ -111,8 +111,7 @@ public interface KnowledgeApi {
      * @return 是否成功
      */
     @PostMapping(ApiConstants.PREFIX + "/update-document-domain-metadata")
-    CommonResult<Boolean> updateDocumentDomainMetadata(@RequestParam("documentId") Long documentId,
-                                                       @RequestParam("domainMetadata") String domainMetadata);
+    CommonResult<Boolean> updateDocumentDomainMetadata(@RequestBody java.util.Map<String, Object> body);
 
     /**
      * 批量查询知识库领域代码(检索领域路由: kbId -> GENERAL/PATENT)
