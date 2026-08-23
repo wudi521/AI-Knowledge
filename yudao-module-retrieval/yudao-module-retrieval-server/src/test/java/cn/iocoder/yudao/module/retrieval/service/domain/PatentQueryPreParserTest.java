@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 专利查询预解析器单测: 确定性提取申请号/公布号/权利要求号(范围/列表/单个)。
+ * 专利查询预解析器单测: 确定性提取申请号/公布号/权利要求号及著录字段目标。
  */
 class PatentQueryPreParserTest {
 
@@ -21,7 +21,7 @@ class PatentQueryPreParserTest {
         PatentQueryPreParser.PatentQueryHints hints = parser.parse("申请号 202311042981.1 的权利要求1主要限定了什么？");
         assertEquals("202311042981.1", hints.getApplicationNo());
         assertTrue(hints.isClaimIntent());
-        assertTrue(hints.isBibliographicIntent()); // 问题含"申请号"关键词
+        assertFalse(hints.isBibliographicIntent(), "申请号仅作为定位条件时不应把问题误判为著录信息查询");
     }
 
     @Test
@@ -29,7 +29,35 @@ class PatentQueryPreParserTest {
         PatentQueryPreParser.PatentQueryHints hints = parser.parse("CN 122604134 A 的申请人是谁？");
         assertEquals("CN 122604134 A", hints.getPublicationNo());
         assertTrue(hints.isBibliographicIntent());
-        assertTrue(hints.hasExactDocumentIdentifier());
+        assertEquals(List.of(PatentQueryPreParser.META_APPLICANTS), hints.getMetadataFields());
+        assertTrue(hints.hasDeterministicExactMetadata());
+    }
+
+    @Test
+    void parseClaimCountAsMetadataInsteadOfClaimLookup() {
+        PatentQueryPreParser.PatentQueryHints hints = parser.parse("CN 122621758 A 一共有几项权利要求？");
+        assertEquals("CN 122621758 A", hints.getPublicationNo());
+        assertTrue(hints.isClaimCountIntent());
+        assertFalse(hints.isClaimIntent());
+        assertTrue(hints.isBibliographicIntent());
+        assertEquals(List.of(PatentQueryPreParser.META_CLAIM_COUNT), hints.getMetadataFields());
+        assertTrue(hints.hasDeterministicExactMetadata());
+    }
+
+    @Test
+    void parseMultipleMetadataFields() {
+        PatentQueryPreParser.PatentQueryHints hints = parser.parse("申请号 202311344028.2 的发明名称和申请人是什么？");
+        assertEquals(List.of(PatentQueryPreParser.META_TITLE, PatentQueryPreParser.META_APPLICANTS), hints.getMetadataFields());
+        assertTrue(hints.hasDeterministicExactMetadata());
+    }
+
+    @Test
+    void locatorKeywordDoesNotForceMetadataRoute() {
+        PatentQueryPreParser.PatentQueryHints hints = parser.parse("申请号 202311042981.1 的核心技术方案是什么？");
+        assertEquals("202311042981.1", hints.getApplicationNo());
+        assertTrue(hints.getMetadataFields().isEmpty());
+        assertFalse(hints.isBibliographicIntent());
+        assertFalse(hints.hasDeterministicExactMetadata());
     }
 
     @Test
@@ -45,7 +73,7 @@ class PatentQueryPreParserTest {
         PatentQueryPreParser.PatentQueryHints hints = parser.parse("权利要求8引用了权利要求1至7中的哪些权利要求？");
         assertEquals(List.of(1, 2, 3, 4, 5, 6, 7), hints.getClaimNos());
         assertTrue(hints.isClaimDependencyIntent());
-        assertFalse(hints.hasExactClaim()); // 无申请号/公布号时不算 EXACT
+        assertFalse(hints.hasExactClaim());
     }
 
     @Test
@@ -68,5 +96,6 @@ class PatentQueryPreParserTest {
         assertNull(hints.getPublicationNo());
         assertFalse(hints.hasExactDocumentIdentifier());
         assertFalse(hints.hasExactClaim());
+        assertFalse(hints.hasDeterministicExactMetadata());
     }
 }
