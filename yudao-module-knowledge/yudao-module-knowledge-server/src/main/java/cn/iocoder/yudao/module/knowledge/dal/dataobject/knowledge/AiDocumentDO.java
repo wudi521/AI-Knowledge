@@ -51,6 +51,10 @@ public class AiDocumentDO extends TenantBaseDO {
     /** 上传人 */
     private String owner;
 
+    /** 当前版本编号(联表, 非表字段; 审核发布等上下文操作使用) */
+    @TableField(exist = false)
+    private Long versionId;
+
     /** 当前版本号(联表, 非表字段) */
     @TableField(exist = false)
     private String versionNo;
