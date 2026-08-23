@@ -14,9 +14,7 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * 专利切分器。
- */
+/** 专利切分器。 */
 public class PatentSplitter {
 
     public static final String SEC_BIBLIOGRAPHIC = "BIBLIOGRAPHIC";
@@ -57,13 +55,9 @@ public class PatentSplitter {
         int maxTokens = params == null ? 500 : params.getMaxTokens();
         for (Section section : sections) {
             List<ParsedDocument.Element> elements = doc.getElements().subList(section.start, section.end);
-            if (SEC_CLAIMS.equals(section.type)) {
-                result.addAll(splitClaims(elements, metadata));
-            } else if (SEC_BIBLIOGRAPHIC.equals(section.type)) {
-                result.addAll(splitBibliographic(elements, metadata));
-            } else {
-                result.addAll(splitDescription(section, elements, metadata, maxTokens));
-            }
+            if (SEC_CLAIMS.equals(section.type)) result.addAll(splitClaims(elements, metadata));
+            else if (SEC_BIBLIOGRAPHIC.equals(section.type)) result.addAll(splitBibliographic(elements, metadata));
+            else result.addAll(splitDescription(section, elements, metadata, maxTokens));
         }
         return result;
     }
@@ -78,18 +72,13 @@ public class PatentSplitter {
         String currentTitle = "著录信息";
         for (int i = 0; i < doc.getElements().size(); i++) {
             ParsedDocument.Element e = doc.getElements().get(i);
-            // 图片元素 text() 含 contextBefore(前文摘要), 摘要里可能带"说明书/权利要求"等字样,
-            // 若参与章节边界判断会误判(如第5页图片被判 EMBODIMENT)。章节边界只看文本元素。
-            if (e instanceof ParsedDocument.ImageElement) {
-                continue;
-            }
-            String text = e.text();
-            String type = matchSection(text);
+            if (e instanceof ParsedDocument.ImageElement) continue;
+            String type = matchSection(e.text());
             if (type != null && !type.equals(currentType)) {
                 sections.add(new Section(currentType, currentTitle, currentStart, i));
                 currentStart = i;
                 currentType = type;
-                currentTitle = StrUtil.maxLength(text, 50);
+                currentTitle = StrUtil.maxLength(e.text(), 50);
             }
         }
         sections.add(new Section(currentType, currentTitle, currentStart, doc.getElements().size()));
@@ -99,14 +88,9 @@ public class PatentSplitter {
     private String matchSection(String text) {
         String t = text == null ? "" : text.trim();
         if (t.isEmpty()) return null;
-        // 去全部空白(兼容 PDF 全角空格标题: 权   利   要   求   书)
-        // 注意: \s 不匹配全角空格 \u3000, 必须显式包含(否则 权利要求书 匹配失败)
         String compact = t.replaceAll("[\\s\\u3000]+", "");
-        // ① 章节页标题(章节名 + 斜杠页码: 权利要求书 1/1 页 / 页眉+章节名): 是章节边界
         if (compact.matches(".*[0-9]+/[0-9]+页.*")) {
-            for (Map.Entry<String, String> e : SECTION_TITLES.entrySet()) {
-                if (compact.contains(e.getKey())) return e.getValue();
-            }
+            for (Map.Entry<String, String> e : SECTION_TITLES.entrySet()) if (compact.contains(e.getKey())) return e.getValue();
             return null;
         }
         if (compact.matches(".*[0-9]+页.*")) return null;
@@ -120,17 +104,11 @@ public class PatentSplitter {
         List<Chunk> result = new ArrayList<>();
         StringBuilder claimsText = new StringBuilder();
         for (ParsedDocument.Element e : elements) {
-            // 图片元素 text() 含 contextBefore(前文摘要), 摘要里可能重复出现"3.文件传输..."等权利要求行,
-            // 拼接进权利要求文本会导致同一权利要求被重复解析。只拼接文本元素。
-            if (e instanceof ParsedDocument.ImageElement) {
-                continue;
-            }
+            if (e instanceof ParsedDocument.ImageElement) continue;
             claimsText.append(e.text()).append('\n');
         }
         List<PatentClaimParser.PatentClaim> claims = claimParser.parse(claimsText.toString());
-        if (claims.isEmpty()) {
-            return splitDescription(new Section(SEC_CLAIMS, "权利要求书", 0, elements.size()), elements, metadata, 500);
-        }
+        if (claims.isEmpty()) return splitDescription(new Section(SEC_CLAIMS, "权利要求书", 0, elements.size()), elements, metadata, 500);
 
         Map<Integer, PageRange> pageRanges = resolveClaimPageRanges(elements);
         for (PatentClaimParser.PatentClaim claim : claims) {
@@ -150,24 +128,15 @@ public class PatentSplitter {
         return result;
     }
 
-    /**
-     * 按 ParsedDocument.Element 页码追踪 claim 起止页。
-     * 一个 element 可能包含多行；遇到新的 claim 编号后，后续行归属于该 claim，直到下一编号。
-     */
     private Map<Integer, PageRange> resolveClaimPageRanges(List<ParsedDocument.Element> elements) {
         Map<Integer, int[]> mutable = new LinkedHashMap<>();
         Integer currentClaim = null;
         for (ParsedDocument.Element element : elements) {
-            // 图片元素 text() 含 contextBefore(前文摘要), 摘要里的 claim 编号行会污染页码追踪, 跳过
-            if (element instanceof ParsedDocument.ImageElement) {
-                continue;
-            }
+            if (element instanceof ParsedDocument.ImageElement) continue;
             String text = element.text() == null ? "" : element.text();
             for (String line : text.split("\\R")) {
                 Matcher matcher = CLAIM_START.matcher(line);
-                if (matcher.find()) {
-                    currentClaim = Integer.parseInt(matcher.group(1));
-                }
+                if (matcher.find()) currentClaim = Integer.parseInt(matcher.group(1));
                 if (currentClaim != null && element.page() > 0) {
                     int[] range = mutable.computeIfAbsent(currentClaim, k -> new int[]{element.page(), element.page()});
                     range[0] = Math.min(range[0], element.page());
@@ -183,8 +152,7 @@ public class PatentSplitter {
     private List<Chunk> splitBibliographic(List<ParsedDocument.Element> elements, PatentMetadata metadata) {
         List<Chunk> result = new ArrayList<>();
         StringBuilder text = new StringBuilder();
-        int pageStart = -1;
-        int pageEnd = -1;
+        int pageStart = -1, pageEnd = -1;
         for (ParsedDocument.Element e : elements) {
             text.append(e.text()).append('\n');
             if (e.page() > 0) {
@@ -198,34 +166,23 @@ public class PatentSplitter {
         chunk.setSectionPath("著录信息");
         if (pageStart > 0) chunk.setSourcePageStart(pageStart);
         if (pageEnd > 0) chunk.setSourcePageEnd(pageEnd);
-        chunk.setMetadata(JSONUtil.toJsonStr(claimMetadata(metadata, SEC_BIBLIOGRAPHIC, "著录信息", null, null, null,
-                pageStart, pageEnd)));
+        chunk.setMetadata(JSONUtil.toJsonStr(claimMetadata(metadata, SEC_BIBLIOGRAPHIC, "著录信息", null, null, null, pageStart, pageEnd)));
         result.add(chunk);
         return result;
     }
 
-    private List<Chunk> splitDescription(Section section, List<ParsedDocument.Element> elements,
-                                         PatentMetadata metadata, int maxTokens) {
+    private List<Chunk> splitDescription(Section section, List<ParsedDocument.Element> elements, PatentMetadata metadata, int maxTokens) {
         List<Chunk> result = new ArrayList<>();
         int targetTokens = Math.max(TARGET_MIN_TOKENS, Math.min(TARGET_MAX_TOKENS, Math.max(maxTokens, 400)));
         StringBuilder current = new StringBuilder();
-        int pageStart = -1;
-        int pageEnd = -1;
+        int pageStart = -1, pageEnd = -1;
         for (ParsedDocument.Element e : elements) {
             String t = e.text();
-            if (StrUtil.isBlank(t)) {
-                continue;
-            }
-            // 章节标题行本身作为首段(保留章节上下文); 仅文本元素判断——
-            // 图片 text() 含 contextBefore(前文摘要), 摘要里可能带"说明书"等字样, 误判会丢失图片
-            if (!(e instanceof ParsedDocument.ImageElement) && matchSection(t) != null) {
-                continue;
-            }
+            if (StrUtil.isBlank(t)) continue;
+            if (!(e instanceof ParsedDocument.ImageElement) && matchSection(t) != null) continue;
             if (current.length() > 0 && SplitUtils.estimateTokens(current.toString()) + SplitUtils.estimateTokens(t) > targetTokens) {
                 result.add(descriptionChunk(section, current.toString(), metadata, pageStart, pageEnd));
-                current.setLength(0);
-                pageStart = -1;
-                pageEnd = -1;
+                current.setLength(0); pageStart = -1; pageEnd = -1;
             }
             if (current.length() > 0) current.append('\n');
             current.append(t);
@@ -249,8 +206,7 @@ public class PatentSplitter {
         chunk.setSectionPath(section.title);
         if (pageStart > 0) chunk.setSourcePageStart(pageStart);
         if (pageEnd > 0) chunk.setSourcePageEnd(pageEnd);
-        chunk.setMetadata(JSONUtil.toJsonStr(claimMetadata(metadata, section.type, section.title, null, null, null,
-                pageStart, pageEnd)));
+        chunk.setMetadata(JSONUtil.toJsonStr(claimMetadata(metadata, section.type, section.title, null, null, null, pageStart, pageEnd)));
         return chunk;
     }
 
@@ -278,6 +234,13 @@ public class PatentSplitter {
             m.put("applicationNo", metadata.getApplicationNo());
             m.put("publicationNo", metadata.getPublicationNo());
             m.put("title", metadata.getTitle());
+            m.put("filingDate", metadata.getFilingDate());
+            m.put("publicationDate", metadata.getPublicationDate());
+            m.put("applicants", metadata.getApplicants());
+            m.put("inventors", metadata.getInventors());
+            m.put("ipcCodes", metadata.getIpcCodes());
+            m.put("claimCount", metadata.getClaimCount());
+            m.put("sourceType", metadata.getSourceType());
         }
         m.put("sectionType", sectionType);
         m.put("sectionTitle", sectionTitle);
@@ -286,7 +249,7 @@ public class PatentSplitter {
         if (dependsOn != null) m.put("dependsOn", dependsOn);
         if (pageStart > 0) m.put("pageStart", pageStart);
         if (pageEnd > 0) m.put("pageEnd", pageEnd);
-        m.put("extractorVersion", "patent-mvp-1.1");
+        m.put("extractorVersion", "patent-mvp-1.2");
         return m;
     }
 }
