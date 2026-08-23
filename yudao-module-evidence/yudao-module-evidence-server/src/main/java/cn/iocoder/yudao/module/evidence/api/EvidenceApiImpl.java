@@ -97,7 +97,7 @@ public class EvidenceApiImpl implements EvidenceApi {
         dto.setAnalysis(toAnalysisDTO(vo.getAnalysis()));
         dto.setChannels(toChannelStatDTO(vo.getChannels()));
         // 检索路由透传(Query Planner 权威产出; 供对话层直接使用, 不自行推断)
-        dto.setRoute(vo.getAnalysis() != null ? vo.getAnalysis().getRoute() : null);
+        dto.setRoute(vo.getRoute());
         // 上下文回显(evidence-api ChatTurnDTO, 与 VO 同类型, 直接透传)
         dto.setHistory(vo.getHistory());
         return success(dto);

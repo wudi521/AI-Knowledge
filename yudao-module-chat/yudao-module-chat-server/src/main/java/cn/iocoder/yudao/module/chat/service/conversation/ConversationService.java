@@ -17,6 +17,7 @@ import org.springframework.validation.annotation.Validated;
 import java.util.List;
 
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
+import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_DOMAIN_UNAVAILABLE;
 
 /**
  * 会话 Service: 会话生命周期状态机 + 会话信息维护
@@ -48,16 +49,20 @@ public class ConversationService {
     /**
      * 创建带知识库上下文的会话。
      *
-     * <p>kbId 是会话的单值绑定；后续只能校验已有绑定，不能通过此方法覆盖。</p>
+     * <p>kbId 是会话的单值绑定；绑定 KB 时 domainCode 必须为真实 KB 领域, 禁止 fallback GENERAL。</p>
      */
     public AiConversationDO createConversation(String channel, String customerId, Long kbId,
                                                 String domainCode, Long userId) {
+        if (kbId != null && StrUtil.isBlank(domainCode)) {
+            // RF2-02: 只能由真实 KB domain 创建绑定会话
+            throw new ServiceException(KNOWLEDGE_DOMAIN_UNAVAILABLE);
+        }
         AiConversationDO conversation = new AiConversationDO();
         conversation.setChannel(StrUtil.blankToDefault(channel, "WEB"));
         conversation.setCustomerId(StrUtil.blankToDefault(customerId, "anonymous"));
         conversation.setStatus(ConversationStatusEnum.ACTIVE.getStatus());
         conversation.setKbId(kbId);
-        conversation.setDomainCode(StrUtil.blankToDefault(domainCode, "GENERAL"));
+        conversation.setDomainCode(domainCode);
         conversation.setUserId(userId);
         aiConversationMapper.insert(conversation);
         return conversation;

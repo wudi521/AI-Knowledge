@@ -84,8 +84,8 @@ public class ConversationController {
     }
 
     @GetMapping("/page")
-    @Operation(summary = "会话分页(状态筛选, 按创建时间倒序; 全租户, 供管理端)")
-    @PreAuthorize("@ss.hasPermission('chat:conversation:query')")
+    @Operation(summary = "会话分页(状态筛选, 按创建时间倒序; 全租户, 仅管理端 admin-query 权限)")
+    @PreAuthorize("@ss.hasPermission('chat:conversation:admin-query')")
     public CommonResult<PageResult<AiConversationDO>> page(@Valid ConversationPageReqVO reqVO) {
         return success(conversationService.getConversationPage(reqVO));
     }

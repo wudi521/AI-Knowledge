@@ -25,7 +25,7 @@ public class RetrievalTraceDO extends TenantBaseDO {
     /** 查询 */
     private String query;
 
-    /** 路由: HYBRID_RAG/SCOPE_FILTER_HYBRID_RAG/ABSTAIN */
+    /** 路由: RULE/EXACT_METADATA/EXACT_CLAIM/SCOPED_RAG/HYBRID_RAG/ABSTAIN */
     private String route;
 
     /** 领域代码(GENERAL/PATENT) */

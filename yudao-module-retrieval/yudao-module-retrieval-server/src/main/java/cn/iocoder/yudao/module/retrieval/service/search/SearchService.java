@@ -421,7 +421,8 @@ public class SearchService {
     private String resolveRoute(QueryAnalysis analysis) {
         if ("OUT_OF_SCOPE".equals(analysis.getIntent())) return "ABSTAIN";
         if (StrUtil.isNotBlank(analysis.getRoute())) return analysis.getRoute();
-        if (StrUtil.isNotBlank(analysis.getProvince()) || StrUtil.isNotBlank(analysis.getCity())) return "SCOPE_FILTER_HYBRID_RAG";
+        // 地域/产品/文档等 Scope 过滤后仍属单文档范围检索, 不新增 SCOPE_FILTER_* 路由
+        if (StrUtil.isNotBlank(analysis.getProvince()) || StrUtil.isNotBlank(analysis.getCity())) return "SCOPED_RAG";
         return "HYBRID_RAG";
     }
 

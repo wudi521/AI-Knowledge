@@ -153,6 +153,7 @@ public class EvidenceService {
             judgement = buildJudgement(true, 1.0, null, 0, 0);
             EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
             resp.setAnswer(ruleConclusion.text());
+            resp.setRoute("RULE"); // RF2-05: 硬规则命中路由, 保证非 null
             resp.setElapsedMs((int) (System.currentTimeMillis() - start));
             recorder.record(resp, List.of(), List.of());
             return resp;
@@ -234,6 +235,8 @@ public class EvidenceService {
         // 检索诊断透传(意图/实体/改写/通道统计; 供前端检索测试页单接口展示)
         resp.setAnalysis(evalAnalysis);
         resp.setChannels(evalChannels);
+        // RF2-05/06: 检索路由透传(Query Planner 权威产出; 规则命中已在短路分支显式 RULE)
+        resp.setRoute(evalAnalysis != null ? evalAnalysis.getRoute() : null);
         // 槽位检测结果回显(槽位完整时也回显, 供审计/后续合并用)
         if (slotResult != null && slotKbIds != null && !slotKbIds.isEmpty()) {
             resp.setSlotKbId(slotKbIds.get(0));

@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.chat.service.conversation;
 
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.module.chat.controller.admin.conversation.vo.ConversationPageReqVO;
 import cn.iocoder.yudao.module.chat.dal.dataobject.conversation.AiConversationDO;
@@ -12,7 +13,11 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_DOMAIN_UNAVAILABLE;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -78,6 +83,14 @@ class ConversationServiceTest {
 
         assertThat(result).isNotNull();
         verify(mapper).selectMyPage(reqVO, 42L);
+    }
+
+    @Test
+    void createBoundConversationRejectsBlankDomain() {
+        assertThatThrownBy(() -> service.createConversation("WEB", null, 6L, "  ", 42L))
+                .isInstanceOf(ServiceException.class)
+                .extracting("code").isEqualTo(KNOWLEDGE_DOMAIN_UNAVAILABLE.getCode());
+        verify(mapper, never()).insert(any(AiConversationDO.class));
     }
 
     private AiConversationDO conversation(Long id, Long kbId, Long userId) {

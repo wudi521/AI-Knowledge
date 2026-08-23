@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_CONTEXT_STALE;
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_BASE_NOT_EXISTS;
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_DOMAIN_UNAVAILABLE;
@@ -87,6 +88,8 @@ class ChatPipelineTest {
         securityFrameworkUtils.when(SecurityFrameworkUtils::getLoginUser).thenReturn(loginUser);
         // RF-01: 每轮权限校验的默认通过态(当前用户可见 KB=6); 撤销/失败场景由特定测试覆盖
         when(knowledgeApi.getVisibleKbIds(42L)).thenReturn(CommonResult.success(Set.of(6L)));
+        // RF2-01: 默认 KB=6 领域为 PATENT(与会话快照一致); 领域变化/失败场景由特定测试覆盖
+        when(knowledgeApi.getKbDomainCodes(List.of(6L))).thenReturn(CommonResult.success(Map.of(6L, "PATENT")));
     }
 
     @AfterEach
@@ -483,6 +486,97 @@ class ChatPipelineTest {
         ArgumentCaptor<ChatSendResult> decisionCaptor = ArgumentCaptor.forClass(ChatSendResult.class);
         verify(transferHandler).handleTransfer(eq(100L), eq("问题"), decisionCaptor.capture());
         assertThat(decisionCaptor.getValue().getRoute()).isEqualTo(ChatRouteEnum.ABSTAIN);
+    }
+
+    @Test
+    void existingConversationWithMatchingDomainContinues() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        conversation.setDomainCode("PATENT");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L))))
+                .thenReturn(null);
+
+        pipeline.send(100L, "问题", "web", null, 7L);
+
+        verify(knowledgeApi).getKbDomainCodes(List.of(6L));
+        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)));
+    }
+
+    @Test
+    void staleDomainRejectsWithContextStaleAndNeverCallsEvidence() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        conversation.setDomainCode("GENERAL");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        when(knowledgeApi.getKbDomainCodes(List.of(6L)))
+                .thenReturn(CommonResult.success(Map.of(6L, "PATENT")));
+
+        assertThatThrownBy(() -> pipeline.send(100L, "问题", "web", null, 7L))
+                .isInstanceOf(ServiceException.class)
+                .extracting("code").isEqualTo(CONVERSATION_CONTEXT_STALE.getCode());
+
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+    }
+
+    @Test
+    void existingConversationDomainLookupFailureIsKnowledgeDomainUnavailable() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        conversation.setDomainCode("PATENT");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        when(knowledgeApi.getKbDomainCodes(List.of(6L))).thenReturn(CommonResult.error(500, "domain rpc 失败"));
+
+        assertThatThrownBy(() -> pipeline.send(100L, "问题", "web", null, 7L))
+                .isInstanceOf(ServiceException.class)
+                .extracting("code").isEqualTo(KNOWLEDGE_DOMAIN_UNAVAILABLE.getCode());
+
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+    }
+
+    @Test
+    void ruleRouteIsPreserved() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        conversation.setDomainCode("PATENT");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
+        response.setAnswerable(true);
+        response.setAnswer("跨省寄送预计 3 天送达。");
+        response.setRoute(ChatRouteEnum.RULE);
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L))))
+                .thenReturn(response);
+        AiMessageDO userMessage = new AiMessageDO();
+        userMessage.setId(3020L);
+        AiMessageDO answerMessage = new AiMessageDO();
+        answerMessage.setId(3021L);
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(userMessage, answerMessage);
+
+        ChatSendResult result = pipeline.send(100L, "跨省寄送要多久?", "web", null, 6L);
+
+        assertThat(result.getAnswerable()).isTrue();
+        assertThat(result.getRoute()).isEqualTo(ChatRouteEnum.RULE);
+    }
+
+    @Test
+    void answerResultRouteIsNeverNullWhenEvaluationMissingRoute() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        conversation.setDomainCode("PATENT");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
+        response.setAnswerable(true);
+        response.setAnswer("答案");
+        response.setRoute(null); // 异常缺失时 Chat 兜底 ABSTAIN, 不允许 null(RF2-06)
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L))))
+                .thenReturn(response);
+        AiMessageDO userMessage = new AiMessageDO();
+        userMessage.setId(3020L);
+        AiMessageDO answerMessage = new AiMessageDO();
+        answerMessage.setId(3021L);
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(userMessage, answerMessage);
+
+        ChatSendResult result = pipeline.send(100L, "问题", "web", null, 6L);
+
+        assertThat(result.getAnswerable()).isTrue();
+        assertThat(result.getRoute()).isEqualTo(ChatRouteEnum.ABSTAIN);
     }
 
     private AiConversationDO conversation(Long id, Long kbId, Long userId, String status) {

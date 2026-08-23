@@ -15,5 +15,6 @@ public interface ErrorCodeConstants {
     ErrorCode KNOWLEDGE_BASE_NOT_EXISTS = new ErrorCode(1_003_000_005, "知识库不存在或无权访问");
     ErrorCode CONVERSATION_CONTEXT_CONFLICT = new ErrorCode(1_003_000_006, "会话已绑定其他知识库，请新建会话");
     ErrorCode KNOWLEDGE_DOMAIN_UNAVAILABLE = new ErrorCode(1_003_000_007, "知识库领域信息不可用，请稍后重试");
+    ErrorCode CONVERSATION_CONTEXT_STALE = new ErrorCode(1_003_000_008, "知识库领域已发生变化，请新建会话后继续问答");
 
 }

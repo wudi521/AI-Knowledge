@@ -35,6 +35,7 @@ import java.util.Set;
 
 import cn.iocoder.yudao.module.chat.enums.chat.ChatRouteEnum;
 
+import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_CONTEXT_STALE;
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
 
 /** 对话编排管线: 会话 → 证据判定 → 回答或转人工。 */
@@ -118,7 +119,15 @@ public class ChatPipeline {
             }
             // RF-01: 每轮重新校验当前用户对该绑定 KB 的可见性(权限被撤销则拒绝继续)
             ensureKbVisible(persistedKbId, userId);
-            knowledgeContext = new KnowledgeContext(persistedKbId, conversation.getDomainCode());
+            // RF2-01: 查询当前 KB 领域并与会话创建时快照对比, 不一致拒绝继续(禁止静默修改/降级 GENERAL)
+            String currentDomain = resolveCurrentDomain(persistedKbId);
+            String snapshotDomain = conversation.getDomainCode();
+            if (StrUtil.isNotBlank(snapshotDomain) && !snapshotDomain.equals(currentDomain)) {
+                log.info("[send][会话({}) 知识库领域由 {} 变为 {}, 拒绝继续: {}]",
+                        conversationId, snapshotDomain, currentDomain, message);
+                throw new ServiceException(CONVERSATION_CONTEXT_STALE);
+            }
+            knowledgeContext = new KnowledgeContext(persistedKbId, currentDomain);
             effectiveKbIds = List.of(knowledgeContext.kbId());
         }
 
@@ -151,14 +160,18 @@ public class ChatPipeline {
 
     private KnowledgeContext resolveKnowledgeContext(Long kbId, Long userId) {
         ensureKbVisible(kbId, userId);
-        // RF-02: domain 获取 fail-closed; RPC 失败 / null / blank 一律业务异常, 禁止降级 GENERAL
+        return new KnowledgeContext(kbId, resolveCurrentDomain(kbId));
+    }
+
+    /** 查询当前 KB 领域(fail-closed: RPC 失败 / null / blank → KNOWLEDGE_DOMAIN_UNAVAILABLE) */
+    private String resolveCurrentDomain(Long kbId) {
         CommonResult<Map<Long, String>> domainResult = knowledgeApi.getKbDomainCodes(List.of(kbId));
         if (domainResult == null || !domainResult.isSuccess() || domainResult.getData() == null
                 || StrUtil.isBlank(domainResult.getData().get(kbId))) {
             throw new ServiceException(
                     cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_DOMAIN_UNAVAILABLE);
         }
-        return new KnowledgeContext(kbId, domainResult.getData().get(kbId));
+        return domainResult.getData().get(kbId);
     }
 
     /** 校验当前用户对该知识库的可见性(失败即抛出, 不降级) */
@@ -263,14 +276,15 @@ public class ChatPipeline {
     }
 
     /**
-     * 路由(不再由 Chat 自行推断): 不可作答 → ABSTAIN; 可作答时透传 Query Planner
-     * 的权威 route(EXACT_METADATA/EXACT_CLAIM/SCOPED_RAG/HYBRID_RAG)。
+     * 路由(不再由 Chat 自行推断): 不可作答/评估缺失 → ABSTAIN; 可作答时透传 Query Planner
+     * 的权威 route(RULE/EXACT_METADATA/EXACT_CLAIM/SCOPED_RAG/HYBRID_RAG)。
+     * 保证正式 response 的 route 永不为 null(RF2-06)。
      */
     private String resolveRoute(EvidenceEvaluateRespDTO resp) {
         if (resp == null || !Boolean.TRUE.equals(resp.getAnswerable())) {
             return ChatRouteEnum.ABSTAIN;
         }
-        return StrUtil.isBlank(resp.getRoute()) ? null : resp.getRoute();
+        return StrUtil.isBlank(resp.getRoute()) ? ChatRouteEnum.ABSTAIN : resp.getRoute();
     }
 
     private ChatSendResult buildTransferResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,

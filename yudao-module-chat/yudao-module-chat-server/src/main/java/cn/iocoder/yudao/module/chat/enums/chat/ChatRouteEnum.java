@@ -1,18 +1,21 @@
 package cn.iocoder.yudao.module.chat.enums.chat;
 
 /**
- * 问答主链路由类型(P0-04 收口)
+ * 问答主链路由类型(Query Planner 权威产出, 全链透传)
  * <p>
- * 每个用户问题必须落到一个明确路由; EXACT_METADATA / EXACT_CLAIM 的确定性判定
- * 依赖 P0-05 / P0-06 的专利元数据与权利要求查找能力, 本轮先收敛到
- * SCOPED_RAG(单文档聚焦) / HYBRID_RAG(跨文档混合检索) / ABSTAIN(放弃作答)。
+ * 每个用户问题必须落到一个明确路由且不可为 null:
+ * RULE / EXACT_METADATA / EXACT_CLAIM / SCOPED_RAG / HYBRID_RAG / ABSTAIN。
+ * 地域/产品/文档等 Scope 类型属于 Trace/Analysis Metadata, 不单独作为新路由。
  */
 public final class ChatRouteEnum {
 
-    /** 结构化元数据精确查询(申请号/公布号/标题等; P0-05 补齐) */
+    /** 硬规则命中(确定性规则, 如 跨省→3天) */
+    public static final String RULE = "RULE";
+
+    /** 结构化元数据精确查询(申请号/公布号/标题/权利要求数量等) */
     public static final String EXACT_METADATA = "EXACT_METADATA";
 
-    /** 权利要求精确查询(原文/依赖/摘要; P0-06 补齐) */
+    /** 权利要求精确查询(原文/依赖/摘要) */
     public static final String EXACT_CLAIM = "EXACT_CLAIM";
 
     /** 单文档范围语义检索 */
@@ -21,7 +24,7 @@ public final class ChatRouteEnum {
     /** 跨文档混合检索(BM25 + 向量融合) */
     public static final String HYBRID_RAG = "HYBRID_RAG";
 
-    /** 证据不足/不可作答, 明确放弃回答 */
+    /** 证据不足/不可作答/异常兜底, 明确放弃回答 */
     public static final String ABSTAIN = "ABSTAIN";
 
     private ChatRouteEnum() {

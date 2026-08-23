@@ -73,6 +73,9 @@ public class EvidenceEvaluateRespVO {
     /** 语义分析详情(意图/实体/改写/子问题; 透传检索结果, 供前端检索诊断) */
     private RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis;
 
+    /** 检索路由(Query Planner 权威产出: RULE/EXACT_METADATA/EXACT_CLAIM/SCOPED_RAG/HYBRID_RAG/ABSTAIN) */
+    private String route;
+
     /** 通道召回统计(BM25/向量/融合; 供前端检索诊断) */
     private RetrievalSearchRespDTO.RetrievalChannelStatDTO channels;
 
