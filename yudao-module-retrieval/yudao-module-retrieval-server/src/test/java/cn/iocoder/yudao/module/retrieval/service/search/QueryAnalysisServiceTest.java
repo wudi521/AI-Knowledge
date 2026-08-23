@@ -39,16 +39,27 @@ class QueryAnalysisServiceTest {
     @Test
     void exactPatentMetadataBypassesAnalysisLlm() {
         QueryAnalysis analysis = service.analyze(
-                "CN 122621758 A 一共有几项权利要求？",
-                null,
-                List.of(),
-                new PatentDomainQueryPolicy());
+                "CN 122621758 A 一共有几项权利要求？", null, List.of(), new PatentDomainQueryPolicy());
 
         assertTrue(analysis.isSuccess());
         assertEquals("BIBLIOGRAPHIC_LOOKUP", analysis.getIntent());
         assertEquals("EXACT_METADATA", analysis.getRoute());
         assertEquals("CN 122621758 A", analysis.getPublicationNo());
         assertEquals(List.of(PatentQueryPreParser.META_CLAIM_COUNT), analysis.getMetadataFields());
+        verify(modelApi, never()).chat(any(ModelChatReqDTO.class));
+    }
+
+    @Test
+    void exactPatentClaimBypassesAnalysisLlm() {
+        QueryAnalysis analysis = service.analyze(
+                "申请号 202311832214.0 的权利要求8引用了哪些在先权利要求？",
+                null, List.of(), new PatentDomainQueryPolicy());
+
+        assertTrue(analysis.isSuccess());
+        assertEquals("CLAIM_DEPENDENCY", analysis.getIntent());
+        assertEquals("EXACT_CLAIM", analysis.getRoute());
+        assertEquals("202311832214.0", analysis.getApplicationNo());
+        assertEquals(8, analysis.getClaimNo());
         verify(modelApi, never()).chat(any(ModelChatReqDTO.class));
     }
 }
