@@ -93,9 +93,12 @@ public class ReviewItemServiceImpl implements ReviewItemService {
         Long docId = aiDocVersionService.getVersion(versionId).getDocId();
         // 领域短路(专利 MVP): PATENT 文档跳过客服条目抽取/产品提取, 直接进入人工审核(文档级确认后发布)
         if (isPatentDomain(docId)) {
+            // 历史数据修复: 文档若曾在 GENERAL 领域处理过, 可能残留 POLICY/PRICE/LEGAL/FAQ/SOP 审核条目。
+            // PATENT 不使用客服式 ReviewItem, 重处理时必须清掉旧条目, 否则页面展示和发布门禁都会被脏数据干扰。
+            reviewItemMapper.deleteByVersionId(versionId);
             aiDocVersionService.submitForReview(versionId);
             aiDocumentMapper.updateParseStatus(docId, "REVIEW", null, null);
-            log.info("[processAfterParsed][版本 {} 为 PATENT 文档, 跳过客服抽取, 进入人工审核]", versionId);
+            log.info("[processAfterParsed][版本 {} 为 PATENT 文档, 清理历史通用审核条目并进入文档级人工审核]", versionId);
             return;
         }
         // P0 防线: 版本下无任何片段(解析失败/空文档)时禁止自动发布, 置 FAILED 供重试, 避免空内容上线
