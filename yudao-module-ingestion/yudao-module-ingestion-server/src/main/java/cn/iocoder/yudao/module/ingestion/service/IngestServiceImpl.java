@@ -245,8 +245,8 @@ public class IngestServiceImpl implements IngestService {
     private void persistChunks(Long documentId, Long versionId, Long tenantId,
                                List<Chunk> chunks, List<List<Float>> vectors) {
         transactionTemplate.executeWithoutResult(status -> {
-            // 1. 清理旧片段(按真实版本 id, 幂等)
-            chunkMapper.deleteByVersionId(versionId);
+            // 1. 清理旧片段(按真实版本 id, 幂等; 必须物理删除——逻辑删除的旧行仍占用 chunk_key 唯一键)
+            chunkMapper.deleteByVersionIdPhysical(versionId);
             // 2. 只写 MySQL(REVIEW 状态, 向量存 embedding): 两阶段批量插入(B2)
             //    阶段1 批量插 父块/叶子(parentId=null), 记录 列表下标→DB id;
             //    阶段2 批量插 子块, parentId(下标) 回填真实 DB id。禁止逐条 insert。

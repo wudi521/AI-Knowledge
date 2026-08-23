@@ -141,7 +141,7 @@ public class QueryAnalysisService {
                 // LLM 输出非 JSON: 视为分析失败, 走规则兜底
                 return fallbackDisambiguate(result, query, history);
             }
-            result.setIntent(clampIntent(json.getStr("intent", "OTHER"), intents));
+            result.setIntent(clampIntent(json.getStr("intent", "OTHER"), intents, policy));
             result.setEntities(strList(json.getJSONArray("entities")));
             result.setProducts(strList(json.getJSONArray("products")));
             result.setProvince(json.getStr("province"));
@@ -168,11 +168,12 @@ public class QueryAnalysisService {
 
     private String buildSystemPrompt(List<IntentDTO> intents,
                                      cn.iocoder.yudao.module.retrieval.service.domain.DomainQueryPolicy policy) {
+        // 领域策略优先(FIXED_DOMAIN): 专利等专业领域存在领域查询提示词时, 无论 KB 是否有动态意图,
+        // 一律用领域提示词——客服式动态意图(合同条款/收费等)不得覆盖专业领域意图分类
+        if (policy != null && cn.hutool.core.util.StrUtil.isNotBlank(policy.queryAnalysisPrompt())) {
+            return promptSupport.get("query-analysis-patent", policy.queryAnalysisPrompt());
+        }
         if (intents == null || intents.isEmpty()) {
-            // 领域提示词优先(专利); 无则代码默认(客服)
-            if (policy != null && cn.hutool.core.util.StrUtil.isNotBlank(policy.queryAnalysisPrompt())) {
-                return promptSupport.get("query-analysis-patent", policy.queryAnalysisPrompt());
-            }
             return promptSupport.get("query-analysis", SYSTEM_PROMPT);
         }
         String dynamic = promptSupport.get("query-disambiguate", DYNAMIC_SYSTEM_PROMPT);
@@ -197,8 +198,22 @@ public class QueryAnalysisService {
     /**
      * 意图钳制(结构化校验, 不信任 LLM 自由发挥): LLM 返回的意图名必须在提供的意图集中,
      * 否则钳制为 OUT_OF_SCOPE。intents 为空时返回 LLM 原值(固定枚举兼容, 缺省 OTHER)。
+     * 领域策略提供固定意图集时(如专利 CLAIM_LOOKUP 等), 按领域意图集钳制——KB 动态意图(合同条款等)不参与。
      */
-    private String clampIntent(String rawIntent, List<IntentDTO> intents) {
+    private String clampIntent(String rawIntent, List<IntentDTO> intents,
+                               cn.iocoder.yudao.module.retrieval.service.domain.DomainQueryPolicy policy) {
+        // 领域固定意图集优先: 专利意图枚举由领域提供, 与 KB 动态意图无关
+        java.util.List<String> domainIntents = policy == null ? null : policy.supportedIntents();
+        if (domainIntents != null && !domainIntents.isEmpty()) {
+            if (StrUtil.isBlank(rawIntent)) {
+                return "OUT_OF_SCOPE";
+            }
+            String trimmed = StrUtil.trim(rawIntent);
+            if (domainIntents.contains(trimmed)) {
+                return trimmed;
+            }
+            return "OUT_OF_SCOPE";
+        }
         if (intents == null || intents.isEmpty()) {
             return StrUtil.isBlank(rawIntent) ? "OTHER" : rawIntent;
         }

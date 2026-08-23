@@ -96,7 +96,13 @@ public class PatentSplitter {
         String currentType = SEC_BIBLIOGRAPHIC;
         String currentTitle = "著录信息";
         for (int i = 0; i < doc.getElements().size(); i++) {
-            String text = doc.getElements().get(i).text();
+            ParsedDocument.Element e = doc.getElements().get(i);
+            // 图片元素 text() 含 contextBefore(前文摘要), 摘要里可能带"说明书/权利要求"等字样,
+            // 若参与章节边界判断会误判(如第5页图片被判 EMBODIMENT)。章节边界只看文本元素。
+            if (e instanceof ParsedDocument.ImageElement) {
+                continue;
+            }
+            String text = e.text();
             String type = matchSection(text);
             if (type != null && !type.equals(currentType)) {
                 sections.add(new Section(currentType, currentTitle, currentStart, i));
@@ -115,7 +121,8 @@ public class PatentSplitter {
             return null;
         }
         // 去全部空白(兼容 PDF 全角空格标题: 权   利   要   求   书)
-        String compact = t.replaceAll("\\s+", "");
+        // 注意: \s 不匹配全角空格 \u3000, 必须显式包含(否则 权利要求书 匹配失败)
+        String compact = t.replaceAll("[\\s\\u3000]+", "");
         // ① 章节页标题(章节名 + 斜杠页码: 权利要求书 1/1 页 / 页眉+章节名): 是章节边界
         if (compact.matches(".*[0-9]+/[0-9]+页.*")) {
             for (Map.Entry<String, String> e : SECTION_TITLES.entrySet()) {
@@ -144,6 +151,11 @@ public class PatentSplitter {
         List<Chunk> result = new ArrayList<>();
         StringBuilder claimsText = new StringBuilder();
         for (ParsedDocument.Element e : elements) {
+            // 图片元素 text() 含 contextBefore(前文摘要), 摘要里可能重复出现"3.文件传输..."等权利要求行,
+            // 拼接进权利要求文本会导致同一权利要求被重复解析。只拼接文本元素。
+            if (e instanceof ParsedDocument.ImageElement) {
+                continue;
+            }
             claimsText.append(e.text()).append('\n');
         }
         List<PatentClaimParser.PatentClaim> claims = claimParser.parse(claimsText.toString());
@@ -196,8 +208,9 @@ public class PatentSplitter {
             if (StrUtil.isBlank(t)) {
                 continue;
             }
-            // 章节标题行本身作为首段(保留章节上下文)
-            if (matchSection(t) != null) {
+            // 章节标题行本身作为首段(保留章节上下文); 仅文本元素判断——
+            // 图片 text() 含 contextBefore(前文摘要), 摘要里可能带"说明书"等字样, 误判会丢失图片
+            if (!(e instanceof ParsedDocument.ImageElement) && matchSection(t) != null) {
                 continue;
             }
             if (current.length() > 0 && SplitUtils.estimateTokens(current.toString()) + SplitUtils.estimateTokens(t) > targetTokens) {

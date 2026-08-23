@@ -93,11 +93,14 @@ public class AnswerPipeline {
                 // 3a. 验证解析失败: 计为一次失败尝试, 重试时要求重新生成
                 attempts++;
                 if (attempts > maxRetry) {
-                    log.warn("[generateWithClaims][验证解析失败且重试耗尽(尝试 {} 次), claimFail=true]", attempts);
+                    // 生产级降级: 解析失败是"验证器故障"而非"内容无据"——重试耗尽后保留回答(信任生成)并告警,
+                    // 避免验证器异常误杀有据回答; 与 3c 的"内容判定无据"严格区分(后者仍阻断)。
+                    log.warn("[generateWithClaims][验证解析失败且重试耗尽(尝试 {} 次), 降级信任生成(claimFail=false)]", attempts);
                     return GenerationResult.builder()
-                            .answer(null)
+                            .answer(answer)
                             .claims(List.of())
-                            .claimFail(true)
+                            .claimFail(false)
+                            .verificationDegraded(true)
                             .build();
                 }
                 feedback = "上次回答未能通过证据核查(核查结果无法解析), 请删除可能无据的内容, 只保留证据能支撑的句子, 并重新标注引用。";

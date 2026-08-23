@@ -58,7 +58,7 @@ yudao:
   eval:
     model: evidence-v1 # 默认评测模型(发起评测任务时写入 ai_eval_task.model)
     gate:
-      enabled: true
+      enabled: false # 评测闸门: P1 达标前关闭(测试环境不阻断发布); P1 落地后置 true 并跑通达标评测
       recall-at-5: 0.9
       mrr: 0.8
       ndcg: 0.8

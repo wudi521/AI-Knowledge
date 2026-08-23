@@ -2,11 +2,27 @@ package cn.iocoder.yudao.module.retrieval.service.domain;
 
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 /**
- * 专利领域查询策略: 专利查询分析提示词 + 关闭产品门禁与通用槽位检测
+ * 专利领域查询策略: 专利查询分析提示词 + 固定领域意图集(FIXED_DOMAIN, 不受 KB 动态意图影响)
+ * + 关闭产品门禁/通用槽位检测/客服式意图自动总结
  */
 @Component
 public class PatentDomainQueryPolicy implements DomainQueryPolicy {
+
+    /** 专利领域固定意图集(意图钳制/路由/证据策略均按此; 不匹配 → OUT_OF_SCOPE) */
+    public static final List<String> PATENT_INTENTS = List.of(
+            "BIBLIOGRAPHIC_LOOKUP",   // 著录信息(申请号/公布号/申请人/发明人/名称/IPC)
+            "ABSTRACT_LOOKUP",        // 摘要
+            "CLAIM_LOOKUP",           // 权利要求内容/限定
+            "CLAIM_DEPENDENCY",       // 权利要求引用/从属/独立
+            "TECHNICAL_SOLUTION",     // 技术方案/原理
+            "BACKGROUND_LOOKUP",      // 背景技术
+            "EMBODIMENT_LOOKUP",      // 具体实施方式
+            "DOCUMENT_COMPARISON",    // 多文档对比
+            "OUT_OF_SCOPE",           // 与专利公开文献无关
+            "OTHER");
 
     /** 专利查询分析提示词(JSON 输出与 QueryAnalysis 兼容; 意图枚举见任务书 8.2) */
     private static final String PATENT_QUERY_ANALYSIS_PROMPT = """
@@ -49,6 +65,11 @@ public class PatentDomainQueryPolicy implements DomainQueryPolicy {
     }
 
     @Override
+    public List<String> supportedIntents() {
+        return PATENT_INTENTS;
+    }
+
+    @Override
     public boolean enableProductGate() {
         return false; // 专利领域无产品/品牌一致性门禁
     }
@@ -56,5 +77,10 @@ public class PatentDomainQueryPolicy implements DomainQueryPolicy {
     @Override
     public boolean enableSlotDetection() {
         return false; // 专利 MVP 关闭通用客服槽位反问
+    }
+
+    @Override
+    public boolean enableAutoIntentSummary() {
+        return false; // 专利意图由领域固定集提供, 禁止客服式自动总结覆盖
     }
 }

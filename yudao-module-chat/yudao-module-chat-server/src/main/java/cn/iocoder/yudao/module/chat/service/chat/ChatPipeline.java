@@ -376,21 +376,38 @@ public class ChatPipeline {
      */
     private List<Long> buildCitations(EvidenceEvaluateRespDTO resp) {
         List<Long> citations = new ArrayList<>();
-        if (resp == null || resp.getClaims() == null || resp.getEvidence() == null) {
+        if (resp == null || resp.getEvidence() == null) {
             return citations;
         }
         Set<Long> seen = new HashSet<>();
-        for (EvidenceClaimDTO claim : resp.getClaims()) {
-            if (claim == null || !"SUPPORTED".equalsIgnoreCase(claim.getVerdict()) || claim.getEvidenceIndex() == null) {
-                continue;
+        if (resp.getClaims() != null) {
+            for (EvidenceClaimDTO claim : resp.getClaims()) {
+                if (claim == null || !"SUPPORTED".equalsIgnoreCase(claim.getVerdict()) || claim.getEvidenceIndex() == null) {
+                    continue;
+                }
+                int index = claim.getEvidenceIndex();
+                if (index < 0 || index >= resp.getEvidence().size()) {
+                    continue;
+                }
+                EvidenceItemDTO item = resp.getEvidence().get(index);
+                if (item != null && item.getChunkId() != null && seen.add(item.getChunkId())) {
+                    citations.add(item.getChunkId());
+                }
             }
-            int index = claim.getEvidenceIndex();
-            if (index < 0 || index >= resp.getEvidence().size()) {
-                continue;
-            }
-            EvidenceItemDTO item = resp.getEvidence().get(index);
-            if (item != null && item.getChunkId() != null && seen.add(item.getChunkId())) {
-                citations.add(item.getChunkId());
+        }
+        // 降级/无断言路径(如验证器解析故障降级信任生成): claims 为空但回答仍标注了 [C1]..[CN],
+        // 从回答文本提取引用编号映射到 evidence 位置, 保证来源卡片与回答标注一致
+        if (citations.isEmpty() && StrUtil.isNotBlank(resp.getAnswer())) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\[C(\\d+)]").matcher(resp.getAnswer());
+            while (m.find()) {
+                int index = Integer.parseInt(m.group(1)) - 1;
+                if (index < 0 || index >= resp.getEvidence().size()) {
+                    continue;
+                }
+                EvidenceItemDTO item = resp.getEvidence().get(index);
+                if (item != null && item.getChunkId() != null && seen.add(item.getChunkId())) {
+                    citations.add(item.getChunkId());
+                }
             }
         }
         return citations;
