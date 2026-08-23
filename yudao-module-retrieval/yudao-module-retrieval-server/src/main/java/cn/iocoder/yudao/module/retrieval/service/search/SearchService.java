@@ -112,13 +112,23 @@ public class SearchService {
         }
         Map<Long, String> metadataMap = resultFilter.getChunkMetadatas(publishedIds);
         Map<Long, ChunkDocInfoDTO> docInfoMap = resultFilter.getChunkDocInfo(publishedIds);
-        // P0-05 fail closed: 同专利编号命中多个不同文档(编号冲突) → 无法确认唯一结果, 拒答
-        java.util.Set<String> docIds = new java.util.HashSet<>();
-        for (ChunkDocInfoDTO info : docInfoMap.values()) {
-            if (info != null && info.getDocumentId() != null) docIds.add(String.valueOf(info.getDocumentId()));
+        // P0-05 fail closed: 同一专利编号命中多个不同专利(编号冲突) → 拒答; 同一专利的重复导入副本允许取任一
+        java.util.Set<String> identities = new java.util.HashSet<>();
+        for (Long chunkId : publishedIds) {
+            String meta = metadataMap.get(chunkId);
+            if (meta == null) continue;
+            try {
+                cn.hutool.json.JSONObject obj = JSONUtil.parseObj(meta);
+                String app = obj.getStr("applicationNo");
+                String pub = obj.getStr("publicationNo");
+                if (StrUtil.isBlank(app) && StrUtil.isBlank(pub)) continue;
+                identities.add((app != null ? "app:" + app : "") + "|" + (pub != null ? "pub:" + pub : ""));
+            } catch (Exception ignored) {
+                // 元数据解析失败, 不计入身份判断
+            }
         }
-        if (docIds.size() > 1) {
-            log.warn("[searchExactMetadata][同专利编号命中多个文档, fail-closed: docIds={}, query={}]", docIds, query);
+        if (identities.size() > 1) {
+            log.warn("[searchExactMetadata][同专利编号命中多个不同专利, fail-closed: identities={}, query={}]", identities, query);
             resp.setResults(List.of());
             recordTrace(query, resp, 1, startMs);
             return resp;
