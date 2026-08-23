@@ -112,15 +112,13 @@ public class ChatPipeline {
             }
             Long persistedKbId = conversation.getKbId();
             if (persistedKbId == null) {
-                persistedKbId = resolveLegacyKbId(conversation.getKbIds());
-                if (persistedKbId == null) {
-                    log.info("[send][会话({}) 未绑定知识库, 拒绝默认全库检索: {}]", conversationId, message);
-                    return buildKbRequiredResult(conversationId);
-                }
-                knowledgeContext = resolveKnowledgeContext(persistedKbId, userId);
-            } else {
-                knowledgeContext = new KnowledgeContext(persistedKbId, conversation.getDomainCode());
+                // RF-07: 无绑定历史会话只读历史, 继续发送由前端新建会话; 禁止回退旧 kb_ids 全库检索
+                log.info("[send][会话({}) 未绑定知识库, 拒绝继续查询: {}]", conversationId, message);
+                return buildKbRequiredResult(conversationId);
             }
+            // RF-01: 每轮重新校验当前用户对该绑定 KB 的可见性(权限被撤销则拒绝继续)
+            ensureKbVisible(persistedKbId, userId);
+            knowledgeContext = new KnowledgeContext(persistedKbId, conversation.getDomainCode());
             effectiveKbIds = List.of(knowledgeContext.kbId());
         }
 
@@ -152,6 +150,19 @@ public class ChatPipeline {
     }
 
     private KnowledgeContext resolveKnowledgeContext(Long kbId, Long userId) {
+        ensureKbVisible(kbId, userId);
+        // RF-02: domain 获取 fail-closed; RPC 失败 / null / blank 一律业务异常, 禁止降级 GENERAL
+        CommonResult<Map<Long, String>> domainResult = knowledgeApi.getKbDomainCodes(List.of(kbId));
+        if (domainResult == null || !domainResult.isSuccess() || domainResult.getData() == null
+                || StrUtil.isBlank(domainResult.getData().get(kbId))) {
+            throw new ServiceException(
+                    cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_DOMAIN_UNAVAILABLE);
+        }
+        return new KnowledgeContext(kbId, domainResult.getData().get(kbId));
+    }
+
+    /** 校验当前用户对该知识库的可见性(失败即抛出, 不降级) */
+    private void ensureKbVisible(Long kbId, Long userId) {
         if (kbId == null || kbId <= 0) {
             throw new ServiceException(cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_BASE_NOT_EXISTS);
         }
@@ -160,29 +171,6 @@ public class ChatPipeline {
                 || !visibleResult.getData().contains(kbId)) {
             throw new ServiceException(cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_BASE_NOT_EXISTS);
         }
-        String domainCode = "GENERAL";
-        CommonResult<Map<Long, String>> domainResult = knowledgeApi.getKbDomainCodes(List.of(kbId));
-        if (domainResult != null && domainResult.isSuccess() && domainResult.getData() != null) {
-            domainCode = StrUtil.blankToDefault(domainResult.getData().get(kbId), "GENERAL");
-        }
-        return new KnowledgeContext(kbId, domainCode);
-    }
-
-    private Long resolveLegacyKbId(String kbIds) {
-        if (StrUtil.isBlank(kbIds)) {
-            return null;
-        }
-        for (String value : kbIds.split(",")) {
-            try {
-                long parsed = Long.parseLong(value.trim());
-                if (parsed > 0) {
-                    return parsed;
-                }
-            } catch (NumberFormatException ignored) {
-                // 跳过迁移期旧数据中的非法绑定值。
-            }
-        }
-        return null;
     }
 
     private record KnowledgeContext(Long kbId, String domainCode) {
@@ -244,7 +232,7 @@ public class ChatPipeline {
                 .messageId(aiMessage != null ? aiMessage.getId() : null)
                 .kbId(knowledgeContext.kbId())
                 .domainCode(knowledgeContext.domainCode())
-                .route(resolveRoute(resp, evidence))
+                .route(resolveRoute(resp))
                 .intent(resolveIntent(resp))
                 .degraded(false)
                 .answer(resp.getAnswer())
@@ -263,7 +251,6 @@ public class ChatPipeline {
         for (EvidenceItemDTO e : resp.getEvidence()) {
             if (e == null || e.getChunkId() == null) continue;
             String meta = e.getChunkMetadata();
-            if (meta == null || meta.isBlank() || !meta.contains("sectionType")) continue;
             list.add(ChatSendResult.EvidenceSummary.builder()
                     .chunkId(e.getChunkId())
                     .documentName(e.getDocumentName())
@@ -276,45 +263,14 @@ public class ChatPipeline {
     }
 
     /**
-     * 路由推导(P0-04): 不可作答 → ABSTAIN; 可作答时按证据文档聚焦度区分
-     * SCOPED_RAG(单文档) / HYBRID_RAG(跨文档)。EXACT_METADATA / EXACT_CLAIM
-     * 的确定性判定由 P0-05 / P0-06 查找能力补齐。
+     * 路由(不再由 Chat 自行推断): 不可作答 → ABSTAIN; 可作答时透传 Query Planner
+     * 的权威 route(EXACT_METADATA/EXACT_CLAIM/SCOPED_RAG/HYBRID_RAG)。
      */
-    private String resolveRoute(EvidenceEvaluateRespDTO resp, List<ChatSendResult.EvidenceSummary> evidence) {
+    private String resolveRoute(EvidenceEvaluateRespDTO resp) {
         if (resp == null || !Boolean.TRUE.equals(resp.getAnswerable())) {
             return ChatRouteEnum.ABSTAIN;
         }
-        Set<String> docIds = new HashSet<>();
-        for (ChatSendResult.EvidenceSummary e : evidence) {
-            String identity = evidenceDocIdentity(e);
-            if (identity != null) {
-                docIds.add(identity);
-            }
-        }
-        return docIds.size() <= 1 ? ChatRouteEnum.SCOPED_RAG : ChatRouteEnum.HYBRID_RAG;
-    }
-
-    /** 证据文档身份: 优先申请号/公布号(chunkMetadata), 缺失回退文档名; 空证据返回 null */
-    private String evidenceDocIdentity(ChatSendResult.EvidenceSummary e) {
-        if (e == null) {
-            return null;
-        }
-        if (StrUtil.isNotBlank(e.getChunkMetadata())) {
-            try {
-                cn.hutool.json.JSONObject meta = JSONUtil.parseObj(e.getChunkMetadata());
-                String applicationNo = meta.getStr("applicationNo");
-                if (StrUtil.isNotBlank(applicationNo)) {
-                    return "app:" + applicationNo;
-                }
-                String publicationNo = meta.getStr("publicationNo");
-                if (StrUtil.isNotBlank(publicationNo)) {
-                    return "pub:" + publicationNo;
-                }
-            } catch (Exception ignored) {
-                // 元数据解析失败回退文档名
-            }
-        }
-        return e.getDocumentName();
+        return StrUtil.isBlank(resp.getRoute()) ? null : resp.getRoute();
     }
 
     private ChatSendResult buildTransferResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,

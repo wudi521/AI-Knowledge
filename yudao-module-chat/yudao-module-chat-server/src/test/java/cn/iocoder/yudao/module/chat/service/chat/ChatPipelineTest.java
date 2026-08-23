@@ -26,6 +26,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
@@ -34,6 +36,7 @@ import java.util.Set;
 
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_BASE_NOT_EXISTS;
+import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_DOMAIN_UNAVAILABLE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -47,6 +50,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class ChatPipelineTest {
 
     @Mock
@@ -81,6 +85,8 @@ class ChatPipelineTest {
         loginUser.setTenantId(7L);
         securityFrameworkUtils = org.mockito.Mockito.mockStatic(SecurityFrameworkUtils.class);
         securityFrameworkUtils.when(SecurityFrameworkUtils::getLoginUser).thenReturn(loginUser);
+        // RF-01: 每轮权限校验的默认通过态(当前用户可见 KB=6); 撤销/失败场景由特定测试覆盖
+        when(knowledgeApi.getVisibleKbIds(42L)).thenReturn(CommonResult.success(Set.of(6L)));
     }
 
     @AfterEach
@@ -101,7 +107,6 @@ class ChatPipelineTest {
 
         verify(conversationService).createConversation("WEB", null, 6L, "PATENT", 42L);
         verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)));
-        verify(conversationService, never()).bindKbIds(any(), anyList());
     }
 
     @Test
@@ -269,7 +274,7 @@ class ChatPipelineTest {
     }
 
     @Test
-    void existingConversationAlwaysUsesPersistedKbAndNeverBindsRequestKb() {
+    void existingConversationRevalidatesKbVisibilityEachRound() {
         AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
         when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
         when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L))))
@@ -277,9 +282,21 @@ class ChatPipelineTest {
 
         pipeline.send(100L, "问题", "web", null, 7L);
 
+        verify(knowledgeApi).getVisibleKbIds(42L);
         verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)));
-        verify(conversationService, never()).bindKbIds(any(), anyList());
-        verify(knowledgeApi, never()).getVisibleKbIds(any());
+    }
+
+    @Test
+    void revokedKbCannotContinueConversation() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        when(knowledgeApi.getVisibleKbIds(42L)).thenReturn(CommonResult.success(Set.of(1L)));
+
+        assertThatThrownBy(() -> pipeline.send(100L, "问题", "web", null, 7L))
+                .isInstanceOf(ServiceException.class)
+                .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
+
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
     }
 
     @Test
@@ -294,46 +311,17 @@ class ChatPipelineTest {
     }
 
     @Test
-    void legacyConversationUsesFirstPositiveVisibleKbId() {
+    void legacyUnboundConversationCannotQueryAllKb() {
         AiConversationDO conversation = conversation(100L, null, 42L, "ACTIVE");
         conversation.setKbIds("0,5,7");
         when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-        when(knowledgeApi.getVisibleKbIds(42L)).thenReturn(CommonResult.success(Set.of(5L)));
-        when(knowledgeApi.getKbDomainCodes(List.of(5L))).thenReturn(CommonResult.success(Map.of(5L, "")));
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(5L))))
-                .thenReturn(null);
-
-        pipeline.send(100L, "问题", "web", null, null);
-
-        verify(knowledgeApi).getVisibleKbIds(42L);
-        verify(knowledgeApi).getKbDomainCodes(List.of(5L));
-        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(5L)));
-        verify(conversationService, never()).bindKbIds(any(), anyList());
-    }
-
-    @Test
-    void legacyConversationAnswerUsesResolvedKnowledgeContextInResult() {
-        AiConversationDO conversation = conversation(100L, null, 42L, "ACTIVE");
-        conversation.setKbIds("0,5,7");
-        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-        when(knowledgeApi.getVisibleKbIds(42L)).thenReturn(CommonResult.success(Set.of(5L)));
-        when(knowledgeApi.getKbDomainCodes(List.of(5L))).thenReturn(CommonResult.success(Map.of(5L, "PATENT")));
-        EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
-        response.setAnswerable(true);
-        response.setAnswer("legacy answer");
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(5L))))
-                .thenReturn(response);
-        AiMessageDO userMessage = new AiMessageDO();
-        userMessage.setId(3020L);
-        AiMessageDO answerMessage = new AiMessageDO();
-        answerMessage.setId(3021L);
-        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(userMessage, answerMessage);
 
         ChatSendResult result = pipeline.send(100L, "问题", "web", null, null);
 
-        assertThat(result.getKbId()).isEqualTo(5L);
-        assertThat(result.getDomainCode()).isEqualTo("PATENT");
+        assertThat(result.getConversationId()).isEqualTo(100L);
+        assertThat(result.getAnswerable()).isFalse();
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(knowledgeApi, never()).getVisibleKbIds(any());
     }
 
     @Test
@@ -390,62 +378,14 @@ class ChatPipelineTest {
     }
 
     @Test
-    void legacyConversationSkipsInvalidKbIdBeforeUsingNextPositiveId() {
-        AiConversationDO conversation = conversation(100L, null, 42L, "ACTIVE");
-        conversation.setKbIds("not-a-number,5");
-        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-        when(knowledgeApi.getVisibleKbIds(42L)).thenReturn(CommonResult.success(Set.of(5L)));
-        when(knowledgeApi.getKbDomainCodes(List.of(5L))).thenReturn(CommonResult.success(Map.of(5L, "PATENT")));
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(5L))))
-                .thenReturn(null);
-
-        pipeline.send(100L, "问题", "web", null, null);
-
-        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(5L)));
-    }
-
-    @Test
-    void legacyConversationSkipsOverflowKbIdBeforeUsingNextPositiveId() {
-        AiConversationDO conversation = conversation(100L, null, 42L, "ACTIVE");
-        conversation.setKbIds("9223372036854775808,5");
-        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-        when(knowledgeApi.getVisibleKbIds(42L)).thenReturn(CommonResult.success(Set.of(5L)));
-        when(knowledgeApi.getKbDomainCodes(List.of(5L))).thenReturn(CommonResult.success(Map.of(5L, "PATENT")));
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(5L))))
-                .thenReturn(null);
-
-        pipeline.send(100L, "问题", "web", null, null);
-
-        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(5L)));
-    }
-
-    @Test
-    void legacyConversationWithOnlyInvalidKbIdsStopsBeforeEvidence() {
-        AiConversationDO conversation = conversation(100L, null, 42L, "ACTIVE");
-        conversation.setKbIds("not-a-number,9223372036854775808,-1,0");
-        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-
-        ChatSendResult result = pipeline.send(100L, "问题", "web", null, null);
-
-        assertThat(result.getConversationId()).isEqualTo(100L);
-        assertThat(result.getAnswerable()).isFalse();
-        assertThat(result.getDegraded()).isFalse();
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
-        verify(knowledgeApi, never()).getVisibleKbIds(any());
-    }
-
-    @Test
-    void answerResultRoutesScopedRagWhenEvidenceConfinedToOneDocument() {
+    void exactMetadataRouteIsPreserved() {
         AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
         conversation.setDomainCode("PATENT");
         when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
         EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
         response.setAnswerable(true);
         response.setAnswer("答案");
-        EvidenceItemDTO item = new EvidenceItemDTO();
-        item.setChunkId(2091L);
-        item.setChunkMetadata("{\"applicationNo\":\"202311042981.1\",\"sectionType\":\"CLAIM\"}");
-        response.setEvidence(List.of(item));
+        response.setRoute(ChatRouteEnum.EXACT_METADATA);
         when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L))))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
@@ -455,23 +395,21 @@ class ChatPipelineTest {
         when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(userMessage, answerMessage);
 
-        ChatSendResult result = pipeline.send(100L, "申请号 202311042981.1 的核心技术方案是什么?", "web", null, 6L);
+        ChatSendResult result = pipeline.send(100L, "CN 122621758 A 一共有几项权利要求?", "web", null, 6L);
 
         assertThat(result.getAnswerable()).isTrue();
-        assertThat(result.getRoute()).isEqualTo(ChatRouteEnum.SCOPED_RAG);
+        assertThat(result.getRoute()).isEqualTo(ChatRouteEnum.EXACT_METADATA);
     }
 
     @Test
-    void answerResultRoutesHybridRagWhenEvidenceSpansDocuments() {
+    void exactClaimRouteIsPreserved() {
         AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
         conversation.setDomainCode("PATENT");
         when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
         EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
         response.setAnswerable(true);
         response.setAnswer("答案");
-        response.setEvidence(List.of(
-                evidenceItem(2091L, "{\"applicationNo\":\"202311042981.1\",\"sectionType\":\"CLAIM\"}"),
-                evidenceItem(2092L, "{\"applicationNo\":\"202311832214.0\",\"sectionType\":\"SUMMARY\"}")));
+        response.setRoute(ChatRouteEnum.EXACT_CLAIM);
         when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L))))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
@@ -481,10 +419,46 @@ class ChatPipelineTest {
         when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(userMessage, answerMessage);
 
-        ChatSendResult result = pipeline.send(100L, "哪一份专利使用电脑绣代替印花?", "web", null, 6L);
+        ChatSendResult result = pipeline.send(100L, "申请号 202311042981.1 权利要求1原文是什么?", "web", null, 6L);
 
         assertThat(result.getAnswerable()).isTrue();
-        assertThat(result.getRoute()).isEqualTo(ChatRouteEnum.HYBRID_RAG);
+        assertThat(result.getRoute()).isEqualTo(ChatRouteEnum.EXACT_CLAIM);
+    }
+
+    @Test
+    void generalEvidenceWithoutSectionTypeIsPreserved() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
+        response.setAnswerable(true);
+        response.setAnswer("答案");
+        // GENERAL 证据无 sectionType, 不应被丢弃
+        response.setEvidence(List.of(evidenceItem(2091L, null)));
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L))))
+                .thenReturn(response);
+        AiMessageDO userMessage = new AiMessageDO();
+        userMessage.setId(3020L);
+        AiMessageDO answerMessage = new AiMessageDO();
+        answerMessage.setId(3021L);
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(userMessage, answerMessage);
+
+        ChatSendResult result = pipeline.send(100L, "退换货政策是什么?", "web", null, 6L);
+
+        assertThat(result.getEvidence()).hasSize(1);
+        assertThat(result.getEvidence().get(0).getChunkId()).isEqualTo(2091L);
+    }
+
+    @Test
+    void domainLookupFailureDoesNotCreateConversation() {
+        when(knowledgeApi.getVisibleKbIds(42L)).thenReturn(CommonResult.success(Set.of(6L)));
+        when(knowledgeApi.getKbDomainCodes(List.of(6L))).thenReturn(CommonResult.error(500, "domain rpc 失败"));
+
+        assertThatThrownBy(() -> pipeline.send(null, "问题", "web", null, 6L))
+                .isInstanceOf(ServiceException.class)
+                .extracting("code").isEqualTo(KNOWLEDGE_DOMAIN_UNAVAILABLE.getCode());
+
+        verify(conversationService, never()).createConversation(anyString(), anyString(), any(), anyString(), any());
     }
 
     @Test

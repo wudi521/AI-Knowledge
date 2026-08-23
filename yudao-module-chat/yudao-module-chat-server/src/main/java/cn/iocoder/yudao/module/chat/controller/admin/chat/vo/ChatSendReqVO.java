@@ -18,10 +18,6 @@ public class ChatSendReqVO {
     /** 当前发送请求选择的知识库编号(新会话必填; 既有会话以后端持久化绑定为准, 禁止覆盖) */
     private Long kbId;
 
-    /** 知识库编号列表(仅兼容旧调用方; 会话已绑定知识库时后端忽略, 不允许覆盖会话绑定) */
-    @Deprecated
-    private java.util.List<Long> kbIds;
-
     @Schema(description = "渠道(为空默认 WEB)", example = "WEB")
     private String channel;
 

@@ -9,7 +9,6 @@ import cn.iocoder.yudao.module.chat.dal.dataobject.conversation.AiConversationDO
 import cn.iocoder.yudao.module.chat.dal.mysql.conversation.AiConversationMapper;
 import cn.iocoder.yudao.module.chat.enums.conversation.ConversationStatusEnum;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -17,7 +16,6 @@ import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
 
-import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_CONTEXT_CONFLICT;
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
 
 /**
@@ -96,47 +94,6 @@ public class ConversationService {
         } catch (NumberFormatException ignored) {
             return null;
         }
-    }
-
-    /**
-     * 确保会话绑定指定知识库，绑定一旦存在不可覆盖。
-     * 相同绑定、空绑定以及无权访问均不产生写入；无权访问按会话不存在处理。
-     */
-    public void ensureBoundKb(Long conversationId, Long kbId, Long userId) {
-        AiConversationDO conversation = getConversationForUser(conversationId, userId);
-        if (conversation == null) {
-            throw new ServiceException(CONVERSATION_NOT_EXISTS);
-        }
-        if (kbId == null || kbId.equals(conversation.getKbId())) {
-            return;
-        }
-        if (conversation.getKbId() != null) {
-            throw new ServiceException(CONVERSATION_CONTEXT_CONFLICT);
-        }
-        UpdateWrapper<AiConversationDO> updateWrapper = new UpdateWrapper<AiConversationDO>()
-                .eq("id", conversationId)
-                .isNull("kb_id");
-        if (conversation.getUserId() != null) {
-            updateWrapper.eq("user_id", userId);
-        } else {
-            updateWrapper.isNull("user_id").eq("creator", conversation.getCreator());
-        }
-        int rows = aiConversationMapper.update(null, updateWrapper.set("kb_id", kbId));
-        if (rows > 0) {
-            return;
-        }
-
-        AiConversationDO refreshed = getConversationForUser(conversationId, userId);
-        if (refreshed == null) {
-            throw new ServiceException(CONVERSATION_NOT_EXISTS);
-        }
-        if (kbId.equals(refreshed.getKbId())) {
-            return;
-        }
-        if (refreshed.getKbId() != null) {
-            throw new ServiceException(CONVERSATION_CONTEXT_CONFLICT);
-        }
-        throw new ServiceException(CONVERSATION_CONTEXT_CONFLICT);
     }
 
     /**
@@ -239,6 +196,13 @@ public class ConversationService {
         return aiConversationMapper.selectPage(reqVO);
     }
 
+    /**
+     * 当前用户会话分页(用户范围隔离: user_id=当前用户 或 creator=当前用户; 见 Mapper#selectMyPage)
+     */
+    public PageResult<AiConversationDO> getMyConversationPage(ConversationPageReqVO reqVO, Long userId) {
+        return aiConversationMapper.selectMyPage(reqVO, userId);
+    }
+
     private AiConversationDO requireConversation(Long id) {
         AiConversationDO conversation = getConversation(id);
         if (conversation == null) {
@@ -248,7 +212,7 @@ public class ConversationService {
     }
 
 
-    /** 获取会话绑定的知识库编号列表(逗号分隔字符串解析; 未绑定返回空) */
+    /** 获取会话绑定的知识库编号列表(逗号分隔字符串解析; 未绑定返回空; 仅历史迁移读取) */
     public java.util.List<Long> getBoundKbIds(Long conversationId) {
         AiConversationDO conversation = getConversation(conversationId);
         if (conversation == null || StrUtil.isBlank(conversation.getKbIds())) {
@@ -262,16 +226,5 @@ public class ConversationService {
             }
         }
         return ids;
-    }
-
-    /** 绑定会话知识库(持久化, 后续轮次复用; 幂等覆盖) */
-    public void bindKbIds(Long conversationId, java.util.List<Long> kbIds) {
-        if (kbIds == null || kbIds.isEmpty()) {
-            return;
-        }
-        AiConversationDO update = new AiConversationDO();
-        update.setId(conversationId);
-        update.setKbIds(kbIds.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
-        aiConversationMapper.updateById(update);
     }
 }

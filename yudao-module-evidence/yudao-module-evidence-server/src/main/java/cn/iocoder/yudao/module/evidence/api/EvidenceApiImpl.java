@@ -96,6 +96,8 @@ public class EvidenceApiImpl implements EvidenceApi {
         // 检索诊断透传(意图/实体/改写/通道统计; 供前端检索测试页单接口展示)
         dto.setAnalysis(toAnalysisDTO(vo.getAnalysis()));
         dto.setChannels(toChannelStatDTO(vo.getChannels()));
+        // 检索路由透传(Query Planner 权威产出; 供对话层直接使用, 不自行推断)
+        dto.setRoute(vo.getAnalysis() != null ? vo.getAnalysis().getRoute() : null);
         // 上下文回显(evidence-api ChatTurnDTO, 与 VO 同类型, 直接透传)
         dto.setHistory(vo.getHistory());
         return success(dto);
@@ -127,6 +129,7 @@ public class EvidenceApiImpl implements EvidenceApi {
         dto.setRewrites(vo.getRewrites());
         dto.setSubQuestions(vo.getSubQuestions());
         dto.setSuccess(vo.getSuccess());
+        dto.setRoute(vo.getRoute());
         return dto;
     }
 

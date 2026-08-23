@@ -58,6 +58,9 @@ public class RetrievalSearchRespDTO {
         /** 分析是否成功(失败时走关键词检索) */
         private Boolean success;
 
+        /** 检索路由: EXACT_METADATA / EXACT_CLAIM / SCOPED_RAG / HYBRID_RAG / ABSTAIN(Query Planner 权威产出) */
+        private String route;
+
     }
 
     /**

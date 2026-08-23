@@ -67,6 +67,7 @@ public class RetrievalApiImpl implements RetrievalApi {
             analysis.setRewrites(vo.getAnalysis().getRewrites());
             analysis.setSubQuestions(vo.getAnalysis().getSubQuestions());
             analysis.setSuccess(vo.getAnalysis().isSuccess());
+            analysis.setRoute(vo.getAnalysis().getRoute());
             dto.setAnalysis(analysis);
         }
         if (vo.getChannels() != null) {

@@ -84,10 +84,18 @@ public class ConversationController {
     }
 
     @GetMapping("/page")
-    @Operation(summary = "会话分页(状态筛选, 按创建时间倒序)")
+    @Operation(summary = "会话分页(状态筛选, 按创建时间倒序; 全租户, 供管理端)")
     @PreAuthorize("@ss.hasPermission('chat:conversation:query')")
     public CommonResult<PageResult<AiConversationDO>> page(@Valid ConversationPageReqVO reqVO) {
         return success(conversationService.getConversationPage(reqVO));
+    }
+
+    @GetMapping("/my-page")
+    @Operation(summary = "当前用户的会话分页(状态筛选, 按创建时间倒序; 用户范围隔离)")
+    @PreAuthorize("@ss.hasPermission('chat:conversation:query')")
+    public CommonResult<PageResult<AiConversationDO>> myPage(@Valid ConversationPageReqVO reqVO) {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        return success(conversationService.getMyConversationPage(reqVO, userId));
     }
 
     // ========== 工具 ==========
