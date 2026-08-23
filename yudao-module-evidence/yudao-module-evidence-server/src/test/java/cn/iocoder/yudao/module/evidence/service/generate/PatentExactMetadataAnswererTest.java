@@ -14,18 +14,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PatentExactMetadataAnswererTest {
 
     private Evidence patentEvidence() {
-        String metadata = JSONUtil.toJsonStr(Map.of(
-                "domainCode", "PATENT",
-                "applicationNo", "202311344028.2",
-                "publicationNo", "CN 122621758 A",
-                "title", "一种分区域视频和图片的储存和下载技术",
-                "applicants", List.of("韩信"),
-                "inventors", List.of("韩信"),
-                "ipcCodes", List.of("H04N 21/238", "H04N 21/438"),
-                "claimCount", 7,
-                "filingDate", "2023-10-17",
-                "publicationDate", "2026-08-21",
-                "sourceType", "发明专利申请公布"
+        String metadata = JSONUtil.toJsonStr(Map.ofEntries(
+                Map.entry("domainCode", "PATENT"),
+                Map.entry("applicationNo", "202311344028.2"),
+                Map.entry("publicationNo", "CN 122621758 A"),
+                Map.entry("title", "一种分区域视频和图片的储存和下载技术"),
+                Map.entry("applicants", List.of("韩信")),
+                Map.entry("inventors", List.of("韩信")),
+                Map.entry("ipcCodes", List.of("H04N 21/238", "H04N 21/438")),
+                Map.entry("claimCount", 7),
+                Map.entry("filingDate", "2023-10-17"),
+                Map.entry("publicationDate", "2026-08-21"),
+                Map.entry("sourceType", "发明专利申请公布")
         ));
         return Evidence.builder()
                 .chunkId(1L)
