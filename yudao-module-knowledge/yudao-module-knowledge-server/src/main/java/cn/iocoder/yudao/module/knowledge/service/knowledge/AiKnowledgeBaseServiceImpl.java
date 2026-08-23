@@ -19,8 +19,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.module.knowledge.enums.KnowledgeLogRecordConstants.*;
 
@@ -52,6 +50,9 @@ public class AiKnowledgeBaseServiceImpl implements AiKnowledgeBaseService {
             success = KB_CREATE_SUCCESS)
     public Long createAiKnowledgeBase(AiKnowledgeBaseSaveReqVO createReqVO) {
         AiKnowledgeBaseDO knowledgeBase = BeanUtils.toBean(createReqVO, AiKnowledgeBaseDO.class);
+        if (StrUtil.isBlank(knowledgeBase.getDomainCode())) {
+            knowledgeBase.setDomainCode("GENERAL");
+        }
         aiKnowledgeBaseMapper.insert(knowledgeBase);
         LogRecordContext.putVariable("kb", knowledgeBase);
         // 新建即触发槽位自动总结(空库无内容 → 优雅跳过; 发布后会自动再触发)
@@ -67,7 +68,20 @@ public class AiKnowledgeBaseServiceImpl implements AiKnowledgeBaseService {
         if (db == null) {
             throw new IllegalArgumentException("知识库不存在");
         }
+
+        String currentDomain = StrUtil.blankToDefault(db.getDomainCode(), "GENERAL");
+        String requestedDomain = StrUtil.blankToDefault(updateReqVO.getDomainCode(), currentDomain);
+        if (!currentDomain.equals(requestedDomain)) {
+            List<AiDocumentDO> docs = aiDocumentMapper.selectListByKbId(updateReqVO.getId());
+            if (docs != null && !docs.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "知识库已有文档，领域类型已锁定。领域决定解析、切分、审核和检索策略；如需切换领域，请新建对应领域知识库并重新入库。"
+                );
+            }
+        }
+
         AiKnowledgeBaseDO update = BeanUtils.toBean(updateReqVO, AiKnowledgeBaseDO.class);
+        update.setDomainCode(requestedDomain);
         aiKnowledgeBaseMapper.updateById(update);
     }
 
