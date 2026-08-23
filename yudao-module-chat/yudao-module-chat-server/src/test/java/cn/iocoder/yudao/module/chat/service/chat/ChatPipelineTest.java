@@ -12,7 +12,9 @@ import cn.iocoder.yudao.module.chat.service.conversation.ConversationService;
 import cn.iocoder.yudao.module.chat.service.evidence.EvidenceRpcAdapter;
 import cn.iocoder.yudao.module.chat.service.message.MessageService;
 import cn.iocoder.yudao.module.chat.service.transfer.TransferHandler;
+import cn.iocoder.yudao.module.chat.enums.chat.ChatRouteEnum;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceAnalysisDTO;
+import cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceSlotValueDTO;
@@ -432,6 +434,83 @@ class ChatPipelineTest {
         verify(knowledgeApi, never()).getVisibleKbIds(any());
     }
 
+    @Test
+    void answerResultRoutesScopedRagWhenEvidenceConfinedToOneDocument() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        conversation.setDomainCode("PATENT");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
+        response.setAnswerable(true);
+        response.setAnswer("答案");
+        EvidenceItemDTO item = new EvidenceItemDTO();
+        item.setChunkId(2091L);
+        item.setChunkMetadata("{\"applicationNo\":\"202311042981.1\",\"sectionType\":\"CLAIM\"}");
+        response.setEvidence(List.of(item));
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L))))
+                .thenReturn(response);
+        AiMessageDO userMessage = new AiMessageDO();
+        userMessage.setId(3020L);
+        AiMessageDO answerMessage = new AiMessageDO();
+        answerMessage.setId(3021L);
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(userMessage, answerMessage);
+
+        ChatSendResult result = pipeline.send(100L, "申请号 202311042981.1 的核心技术方案是什么?", "web", null, 6L);
+
+        assertThat(result.getAnswerable()).isTrue();
+        assertThat(result.getRoute()).isEqualTo(ChatRouteEnum.SCOPED_RAG);
+    }
+
+    @Test
+    void answerResultRoutesHybridRagWhenEvidenceSpansDocuments() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        conversation.setDomainCode("PATENT");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
+        response.setAnswerable(true);
+        response.setAnswer("答案");
+        response.setEvidence(List.of(
+                evidenceItem(2091L, "{\"applicationNo\":\"202311042981.1\",\"sectionType\":\"CLAIM\"}"),
+                evidenceItem(2092L, "{\"applicationNo\":\"202311832214.0\",\"sectionType\":\"SUMMARY\"}")));
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L))))
+                .thenReturn(response);
+        AiMessageDO userMessage = new AiMessageDO();
+        userMessage.setId(3020L);
+        AiMessageDO answerMessage = new AiMessageDO();
+        answerMessage.setId(3021L);
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(userMessage, answerMessage);
+
+        ChatSendResult result = pipeline.send(100L, "哪一份专利使用电脑绣代替印花?", "web", null, 6L);
+
+        assertThat(result.getAnswerable()).isTrue();
+        assertThat(result.getRoute()).isEqualTo(ChatRouteEnum.HYBRID_RAG);
+    }
+
+    @Test
+    void transferDecisionRoutesAbstainWhenUnanswerable() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
+        response.setAnswerable(false);
+        response.setRefusalReason("证据不足");
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L))))
+                .thenReturn(response);
+        ChatSendResult transferResult = ChatSendResult.builder()
+                .conversationId(100L)
+                .transferRequired(true)
+                .transferReason("证据不足")
+                .build();
+        when(transferHandler.handleTransfer(eq(100L), eq("问题"), any(ChatSendResult.class)))
+                .thenReturn(transferResult);
+
+        pipeline.send(100L, "问题", "web", null, 7L);
+
+        ArgumentCaptor<ChatSendResult> decisionCaptor = ArgumentCaptor.forClass(ChatSendResult.class);
+        verify(transferHandler).handleTransfer(eq(100L), eq("问题"), decisionCaptor.capture());
+        assertThat(decisionCaptor.getValue().getRoute()).isEqualTo(ChatRouteEnum.ABSTAIN);
+    }
+
     private AiConversationDO conversation(Long id, Long kbId, Long userId, String status) {
         AiConversationDO conversation = new AiConversationDO();
         conversation.setId(id);
@@ -439,6 +518,13 @@ class ChatPipelineTest {
         conversation.setUserId(userId);
         conversation.setStatus(status);
         return conversation;
+    }
+
+    private EvidenceItemDTO evidenceItem(Long chunkId, String chunkMetadata) {
+        EvidenceItemDTO item = new EvidenceItemDTO();
+        item.setChunkId(chunkId);
+        item.setChunkMetadata(chunkMetadata);
+        return item;
     }
 
 }

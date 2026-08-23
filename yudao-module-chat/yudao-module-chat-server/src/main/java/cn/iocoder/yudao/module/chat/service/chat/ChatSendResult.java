@@ -41,8 +41,8 @@ public class ChatSendResult {
     /** 是否为降级结果 */
     private Boolean degraded;
 
-    /** AI 回复内容(answerable=true 时有值) */
-    private String reply;
+    /** AI 回答内容(answerable=true 时有值) */
+    private String answer;
 
     /** 是否可作答 */
     private Boolean answerable;
@@ -53,11 +53,14 @@ public class ChatSendResult {
     /** 引用证据 chunkId 列表(claims 中 SUPPORTED 断言引用的证据, 保序去重) */
     private List<Long> citations;
 
-    /** 证据摘要列表(专利来源卡片: chunkId/文档名/元数据JSON/引用原文) */
-    private List<EvidenceSummary> evidenceList;
+    /** 证据摘要列表(专利来源卡片: chunkId/文档名/元数据JSON/引用原文; P0-08 统一为 Evidence DTO) */
+    private List<EvidenceSummary> evidence;
 
     /** 证据评估链路追踪号(ev- 前缀) */
     private String traceId;
+
+    /** 本次请求整体耗时(ms) */
+    private Integer latencyMs;
 
     /** 是否需转人工(answerable=false / 评估服务不可用 / Claim 验证失败) */
     private Boolean transferRequired;

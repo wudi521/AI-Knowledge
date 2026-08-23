@@ -33,6 +33,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import cn.iocoder.yudao.module.chat.enums.chat.ChatRouteEnum;
+
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
 
 /** 对话编排管线: 会话 → 证据判定 → 回答或转人工。 */
@@ -69,11 +71,21 @@ public class ChatPipeline {
         return send(conversationId, message, channel, customerId, (Long) null);
     }
 
+    public ChatSendResult send(Long conversationId, String message, String channel, String customerId,
+                               Long kbId) {
+        long startNanos = System.nanoTime();
+        ChatSendResult result = doSend(conversationId, message, channel, customerId, kbId);
+        if (result != null) {
+            result.setLatencyMs((int) ((System.nanoTime() - startNanos) / 1_000_000));
+        }
+        return result;
+    }
+
     /**
      * 发送消息。知识库上下文由新会话请求或既有会话的持久化绑定决定。
      */
-    public ChatSendResult send(Long conversationId, String message, String channel, String customerId,
-                               Long kbId) {
+    private ChatSendResult doSend(Long conversationId, String message, String channel, String customerId,
+                                  Long kbId) {
         String resolvedChannel = resolveChannel(channel);
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
@@ -202,8 +214,9 @@ public class ChatPipeline {
                 .kbId(knowledgeContext.kbId())
                 .domainCode(knowledgeContext.domainCode())
                 .intent(resolveIntent(resp))
+                .route(ChatRouteEnum.ABSTAIN)
                 .degraded(false)
-                .reply(resp.getClarifyQuestion())
+                .answer(resp.getClarifyQuestion())
                 .answerable(false)
                 .confidence(resp.getConfidence())
                 .citations(List.of())
@@ -222,6 +235,7 @@ public class ChatPipeline {
     private ChatSendResult buildAnswerResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
                                              EvidenceEvaluateRespDTO resp) {
         List<Long> citations = buildCitations(resp);
+        List<ChatSendResult.EvidenceSummary> evidence = buildEvidenceSummaries(resp);
         AiMessageDO aiMessage = messageService.addMessage(conversation.getId(), "AI", resp.getAnswer(),
                 JSONUtil.toJsonStr(citations), null, null,
                 toConfidence(resp.getConfidence()), resp.getTraceId());
@@ -230,13 +244,14 @@ public class ChatPipeline {
                 .messageId(aiMessage != null ? aiMessage.getId() : null)
                 .kbId(knowledgeContext.kbId())
                 .domainCode(knowledgeContext.domainCode())
+                .route(resolveRoute(resp, evidence))
                 .intent(resolveIntent(resp))
                 .degraded(false)
-                .reply(resp.getAnswer())
+                .answer(resp.getAnswer())
                 .answerable(true)
                 .confidence(resp.getConfidence())
                 .citations(citations)
-                .evidenceList(buildEvidenceSummaries(resp))
+                .evidence(evidence)
                 .traceId(resp.getTraceId())
                 .transferRequired(false)
                 .build();
@@ -260,6 +275,48 @@ public class ChatPipeline {
         return list;
     }
 
+    /**
+     * 路由推导(P0-04): 不可作答 → ABSTAIN; 可作答时按证据文档聚焦度区分
+     * SCOPED_RAG(单文档) / HYBRID_RAG(跨文档)。EXACT_METADATA / EXACT_CLAIM
+     * 的确定性判定由 P0-05 / P0-06 查找能力补齐。
+     */
+    private String resolveRoute(EvidenceEvaluateRespDTO resp, List<ChatSendResult.EvidenceSummary> evidence) {
+        if (resp == null || !Boolean.TRUE.equals(resp.getAnswerable())) {
+            return ChatRouteEnum.ABSTAIN;
+        }
+        Set<String> docIds = new HashSet<>();
+        for (ChatSendResult.EvidenceSummary e : evidence) {
+            String identity = evidenceDocIdentity(e);
+            if (identity != null) {
+                docIds.add(identity);
+            }
+        }
+        return docIds.size() <= 1 ? ChatRouteEnum.SCOPED_RAG : ChatRouteEnum.HYBRID_RAG;
+    }
+
+    /** 证据文档身份: 优先申请号/公布号(chunkMetadata), 缺失回退文档名; 空证据返回 null */
+    private String evidenceDocIdentity(ChatSendResult.EvidenceSummary e) {
+        if (e == null) {
+            return null;
+        }
+        if (StrUtil.isNotBlank(e.getChunkMetadata())) {
+            try {
+                cn.hutool.json.JSONObject meta = JSONUtil.parseObj(e.getChunkMetadata());
+                String applicationNo = meta.getStr("applicationNo");
+                if (StrUtil.isNotBlank(applicationNo)) {
+                    return "app:" + applicationNo;
+                }
+                String publicationNo = meta.getStr("publicationNo");
+                if (StrUtil.isNotBlank(publicationNo)) {
+                    return "pub:" + publicationNo;
+                }
+            } catch (Exception ignored) {
+                // 元数据解析失败回退文档名
+            }
+        }
+        return e.getDocumentName();
+    }
+
     private ChatSendResult buildTransferResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
                                                String message, EvidenceEvaluateRespDTO resp) {
         String transferReason = deriveTransferReason(resp);
@@ -269,7 +326,8 @@ public class ChatPipeline {
                 .kbId(knowledgeContext.kbId())
                 .domainCode(knowledgeContext.domainCode())
                 .intent(resolveIntent(resp))
-                .reply(null)
+                .route(ChatRouteEnum.ABSTAIN)
+                .answer(null)
                 .answerable(false)
                 .confidence(resp != null ? resp.getConfidence() : null)
                 .citations(resp != null ? buildCitations(resp) : null)
@@ -287,7 +345,8 @@ public class ChatPipeline {
                 .conversationId(conversation.getId())
                 .kbId(knowledgeContext.kbId())
                 .domainCode(knowledgeContext.domainCode())
-                .reply(null)
+                .route(ChatRouteEnum.ABSTAIN)
+                .answer(null)
                 .answerable(false)
                 .confidence(null)
                 .citations(null)
@@ -302,17 +361,18 @@ public class ChatPipeline {
     private ChatSendResult buildKbRequiredResult(Long conversationId) {
         return ChatSendResult.builder()
                 .conversationId(conversationId)
-                .reply("请先选择要查询的知识库(专利 MVP 一次选择一个), 再发送问题。")
+                .answer("请先选择要查询的知识库(专利 MVP 一次选择一个), 再发送问题。")
                 .answerable(false)
                 .transferRequired(false)
                 .degraded(false)
+                .route(ChatRouteEnum.ABSTAIN)
                 .build();
     }
 
     private ChatSendResult buildClosedResult(Long conversationId) {
         return ChatSendResult.builder()
                 .conversationId(conversationId)
-                .reply(null)
+                .answer(null)
                 .answerable(false)
                 .confidence(null)
                 .citations(null)
@@ -321,6 +381,7 @@ public class ChatPipeline {
                 .transferReason(TransferHandler.REASON_CLOSED)
                 .summary(null)
                 .degraded(false)
+                .route(ChatRouteEnum.ABSTAIN)
                 .build();
     }
 
