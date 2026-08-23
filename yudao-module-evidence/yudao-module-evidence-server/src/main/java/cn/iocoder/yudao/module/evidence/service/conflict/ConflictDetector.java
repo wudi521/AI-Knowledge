@@ -16,42 +16,36 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
- * 冲突判定器: 同主题证据对(规则) + LLM 结构化判定(单次调用) + 解析兜底
- * <p>
- * 流程:
- * <ol>
- *     <li>候选对: 两两计算 {@link EvidenceSimilarity#similarity(String, String)},
- *         相似度 &gt;= 0.5 视为同一事实点候选对(按输入顺序 i&lt;j, 上限 10 对, 超出截断并告警);</li>
- *     <li>LLM 判定: 一次 chat 调用传入全部候选对, 要求输出全部证据对的 conflict true/false;</li>
- *     <li>解析: 提取 JSON(容忍代码围栏/前后缀), 仅返回 conflict=true 的对;</li>
- *     <li>降级: 任何异常/解析失败 → 告警 + 视为无冲突(保守策略), 绝不抛出。</li>
- * </ol>
- * 前提: 入参为去重后、按得分降序的证据列表(索引即位置, 判定结果直接引用该位置)。
+ * 冲突判定器: 同主题证据对(规则) + LLM 结构化判定 + 程序级一致性校验。
  */
 @Slf4j
 @Component
 public class ConflictDetector {
 
-    /** 同主题配对阈值(规格给定常量: 内容字符重叠度 >= 0.5 视为同一事实点候选) */
     private static final double TOPIC_SIMILARITY_THRESHOLD = 0.5;
-
-    /** 单次 LLM 判定的候选对上限(控制 Prompt 长度与调用成本) */
     private static final int MAX_CANDIDATE_PAIRS = 10;
-
-    /** 证据内容截断长度(字) */
     private static final int CONTENT_MAX_LEN = 300;
 
-    /** 系统提示词: 证据一致性审查员, 只输出结构化 JSON */
+    /** LLM 错把“一致/无冲突”标为 conflict=true 时的保护词。 */
+    private static final List<String> NON_CONFLICT_REASON_MARKERS = List.of(
+            "无矛盾", "没有矛盾", "不存在矛盾", "无冲突", "没有冲突", "不存在冲突",
+            "描述一致", "说法一致", "内容一致", "两者一致", "相同", "一致，无", "一致,无"
+    );
+
     private static final String SYSTEM_PROMPT = """
-            你是证据一致性审查员。判断下列证据对是否存在矛盾: 即对同一事实点(如价格、期限、政策等)的说法相互冲突。
-            只输出 JSON, 不要输出任何其他文字。JSON 格式固定为:
-            {"conflicts":[{"pair":[0,1],"conflict":true,"reason":"矛盾原因说明"}]}
+            你是证据一致性审查员。只判断“同一事实、同一对象、同一范围、同一时间条件下”的两条证据是否给出互不相容的结论。
+            仅仅是内容不同、信息互补、一个更详细、来自不同文档或不同实施例，都不算冲突。
+            只输出 JSON，不要输出任何其他文字：
+            {"conflicts":[{"pair":[0,1],"conflict":true,"reason":"两条证据在同一事实点上的互斥内容"}]}
             要求:
-            1. conflicts 数组必须包含给出的全部证据对, 每对一条记录;
-            2. pair 中的两个数字是证据在输入列表中的编号, 与"证据[i]"标签一一对应, 原样回填, 不要改写;
-            3. 存在矛盾时 conflict 为 true 并填写 reason(具体说明哪两个说法冲突); 不存在矛盾时 conflict 为 false, reason 给空字符串。
+            1. conflicts 数组必须包含给出的全部证据对；
+            2. pair 原样回填证据编号；
+            3. 只有确实互斥时 conflict=true；
+            4. 若两条证据一致、相同、互补、范围不同或无法判断，conflict=false 且 reason=""；
+            5. 严禁出现 conflict=true 但 reason 又写“无矛盾/一致/不冲突”的自相矛盾结果。
             """;
 
     @Resource
@@ -59,22 +53,14 @@ public class ConflictDetector {
     @Resource
     private PromptSupport promptSupport;
 
-    /**
-     * 冲突判定
-     *
-     * @param evidences 去重后、按得分降序的证据列表(索引即位置); 少于 2 条直接返回空
-     * @return 冲突列表(仅 conflict=true 的对, 含 LLM 给出的原因); 任何失败/异常 → 空列表, 不抛出
-     */
     public List<Conflict> detect(List<Evidence> evidences) {
         if (evidences == null || evidences.size() < 2) {
             return List.of();
         }
-        // 1. 同主题候选对(规则, 上限 10)
         List<int[]> pairs = buildCandidatePairs(evidences);
         if (pairs.isEmpty()) {
             return List.of();
         }
-        // 2. LLM 结构化判定(一次调用全部候选对; 与检索模块相同 chat 约定: system + user, 服务端关闭思考)
         String resp;
         try {
             ModelChatReqDTO req = new ModelChatReqDTO();
@@ -85,11 +71,9 @@ public class ConflictDetector {
             log.warn("[detect][LLM 冲突判定调用异常, 保守降级为无冲突: {}]", e.getMessage());
             return List.of();
         }
-        // 3. 解析(失败/异常 → 无冲突)
         return parseConflicts(resp, pairs);
     }
 
-    /** 同主题候选对: 相似度 >= 0.5 且双方均有实质内容(空白无法构成矛盾), 按相似度降序取前 10 对 */
     private List<int[]> buildCandidatePairs(List<Evidence> evidences) {
         List<int[]> all = new ArrayList<>();
         for (int i = 0; i < evidences.size() - 1; i++) {
@@ -105,18 +89,15 @@ public class ConflictDetector {
             }
         }
         if (all.size() > MAX_CANDIDATE_PAIRS) {
-            // 截断前按相似度降序, 优先检最可能冲突的对(而非任意顺序); 截断升级为 warn
             all.sort((a, b) -> Double.compare(
                     EvidenceSimilarity.similarity(evidences.get(b[0]).getContent(), evidences.get(b[1]).getContent()),
                     EvidenceSimilarity.similarity(evidences.get(a[0]).getContent(), evidences.get(a[1]).getContent())));
-            log.warn("[detect][同主题候选对共 {} 对, 按相似度降序截断至前 {} 对(未检对存在漏检冲突风险)]",
-                    all.size(), MAX_CANDIDATE_PAIRS);
+            log.warn("[detect][同主题候选对共 {} 对, 按相似度降序截断至前 {} 对]", all.size(), MAX_CANDIDATE_PAIRS);
             return new ArrayList<>(all.subList(0, MAX_CANDIDATE_PAIRS));
         }
         return all;
     }
 
-    /** 组装用户提示词: 逐对给出证据(编号为输入列表位置, 内容截断 300 字) */
     private String buildUserPrompt(List<Evidence> evidences, List<int[]> pairs) {
         StringBuilder sb = new StringBuilder();
         sb.append("请审查以下 ").append(pairs.size()).append(" 对证据:\n\n");
@@ -130,7 +111,6 @@ public class ConflictDetector {
         return sb.toString();
     }
 
-    /** 截断内容至 300 字(超出加省略号) */
     private String truncate(String content) {
         if (content == null) {
             return "";
@@ -141,7 +121,6 @@ public class ConflictDetector {
         return content.substring(0, CONTENT_MAX_LEN) + "…";
     }
 
-    /** 解析 LLM 输出: 提取 JSON → 逐条校验 pair 归属候选对 → 仅保留 conflict=true 的条目 */
     private List<Conflict> parseConflicts(String resp, List<int[]> pairs) {
         try {
             if (StrUtil.isBlank(resp)) {
@@ -173,7 +152,6 @@ public class ConflictDetector {
         }
     }
 
-    /** 解析单条冲突记录: pair 必须命中候选对(容错反转), 仅 conflict=true 且命中时返回 Conflict */
     private Conflict parseEntry(JSONObject entry, List<int[]> pairs) {
         if (entry == null) {
             return null;
@@ -194,14 +172,24 @@ public class ConflictDetector {
                 log.warn("[detect][LLM 返回的 pair [{},{}] 不在候选对中, 跳过]", a, b);
                 return null;
             }
-            boolean conflict = Boolean.TRUE.equals(entry.getBool("conflict", false));
-            if (!conflict) {
+            if (!Boolean.TRUE.equals(entry.getBool("conflict", false))) {
                 return null;
             }
+
+            String reason = StrUtil.nullToEmpty(entry.getStr("reason")).trim();
+            if (isSelfContradictoryConflictReason(reason)) {
+                log.warn("[detect][LLM 冲突判定自相矛盾, 降级为无冲突: pair=[{},{}], reason={}]", a, b, reason);
+                return null;
+            }
+            if (StrUtil.isBlank(reason)) {
+                log.warn("[detect][LLM conflict=true 但缺少原因, 降级为无冲突: pair=[{},{}]]", a, b);
+                return null;
+            }
+
             return Conflict.builder()
                     .evidenceIndexA(a)
                     .evidenceIndexB(b)
-                    .reason(entry.getStr("reason", ""))
+                    .reason(reason)
                     .build();
         } catch (Exception e) {
             log.warn("[detect][单条冲突记录解析失败, 跳过: {}]", e.getMessage());
@@ -209,7 +197,19 @@ public class ConflictDetector {
         }
     }
 
-    /** 候选对是否包含 (a, b)(a &lt; b) */
+    private boolean isSelfContradictoryConflictReason(String reason) {
+        if (StrUtil.isBlank(reason)) {
+            return false;
+        }
+        String normalized = reason.toLowerCase(Locale.ROOT).replace(" ", "");
+        for (String marker : NON_CONFLICT_REASON_MARKERS) {
+            if (normalized.contains(marker.toLowerCase(Locale.ROOT).replace(" ", ""))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean containsPair(List<int[]> pairs, int a, int b) {
         for (int[] pair : pairs) {
             if (pair[0] == a && pair[1] == b) {
@@ -218,5 +218,4 @@ public class ConflictDetector {
         }
         return false;
     }
-
 }
