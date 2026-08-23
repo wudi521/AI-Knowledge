@@ -171,6 +171,7 @@ public class AiDocumentServiceImpl implements AiDocumentService {
                 return null;
             }
         }
+        fillLatestVersion(doc, aiDocVersionMapper.selectLatestByDocId(id));
         return doc;
     }
 
@@ -189,22 +190,26 @@ public class AiDocumentServiceImpl implements AiDocumentService {
             pageReqVO.setKbIds(visibleKbIds);
         }
         PageResult<AiDocumentDO> pageResult = aiDocumentMapper.selectPage(pageReqVO);
-        // 填充当前版本号/状态(批量查版本)
+        // 填充当前版本 id/版本号/状态(批量查版本)
         List<Long> docIds = pageResult.getList().stream().map(AiDocumentDO::getId).toList();
         if (!docIds.isEmpty()) {
             Map<Long, AiDocVersionDO> latestMap = aiDocVersionMapper.selectList(new LambdaQueryWrapper<AiDocVersionDO>()
                             .in(AiDocVersionDO::getDocId, docIds))
                     .stream().collect(Collectors.toMap(
-                            v -> v.getDocId(), v -> v, (a, b) -> a.getId() >= b.getId() ? a : b));
-            pageResult.getList().forEach(doc -> {
-                AiDocVersionDO v = latestMap.get(doc.getId());
-                if (v != null) {
-                    doc.setVersionNo(v.getVersionNo());
-                    doc.setVersionStatus(v.getStatus());
-                }
-            });
+                            AiDocVersionDO::getDocId, v -> v, (a, b) -> a.getId() >= b.getId() ? a : b));
+            pageResult.getList().forEach(doc -> fillLatestVersion(doc, latestMap.get(doc.getId())));
         }
         return pageResult;
+    }
+
+    /** 给管理端文档 DTO 补齐当前版本上下文，避免审核发布页面再从 ReviewItem 猜版本。 */
+    private void fillLatestVersion(AiDocumentDO doc, AiDocVersionDO version) {
+        if (doc == null || version == null) {
+            return;
+        }
+        doc.setVersionId(version.getId());
+        doc.setVersionNo(version.getVersionNo());
+        doc.setVersionStatus(version.getStatus());
     }
 
     @Override
