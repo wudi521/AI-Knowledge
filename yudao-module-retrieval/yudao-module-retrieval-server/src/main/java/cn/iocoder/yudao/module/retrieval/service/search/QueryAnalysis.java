@@ -48,6 +48,9 @@ public class QueryAnalysis {
     /** 多项/范围权利要求号 */
     private List<Integer> claimNos;
 
+    /** 精确著录字段目标: CLAIM_COUNT/TITLE/APPLICANTS/... */
+    private List<String> metadataFields;
+
     /** 检索路由建议: EXACT_METADATA / EXACT_CLAIM / SCOPED_RAG / HYBRID_RAG / ABSTAIN */
     private String route;
 }
