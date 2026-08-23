@@ -89,6 +89,35 @@ public class ResultFilter {
     }
 
     /**
+     * P0-10: 按文档批量返回已发布 chunk(不含 claimNo 过滤; 供 EXACT_METADATA 多轮继承定位 anchor)
+     */
+    public List<ChunkRespDTO> findPublishedChunksByDocuments(List<Long> documentIds) {
+        if (documentIds == null || documentIds.isEmpty()) return List.of();
+        List<ChunkRespDTO> matches = new ArrayList<>();
+        try {
+            for (Long documentId : documentIds.stream().distinct().toList()) {
+                List<Long> versionIds = knowledgeApi.getDocVersionIds(documentId).getCheckedData();
+                if (versionIds == null || versionIds.isEmpty()) continue;
+                for (Long versionId : versionIds) {
+                    List<ChunkRespDTO> chunks = ingestionApi.getChunksByVersion(versionId).getCheckedData();
+                    if (chunks == null) continue;
+                    for (ChunkRespDTO chunk : chunks) {
+                        if (chunk != null && "PUBLISHED".equals(chunk.getStatus())) {
+                            matches.add(chunk);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[findPublishedChunksByDocuments][文档 chunk 定位失败, fail-closed: {}]", e.getMessage());
+            return List.of();
+        }
+        return matches.stream().collect(Collectors.toMap(
+                ChunkRespDTO::getId, c -> c, (a, b) -> a, java.util.LinkedHashMap::new))
+                .values().stream().toList();
+    }
+
+    /**
      * EXACT_CLAIM: 在已由 KnowledgeApi 精确解析出的 documentIds 内，用 MySQL chunk metadata 定位权利要求。
      * <p>
      * 不依赖 ES/Milvus，不做语义匹配。只接受 PUBLISHED + PATENT_CLAIM + metadata.claimNo 精确相等。

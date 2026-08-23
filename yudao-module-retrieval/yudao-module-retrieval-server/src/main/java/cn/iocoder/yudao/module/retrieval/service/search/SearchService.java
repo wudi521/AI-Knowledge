@@ -130,6 +130,20 @@ public class SearchService {
     private RetrievalRespVO searchExactMetadata(String query, QueryAnalysis analysis, List<Long> kbIds,
                                                 Long tenantId, long startMs) {
         List<Map.Entry<Long, Double>> exactHits = bm25Searcher.searchExactDocument(query, tenantId, kbIds, RECALL_TOP_K);
+        // P0-10 多轮继承: 当前 query 未含申请号/公布号但 analysis 已从历史继承编号 → 用 resolvePatentDocumentIds
+        // 定位目标文档已发布 chunk 作为 exact anchor(否则 BM25 无法从 "这个专利的公布号是多少" 定位文档)
+        if (exactHits.isEmpty() && analysis != null
+                && (StrUtil.isNotBlank(analysis.getApplicationNo()) || StrUtil.isNotBlank(analysis.getPublicationNo()))) {
+            List<Long> inheritedDocIds = resolvePatentDocumentIds(analysis, kbIds);
+            List<ChunkRespDTO> inheritedChunks = resultFilter.findPublishedChunksByDocuments(inheritedDocIds);
+            if (!inheritedChunks.isEmpty()) {
+                log.info("[searchExactMetadata][多轮继承定位文档 chunks={}, docIds={}, query={}]",
+                        inheritedChunks.size(), inheritedDocIds, StrUtil.maxLength(query, 40));
+                exactHits = inheritedChunks.stream()
+                        .map(c -> Map.<Long, Double>entry(c.getId(), 1D))
+                        .collect(Collectors.toList());
+            }
+        }
         List<Long> exactIds = exactHits.stream().map(Map.Entry::getKey).distinct().toList();
         RetrievalRespVO resp = baseResp(query, analysis);
         resp.getChannels().setBm25(exactIds.size());
