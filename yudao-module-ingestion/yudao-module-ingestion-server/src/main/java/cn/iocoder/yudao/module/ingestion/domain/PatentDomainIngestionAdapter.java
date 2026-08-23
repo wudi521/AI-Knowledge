@@ -23,8 +23,14 @@ import java.util.regex.Pattern;
 @Component
 public class PatentDomainIngestionAdapter implements DomainIngestionAdapter {
 
+    /**
+     * PDFBox 常把专利章节标题抽成全角空格形式，例如“权　利　要　求　书”“说　明　书”。
+     * Java 默认 \s 不覆盖 \u3000，因此所有标题字符之间显式兼容半角/全角空白。
+     */
     private static final Pattern CLAIM_SECTION = Pattern.compile(
-            "权\\s*利\\s*要\\s*求\\s*书(.*?)(?:说\\s*明\\s*书|摘\\s*要)",
+            "权[\\s\\u3000]*利[\\s\\u3000]*要[\\s\\u3000]*求[\\s\\u3000]*书"
+                    + "(.*?)"
+                    + "(?:说[\\s\\u3000]*明[\\s\\u3000]*书|摘[\\s\\u3000]*要)",
             Pattern.DOTALL);
 
     private final PatentMetadataExtractor metadataExtractor = new PatentMetadataExtractor();
@@ -42,7 +48,7 @@ public class PatentDomainIngestionAdapter implements DomainIngestionAdapter {
             String plainText = document.toPlainText();
             PatentMetadata meta = metadataExtractor.extract(plainText);
             meta.setClaimCount(countClaims(plainText));
-            meta.setExtractorVersion("patent-mvp-1.1");
+            meta.setExtractorVersion("patent-mvp-1.2");
             return JSONUtil.toJsonStr(meta);
         } catch (Exception e) {
             log.warn("[extractMetadata][专利元数据提取失败, 返回空: {}]", e.getMessage());
@@ -59,7 +65,11 @@ public class PatentDomainIngestionAdapter implements DomainIngestionAdapter {
             log.warn("[countClaims][未定位到权利要求书章节, claimCount=0]");
             return 0;
         }
-        return claimParser.parse(matcher.group(1)).size();
+        int count = claimParser.parse(matcher.group(1)).size();
+        if (count == 0) {
+            log.warn("[countClaims][已定位权利要求书但未解析出权利要求, claimCount=0]");
+        }
+        return count;
     }
 
     @Override
