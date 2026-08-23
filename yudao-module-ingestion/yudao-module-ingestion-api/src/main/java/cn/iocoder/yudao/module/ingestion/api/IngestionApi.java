@@ -4,7 +4,6 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkRespDTO;
 import cn.iocoder.yudao.module.ingestion.api.dto.IngestionJobTraceDTO;
-import cn.iocoder.yudao.module.ingestion.api.dto.PatentClaimLookupReqDTO;
 import cn.iocoder.yudao.module.ingestion.enums.ApiConstants;
 import feign.FeignIgnore;
 import org.springframework.cloud.openfeign.FeignClient;
@@ -22,6 +21,7 @@ import java.util.Map;
 @FeignClient(name = ApiConstants.NAME)
 public interface IngestionApi {
 
+    /** 占位方法: 按领域替换为真实接口 */
     @FeignIgnore
     Boolean triggerIngest(Long documentId);
 
@@ -60,12 +60,5 @@ public interface IngestionApi {
 
     @PostMapping(ApiConstants.PREFIX + "/get-chunk-doc-info")
     CommonResult<Map<Long, ChunkDocInfoDTO>> getChunkDocInfo(@RequestBody List<Long> chunkIds);
-
-    /**
-     * 在已解析出的专利 documentIds 内按 claimNo 精确定位已发布权利要求片段。
-     * 用于 EXACT_CLAIM 快路径，避免 embedding/vector/RRF/rerank。
-     */
-    @PostMapping(ApiConstants.PREFIX + "/lookup-patent-claim")
-    CommonResult<List<ChunkRespDTO>> lookupPatentClaim(@RequestBody PatentClaimLookupReqDTO req);
 
 }
