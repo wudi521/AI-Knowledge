@@ -54,6 +54,11 @@ public class SearchService {
 
     public RetrievalRespVO search(String query, List<Long> reqKbIds, Integer topK, Long tenantId, Long userId,
                                   List<ChatTurnDTO> history) {
+        return search(query, reqKbIds, topK, tenantId, userId, history, null);
+    }
+
+    public RetrievalRespVO search(String query, List<Long> reqKbIds, Integer topK, Long tenantId, Long userId,
+                                  List<ChatTurnDTO> history, String traceId) {
         long startMs = System.currentTimeMillis();
         int topKFinal = topK == null || topK <= 0 ? 5 : Math.min(topK, RECALL_TOP_K);
 
@@ -71,19 +76,31 @@ public class SearchService {
         long queryAnalysisMs = System.currentTimeMillis() - queryAnalysisStart;
         log.info("[search][queryAnalysisMs={} query={}]", queryAnalysisMs, StrUtil.maxLength(query, 60));
 
-        if ("OUT_OF_SCOPE".equals(analysis.getIntent())) return blocked(query, analysis,
-                "问题超出该知识库服务范围(未匹配到可服务的意图), 已转人工处理");
+        if ("OUT_OF_SCOPE".equals(analysis.getIntent())) {
+            RetrievalRespVO resp = blocked(query, analysis,
+                    "问题超出该知识库服务范围(未匹配到可服务的意图), 已转人工处理");
+            attachRetrievalStages(resp, "ABSTAIN", queryAnalysisMs, 0, 0, 0, 0);
+            return resp;
+        }
 
         kbIds = applyScopeFilter(analysis, kbIds);
-        if (kbIds.isEmpty()) return blocked(query, analysis,
-                "问题涉及明确地域/产品范围, 但当前可见知识库均不覆盖该范围, 已转人工处理");
+        if (kbIds.isEmpty()) {
+            RetrievalRespVO resp = blocked(query, analysis,
+                    "问题涉及明确地域/产品范围, 但当前可见知识库均不覆盖该范围, 已转人工处理");
+            attachRetrievalStages(resp, "ABSTAIN", queryAnalysisMs, 0, 0, 0, 0);
+            return resp;
+        }
 
         String route = resolveRoute(analysis);
         if ("EXACT_METADATA".equals(route)) {
-            return searchExactMetadata(query, analysis, kbIds, tenantId, startMs);
+            RetrievalRespVO resp = searchExactMetadata(query, analysis, kbIds, tenantId, startMs);
+            attachRetrievalStages(resp, route, queryAnalysisMs, 0, 0, 0, 0);
+            return resp;
         }
         if ("EXACT_CLAIM".equals(route)) {
-            return searchExactClaim(query, analysis, kbIds, startMs);
+            RetrievalRespVO resp = searchExactClaim(query, analysis, kbIds, startMs);
+            attachRetrievalStages(resp, route, queryAnalysisMs, 0, 0, 0, 0);
+            return resp;
         }
 
         // P0-07: SCOPED_RAG 必须在 BM25/ANN 前限定目标文档(hard scope), 禁止全库检索后过滤
@@ -91,9 +108,23 @@ public class SearchService {
         if ("SCOPED_RAG".equals(route) && (scopedDocumentIds == null || scopedDocumentIds.isEmpty())) {
             // P0-07 fail closed: 明确申请号/公布号但未定位到文档 → 拒答, 不得全库 Hybrid fallback
             log.info("[search][SCOPED_RAG 文档定位失败, fail-closed, 不走全库 Hybrid: query={}]", query);
-            return blocked(query, analysis, "未找到对应专利文档");
+            RetrievalRespVO resp = blocked(query, analysis, "未找到对应专利文档");
+            attachRetrievalStages(resp, "ABSTAIN", queryAnalysisMs, 0, 0, 0, 0);
+            return resp;
         }
-        return searchHybrid(query, analysis, domainPolicy, kbIds, tenantId, topKFinal, startMs, scopedDocumentIds);
+        RetrievalStageTimes times = new RetrievalStageTimes();
+        RetrievalRespVO resp = searchHybrid(query, analysis, domainPolicy, kbIds, tenantId, topKFinal, startMs,
+                scopedDocumentIds, times);
+        attachRetrievalStages(resp, route, queryAnalysisMs, times.bm25Ms, times.vectorMs, times.rrfMs, times.rerankMs);
+        return resp;
+    }
+
+    /** P0-09: 检索阶段耗时透传 holder(search() 统一挂载 stage 用) */
+    private static final class RetrievalStageTimes {
+        long bm25Ms;
+        long vectorMs;
+        long rrfMs;
+        long rerankMs;
     }
 
     private RetrievalRespVO searchExactMetadata(String query, QueryAnalysis analysis, List<Long> kbIds,
@@ -183,6 +214,7 @@ public class SearchService {
             result.setDocumentId(info.getDocumentId());
             result.setDocumentName(info.getDocumentName());
             result.setVersionNo(info.getVersionNo());
+            result.setVersionId(info.getVersionId());
         }
         result.setRrfScore(1D);
         result.setRerankScore(null);
@@ -215,7 +247,7 @@ public class SearchService {
     private RetrievalRespVO searchHybrid(String query, QueryAnalysis analysis,
                                          cn.iocoder.yudao.module.retrieval.service.domain.DomainQueryPolicy domainPolicy,
                                          List<Long> kbIds, Long tenantId, int topKFinal, long startMs,
-                                         List<Long> scopedDocumentIds) {
+                                         List<Long> scopedDocumentIds, RetrievalStageTimes times) {
         List<String> variants = new ArrayList<>();
         variants.add(query);
         if (analysis.isSuccess()) {
@@ -273,6 +305,12 @@ public class SearchService {
         // P0-07.5: 输出检索阶段耗时(不含生成/验证)
         log.info("[search][bm25Ms={} vectorMs={} rrfMs={} rerankMs={} query={}]",
                 bm25Ms, vectorMs, rrfMs, rerankMs, StrUtil.maxLength(query, 60));
+        if (times != null) {
+            times.bm25Ms = bm25Ms;
+            times.vectorMs = vectorMs;
+            times.rrfMs = rrfMs;
+            times.rerankMs = rerankMs;
+        }
 
         RetrievalRespVO resp = baseResp(query, analysis);
         resp.getChannels().setBm25(bm25Hits.size());
@@ -462,8 +500,7 @@ public class SearchService {
     }
 
     private RetrievalRespVO.AnalysisVO buildAnalysis(QueryAnalysis analysis) {
-        RetrievalRespVO.AnalysisVO vo = new RetrievalRespVO.AnalysisVO();
-        vo.setIntent(analysis.getIntent());
+        RetrievalRespVO.AnalysisVO vo = new RetrievalRespVO.AnalysisVO();        vo.setIntent(analysis.getIntent());
         vo.setEntities(analysis.getEntities());
         vo.setProducts(analysis.getProducts());
         vo.setRewrites(analysis.getRewrites());
@@ -479,6 +516,66 @@ public class SearchService {
         // 地域/产品/文档等 Scope 过滤后仍属单文档范围检索, 不新增 SCOPE_FILTER_* 路由
         if (StrUtil.isNotBlank(analysis.getProvince()) || StrUtil.isNotBlank(analysis.getCity())) return "SCOPED_RAG";
         return "HYBRID_RAG";
+    }
+
+    /**
+     * P0-09: 按路由构建检索阶段时序(未执行阶段标 SKIPPED), 写入分析 DTO 供上层汇聚统一 Trace。
+     * 仅记录阶段/状态/耗时摘要, 不含敏感内容。
+     */
+    private void attachRetrievalStages(RetrievalRespVO resp, String route, long queryAnalysisMs,
+                                       long bm25Ms, long vectorMs, long rrfMs, long rerankMs) {
+        if (resp == null || resp.getAnalysis() == null) return;
+        List<cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO> stages = new ArrayList<>();
+        int seq = 0;
+        stages.add(traceStage("ANALYZE", ++seq, queryAnalysisMs, null, null));
+        stages.add(traceStage("ROUTE", ++seq, 0, null, null));
+        if ("EXACT_METADATA".equals(route)) {
+            stages.add(traceStage("DOC_LOOKUP", ++seq, 0, null, null));
+            stages.add(traceSkip("VECTOR", ++seq));
+            stages.add(traceSkip("RERANK", ++seq));
+            stages.add(traceSkip("GENERATE", ++seq));
+            stages.add(traceSkip("VERIFY", ++seq));
+        } else if ("EXACT_CLAIM".equals(route)) {
+            stages.add(traceStage("DOC_LOOKUP", ++seq, 0, null, null));
+            stages.add(traceStage("CLAIM_LOOKUP", ++seq, 0, null, null));
+            stages.add(traceSkip("LLM", ++seq));
+        } else if ("ABSTAIN".equals(route)) {
+            // OUT_OF_SCOPE/阻断: 分析后即中止, 检索阶段未执行
+        } else {
+            // SCOPED_RAG / HYBRID_RAG
+            stages.add(traceStage("SCOPE_FILTER", ++seq, 0, null, null));
+            stages.add(traceStage("BM25", ++seq, bm25Ms, null, null));
+            stages.add(traceStage("VECTOR", ++seq, vectorMs, null, null));
+            stages.add(traceStage("FUSION", ++seq, rrfMs, null, null));
+            stages.add(traceStage("RERANK", ++seq, rerankMs, null, null));
+            stages.add(traceStage("DOC_LOOKUP", ++seq, 0, null, null));
+        }
+        resp.getAnalysis().setStages(stages);
+    }
+
+    private cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO traceStage(String stage, int seq,
+            long elapsedMs, String errorCode, String errorMessage) {
+        cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO dto =
+                new cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO();
+        dto.setStage(stage);
+        dto.setSeq(seq);
+        dto.setStatus(errorCode != null ? "FAILED" : "SUCCEEDED");
+        dto.setElapsedMs(elapsedMs);
+        dto.setSkipped(false);
+        dto.setErrorCode(errorCode);
+        dto.setErrorMessage(errorMessage);
+        return dto;
+    }
+
+    private cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO traceSkip(String stage, int seq) {
+        cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO dto =
+                new cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO();
+        dto.setStage(stage);
+        dto.setSeq(seq);
+        dto.setStatus("SKIPPED");
+        dto.setElapsedMs(0L);
+        dto.setSkipped(true);
+        return dto;
     }
 
     private void recordTrace(String query, RetrievalRespVO resp, int variantCount, long startMs) {
@@ -514,6 +611,7 @@ public class SearchService {
             vo.setDocumentId(docInfo.getDocumentId());
             vo.setDocumentName(docInfo.getDocumentName());
             vo.setVersionNo(docInfo.getVersionNo());
+            vo.setVersionId(docInfo.getVersionId());
         }
         vo.setChunkMetadata(metadataMap.get(chunkId));
         vo.setRrfScore(rrfMap.get(chunkId));

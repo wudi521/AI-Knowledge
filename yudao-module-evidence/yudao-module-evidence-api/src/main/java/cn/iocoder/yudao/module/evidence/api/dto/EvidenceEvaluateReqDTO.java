@@ -31,4 +31,7 @@ public class EvidenceEvaluateReqDTO {
     /** 跳过槽位检测(评测/批处理用: 测检索+回答质量, 不走对话层反问门) */
     private Boolean skipSlotDetection;
 
+    /** P0-09: 统一主 traceId(q- 前缀, 对话层下发; 贯穿检索/证据全链路) */
+    private String traceId;
+
 }

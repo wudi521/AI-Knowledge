@@ -58,6 +58,23 @@ public class EvidenceAssembler {
      */
     public AssembledEvidence assemble(String query, List<Long> kbIds, Integer topK, Long tenantId, Long userId,
                                       List<ChatTurnDTO> history) {
+        return assemble(query, kbIds, topK, tenantId, userId, history, null);
+    }
+
+    /**
+     * 组装证据(支持多轮上下文 + 统一 traceId)
+     *
+     * @param query    检索内容
+     * @param kbIds    限定知识库编号列表(空 = 全部可见知识库)
+     * @param topK     返回条数(空则默认 8)
+     * @param tenantId 租户编号(RPC 无登录态, 显式传递)
+     * @param userId   用户编号(权限过滤用)
+     * @param history  上下文轮次(可选, 空/ null = 单轮; evidence-api 类型, 在此转 retrieval-api 透传)
+     * @param traceId  统一主 traceId(P0-09, 透传检索)
+     * @return 组装结果(证据按得分降序); 检索失败时返回空证据集, 不抛异常
+     */
+    public AssembledEvidence assemble(String query, List<Long> kbIds, Integer topK, Long tenantId, Long userId,
+                                      List<ChatTurnDTO> history, String traceId) {
         // 1. 调用检索 RPC(topK 为空时默认 8)
         RetrievalSearchReqDTO req = new RetrievalSearchReqDTO();
         req.setQuery(query);
@@ -65,6 +82,7 @@ public class EvidenceAssembler {
         req.setTopK(topK != null ? topK : DEFAULT_TOP_K);
         req.setTenantId(tenantId);
         req.setUserId(userId);
+        req.setTraceId(traceId);
         // 跨模块 DTO 独立(按 spec): 同构字段手动映射到 retrieval-api ChatTurnDTO
         req.setHistory(toRetrievalHistory(history));
         CommonResult<RetrievalSearchRespDTO> resp;
@@ -101,6 +119,7 @@ public class EvidenceAssembler {
                     .documentId(result.getDocumentId() != null ? String.valueOf(result.getDocumentId()) : null)
                     .documentName(result.getDocumentName())
                     .versionNo(result.getVersionNo())
+                    .versionId(result.getVersionId())
                     .score(normalizedScores.get(i))
                     .rawScore(rawScores.get(i))
                     // 检索 RPC 不暴露逐条证据的产品归属, 保持空列表(Task 4 实体覆盖率退化为 questionProducts 覆盖检查)

@@ -29,6 +29,9 @@ public class Evidence {
     /** 版本号: V1/V2/... */
     private String versionNo;
 
+    /** 版本编号(片段所属版本) */
+    private Long versionId;
+
     /** 归一化得分(0~1, 批次内 min-max, 供排序用) */
     private Double score;
 

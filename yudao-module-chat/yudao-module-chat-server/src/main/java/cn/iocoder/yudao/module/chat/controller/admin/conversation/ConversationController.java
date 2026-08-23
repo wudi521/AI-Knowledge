@@ -15,6 +15,7 @@ import cn.iocoder.yudao.module.chat.controller.admin.conversation.vo.Conversatio
 import cn.iocoder.yudao.module.chat.controller.admin.conversation.vo.MessageVO;
 import cn.iocoder.yudao.module.chat.dal.dataobject.conversation.AiConversationDO;
 import cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageDO;
+import cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageEvidenceDO;
 import cn.iocoder.yudao.module.chat.service.conversation.ConversationService;
 import cn.iocoder.yudao.module.chat.service.message.MessageService;
 import cn.iocoder.yudao.module.chat.service.transfer.TransferHandler;
@@ -35,6 +36,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
@@ -79,7 +82,8 @@ public class ConversationController {
         }
         ConversationHistoryRespVO resp = new ConversationHistoryRespVO();
         resp.setConversation(BeanUtils.toBean(conversation, ConversationInfoVO.class));
-        resp.setMessages(convertMessages(messageService.getMessages(conversationId)));
+        List<AiMessageDO> messages = messageService.getMessages(conversationId);
+        resp.setMessages(convertMessages(messages));
         return success(resp);
     }
 
@@ -101,12 +105,16 @@ public class ConversationController {
     // ========== 工具 ==========
 
     /**
-     * 消息 DO → VO: citations 为 JSON 数组字符串, 解析为 List(供前端直接消费), 解析失败/为空 → 空列表
+     * 消息 DO → VO: citations 为 JSON 数组字符串, 解析为 List(供前端直接消费), 解析失败/为空 → 空列表。
+     * P0-08: 附带每条消息持久化的证据快照(历史会话 Evidence 不丢)。
      */
     private List<MessageVO> convertMessages(List<AiMessageDO> messages) {
         if (messages == null || messages.isEmpty()) {
             return Collections.emptyList();
         }
+        List<Long> messageIds = messages.stream().map(AiMessageDO::getId).collect(Collectors.toList());
+        Map<Long, List<AiMessageEvidenceDO>> evidenceMap =
+                messageService.getEvidenceMapByMessageIds(messageIds);
         List<MessageVO> result = new ArrayList<>(messages.size());
         for (AiMessageDO message : messages) {
             MessageVO vo = new MessageVO();
@@ -118,9 +126,40 @@ public class ConversationController {
             vo.setConfidence(message.getConfidence());
             vo.setTraceId(message.getTraceId());
             vo.setCreateTime(message.getCreateTime());
+            vo.setEvidence(toEvidenceVO(evidenceMap.getOrDefault(message.getId(), Collections.emptyList())));
             result.add(vo);
         }
         return result;
+    }
+
+    private List<MessageVO.EvidenceVO> toEvidenceVO(List<AiMessageEvidenceDO> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<MessageVO.EvidenceVO> list = new ArrayList<>(rows.size());
+        for (AiMessageEvidenceDO row : rows) {
+            MessageVO.EvidenceVO vo = new MessageVO.EvidenceVO();
+            vo.setEvidenceIndex(row.getEvidenceIndex());
+            vo.setCitationLabel(row.getCitationLabel());
+            vo.setDocumentId(row.getDocumentId());
+            vo.setVersionId(row.getVersionId());
+            vo.setChunkId(row.getChunkId());
+            vo.setKbId(row.getKbId());
+            vo.setDomainCode(row.getDomainCode());
+            vo.setSectionType(row.getSectionType());
+            vo.setSectionTitle(row.getSectionTitle());
+            vo.setClaimNo(row.getClaimNo());
+            vo.setPageStart(row.getPageStart());
+            vo.setPageEnd(row.getPageEnd());
+            vo.setApplicationNo(row.getApplicationNo());
+            vo.setPublicationNo(row.getPublicationNo());
+            vo.setDocumentName(row.getDocumentName());
+            vo.setVersionNo(row.getVersionNo());
+            vo.setContentSnapshot(row.getContentSnapshot());
+            vo.setScore(row.getScore());
+            list.add(vo);
+        }
+        return list;
     }
 
     private List<String> parseCitations(String citationsJson) {

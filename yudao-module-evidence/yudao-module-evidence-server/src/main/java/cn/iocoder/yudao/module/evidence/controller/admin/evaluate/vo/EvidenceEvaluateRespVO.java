@@ -52,6 +52,15 @@ public class EvidenceEvaluateRespVO {
     /** 是否验证失败(生成失败/重试耗尽 → true, 此时 answer=null) */
     private Boolean claimFail;
 
+    /** 是否验证降级(验证器解析故障重试耗尽; 回答未完整验证) */
+    private Boolean verificationDegraded;
+
+    /** 是否查询超时(整体 Deadline 触发; 停止继续 repair, 返回降级结果) */
+    private Boolean timedOut;
+
+    /** P0-09: 全链路阶段时序(检索阶段 + 证据阶段; 汇聚统一主 traceId 下) */
+    private List<cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO> stages;
+
     /** 评估耗时(ms, 不含落库) */
     private Integer elapsedMs;
 
@@ -96,6 +105,9 @@ public class EvidenceEvaluateRespVO {
     @Data
     public static class EvidenceItemVO {
 
+        /** 证据编号(去重后 chunkId) */
+        private Long evidenceId;
+
         /** 片段编号 */
         private Long chunkId;
 
@@ -110,6 +122,39 @@ public class EvidenceEvaluateRespVO {
 
         /** 版本号: V1/V2/... */
         private String versionNo;
+
+        /** 版本编号 */
+        private Long versionId;
+
+        /** 来源文档编号 */
+        private Long documentId;
+
+        /** 知识库编号 */
+        private Long kbId;
+
+        /** 知识领域编码 */
+        private String domainCode;
+
+        /** 片段类型 */
+        private String sectionType;
+
+        /** 片段小节标题 */
+        private String sectionTitle;
+
+        /** 权利要求编号 */
+        private String claimNo;
+
+        /** 起始页码 */
+        private Integer pageStart;
+
+        /** 结束页码 */
+        private Integer pageEnd;
+
+        /** 申请号 */
+        private String applicationNo;
+
+        /** 公布号 */
+        private String publicationNo;
 
         /** 归一化得分(0~1, 批次内 min-max) */
         private Double score;

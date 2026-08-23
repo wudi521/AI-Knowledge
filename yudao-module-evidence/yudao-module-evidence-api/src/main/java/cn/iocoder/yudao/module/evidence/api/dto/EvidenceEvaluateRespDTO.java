@@ -43,6 +43,15 @@ public class EvidenceEvaluateRespDTO {
     /** 是否验证失败(生成失败/重试耗尽 → true, 此时 answer=null) */
     private Boolean claimFail;
 
+    /** 是否验证降级(验证器解析故障重试耗尽; 回答未完整验证) */
+    private Boolean verificationDegraded;
+
+    /** 是否查询超时(整体 Deadline 触发; 停止继续 repair, 返回降级结果) */
+    private Boolean timedOut;
+
+    /** P0-09: 全链路阶段时序(检索阶段 + 证据阶段; 汇聚统一主 traceId 下) */
+    private List<cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO> stages;
+
     /** 评估耗时(ms, 不含落库) */
     private Integer elapsedMs;
 

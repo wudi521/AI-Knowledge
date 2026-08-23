@@ -54,6 +54,9 @@ public class RetrievalRespVO {
 
         /** 查询路由: RULE / EXACT_METADATA / EXACT_CLAIM / SCOPED_RAG / HYBRID_RAG / ABSTAIN */
         private String route;
+
+        /** P0-09: 检索阶段时序(未执行阶段 SKIPPED) */
+        private List<cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO> stages;
     }
 
     @Data
@@ -86,6 +89,9 @@ public class RetrievalRespVO {
 
         /** 版本号: V1/V2/... */
         private String versionNo;
+
+        /** 版本编号(片段所属版本) */
+        private Long versionId;
 
         /** RRF 融合分 */
         private Double rrfScore;

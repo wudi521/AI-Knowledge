@@ -21,5 +21,11 @@
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-openfeign</artifactId>
         </dependency>
+        <!-- 检索 API(统一阶段时序 DTO 复用) -->
+        <dependency>
+            <groupId>cn.iocoder.cloud</groupId>
+            <artifactId>yudao-module-retrieval-api</artifactId>
+            <version>${revision}</version>
+        </dependency>
     </dependencies>
 </project>

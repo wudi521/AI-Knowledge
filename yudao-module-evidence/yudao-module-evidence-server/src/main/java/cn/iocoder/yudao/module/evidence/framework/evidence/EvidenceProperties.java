@@ -25,6 +25,20 @@ public class EvidenceProperties {
     /** 槽位检测配置 */
     private Slot slot = new Slot();
 
+    /** 生成管线配置 */
+    private Pipeline pipeline = new Pipeline();
+
+    /**
+     * 生成管线配置(P0-11: 整体查询 Deadline, 禁止单个请求无限拖 2~3 分钟)
+     */
+    @Data
+    public static class Pipeline {
+
+        /** 生成/验证总时限(ms, 默认 60s; 超时停止继续 repair, 返回 degraded=true) */
+        private Long deadlineMs = 60_000L;
+
+    }
+
     /**
      * 槽位检测配置
      */

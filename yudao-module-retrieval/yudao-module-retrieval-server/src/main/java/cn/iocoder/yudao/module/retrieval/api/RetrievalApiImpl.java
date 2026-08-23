@@ -30,7 +30,7 @@ public class RetrievalApiImpl implements RetrievalApi {
     @Override
     public CommonResult<RetrievalSearchRespDTO> search(RetrievalSearchReqDTO req) {
         RetrievalRespVO vo = searchService.search(req.getQuery(), req.getKbIds(), req.getTopK(),
-                req.getTenantId(), req.getUserId(), req.getHistory());
+                req.getTenantId(), req.getUserId(), req.getHistory(), req.getTraceId());
         // 映射 RetrievalRespVO -> RetrievalSearchRespDTO
         RetrievalSearchRespDTO dto = new RetrievalSearchRespDTO();
         dto.setQuery(vo.getQuery());
@@ -47,6 +47,7 @@ public class RetrievalApiImpl implements RetrievalApi {
                 item.setDocumentId(r.getDocumentId());
                 item.setDocumentName(r.getDocumentName());
                 item.setVersionNo(r.getVersionNo());
+                item.setVersionId(r.getVersionId());
                 item.setRrfScore(r.getRrfScore());
                 item.setRerankScore(r.getRerankScore());
                 item.setChannels(r.getChannels());
@@ -68,6 +69,7 @@ public class RetrievalApiImpl implements RetrievalApi {
             analysis.setSubQuestions(vo.getAnalysis().getSubQuestions());
             analysis.setSuccess(vo.getAnalysis().isSuccess());
             analysis.setRoute(vo.getAnalysis().getRoute());
+            analysis.setStages(vo.getAnalysis().getStages());
             dto.setAnalysis(analysis);
         }
         if (vo.getChannels() != null) {

@@ -25,6 +25,9 @@ public class RetrievalResultDTO {
     /** 版本号: V1/V2/... */
     private String versionNo;
 
+    /** 版本编号(片段所属版本) */
+    private Long versionId;
+
     /** RRF 融合分 */
     private Double rrfScore;
 

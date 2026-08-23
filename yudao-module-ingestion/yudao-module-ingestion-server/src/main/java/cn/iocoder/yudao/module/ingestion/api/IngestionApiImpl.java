@@ -280,6 +280,7 @@ public class IngestionApiImpl implements IngestionApi {
             dto.setChunkId(chunk.getId());
             KnowledgeVersionRespDTO version = versionMap.get(chunk.getVersionId());
             if (version != null) {
+                dto.setVersionId(chunk.getVersionId());
                 dto.setDocumentId(version.getDocId());
                 dto.setVersionNo(version.getVersionNo());
                 KnowledgeDocumentRespDTO doc = docInfoMap.get(version.getDocId());

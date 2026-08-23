@@ -35,4 +35,66 @@ public class MessageVO {
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 
+    @Schema(description = "证据快照列表(P0-08: 历史会话刷新后 Evidence 不丢; AI 消息)")
+    private List<EvidenceVO> evidence;
+
+    @Schema(description = "证据快照(统一 Evidence DTO 的历史持久化形态)")
+    @Data
+    public static class EvidenceVO {
+
+        @Schema(description = "证据序号(0-based, 对应 [Cn] 的 n-1)")
+        private Integer evidenceIndex;
+
+        @Schema(description = "引用标注(如 C1)")
+        private String citationLabel;
+
+        @Schema(description = "来源文档编号")
+        private Long documentId;
+
+        @Schema(description = "版本编号")
+        private Long versionId;
+
+        @Schema(description = "片段编号")
+        private Long chunkId;
+
+        @Schema(description = "知识库编号")
+        private Long kbId;
+
+        @Schema(description = "知识领域编码")
+        private String domainCode;
+
+        @Schema(description = "片段类型(权利要求书/说明书/著录信息 等)")
+        private String sectionType;
+
+        @Schema(description = "片段小节标题")
+        private String sectionTitle;
+
+        @Schema(description = "权利要求编号")
+        private String claimNo;
+
+        @Schema(description = "起始页码")
+        private Integer pageStart;
+
+        @Schema(description = "结束页码")
+        private Integer pageEnd;
+
+        @Schema(description = "申请号")
+        private String applicationNo;
+
+        @Schema(description = "公布号")
+        private String publicationNo;
+
+        @Schema(description = "来源文档名")
+        private String documentName;
+
+        @Schema(description = "版本号")
+        private String versionNo;
+
+        @Schema(description = "证据原文快照")
+        private String contentSnapshot;
+
+        @Schema(description = "归一化得分(0~1)")
+        private BigDecimal score;
+    }
+
 }

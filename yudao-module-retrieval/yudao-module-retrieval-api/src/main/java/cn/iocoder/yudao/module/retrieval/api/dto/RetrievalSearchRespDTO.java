@@ -61,6 +61,9 @@ public class RetrievalSearchRespDTO {
         /** 检索路由: EXACT_METADATA / EXACT_CLAIM / SCOPED_RAG / HYBRID_RAG / ABSTAIN(Query Planner 权威产出) */
         private String route;
 
+        /** P0-09: 检索阶段时序(ANALYZE/ROUTE/SCOPE_FILTER/DOC_LOOKUP/BM25/VECTOR/FUSION/RERANK; 未执行阶段 SKIPPED) */
+        private List<QueryStageTimingDTO> stages;
+
     }
 
     /**

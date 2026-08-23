@@ -28,4 +28,7 @@ public class RetrievalSearchReqDTO {
     /** 上下文轮次(可选, 空 = 单轮) */
     private List<ChatTurnDTO> history;
 
+    /** P0-09: 统一主 traceId(q- 前缀, 对话层下发; 贯穿检索/证据全链路) */
+    private String traceId;
+
 }

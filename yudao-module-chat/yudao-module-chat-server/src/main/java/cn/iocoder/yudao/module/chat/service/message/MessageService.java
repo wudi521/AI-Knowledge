@@ -2,6 +2,8 @@ package cn.iocoder.yudao.module.chat.service.message;
 
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageDO;
+import cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageEvidenceDO;
+import cn.iocoder.yudao.module.chat.dal.mysql.message.AiMessageEvidenceMapper;
 import cn.iocoder.yudao.module.chat.dal.mysql.message.AiMessageMapper;
 import cn.iocoder.yudao.module.chat.service.conversation.ConversationService;
 import jakarta.annotation.Resource;
@@ -10,8 +12,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
 
 import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 会话消息 Service: 消息落库 + 消息查询
@@ -27,6 +32,8 @@ public class MessageService {
 
     @Resource
     private AiMessageMapper aiMessageMapper;
+    @Resource
+    private AiMessageEvidenceMapper aiMessageEvidenceMapper;
     @Resource
     private ConversationService conversationService;
 
@@ -61,6 +68,41 @@ public class MessageService {
             log.warn("[addMessage][会话({}) 消息计数自增失败, 计数可能滞后]", conversationId, e);
         }
         return message;
+    }
+
+    /**
+     * 批量落库消息证据快照(null-safe, 尽力而为: 失败仅告警不阻断消息落库主流程)
+     *
+     * @param messageId 消息编号(ai_message.id)
+     * @param evidence  证据快照列表(已含 messageId; 空/ null 则跳过)
+     */
+    public void addMessageEvidence(Long messageId, List<AiMessageEvidenceDO> evidence) {
+        if (messageId == null || evidence == null || evidence.isEmpty()) {
+            return;
+        }
+        try {
+            aiMessageEvidenceMapper.insertBatch(evidence);
+        } catch (Exception e) {
+            log.warn("[addMessageEvidence][消息({}) 证据快照落库失败, 历史 Evidence 可能缺失]", messageId, e);
+        }
+    }
+
+    /**
+     * 查询多条消息的证据快照, 按 messageId 分组(消息内按 evidenceIndex 升序)
+     */
+    public Map<Long, List<AiMessageEvidenceDO>> getEvidenceMapByMessageIds(Collection<Long> messageIds) {
+        if (messageIds == null || messageIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return aiMessageEvidenceMapper.selectListByMessageIds(messageIds).stream()
+                .collect(Collectors.groupingBy(AiMessageEvidenceDO::getMessageId));
+    }
+
+    /**
+     * 查询单条消息的证据快照(按 evidenceIndex 升序)
+     */
+    public List<AiMessageEvidenceDO> getEvidenceByMessageId(Long messageId) {
+        return getEvidenceMapByMessageIds(List.of(messageId)).getOrDefault(messageId, Collections.emptyList());
     }
 
     /**

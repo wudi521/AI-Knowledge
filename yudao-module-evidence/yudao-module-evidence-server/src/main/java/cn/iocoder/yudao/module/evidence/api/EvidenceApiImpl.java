@@ -36,7 +36,7 @@ public class EvidenceApiImpl implements EvidenceApi {
     @Override
     public CommonResult<EvidenceEvaluateRespDTO> evaluate(EvidenceEvaluateReqDTO req) {
         EvidenceEvaluateRespVO vo = evidenceService.evaluate(req.getQuery(), req.getKbIds(), req.getTopK(),
-                req.getTenantId(), req.getUserId(), req.getHistory(), req.getSkipSlotDetection());
+                req.getTenantId(), req.getUserId(), req.getHistory(), req.getSkipSlotDetection(), req.getTraceId());
         // 映射 EvidenceEvaluateRespVO -> EvidenceEvaluateRespDTO
         EvidenceEvaluateRespDTO dto = new EvidenceEvaluateRespDTO();
         dto.setTraceId(vo.getTraceId());
@@ -47,19 +47,34 @@ public class EvidenceApiImpl implements EvidenceApi {
         dto.setRefusalReason(vo.getRefusalReason());
         dto.setAnswer(vo.getAnswer());
         dto.setClaimFail(vo.getClaimFail());
+        dto.setVerificationDegraded(vo.getVerificationDegraded());
+        dto.setTimedOut(vo.getTimedOut());
+        dto.setStages(vo.getStages());
         dto.setElapsedMs(vo.getElapsedMs());
         // 证据列表映射
         List<EvidenceItemDTO> evidence = new ArrayList<>();
         if (vo.getEvidence() != null) {
             for (EvidenceEvaluateRespVO.EvidenceItemVO item : vo.getEvidence()) {
                 EvidenceItemDTO d = new EvidenceItemDTO();
+                d.setEvidenceId(item.getEvidenceId());
                 d.setChunkId(item.getChunkId());
                 d.setContent(item.getContent());
                 d.setDocumentName(item.getDocumentName());
                 d.setVersionNo(item.getVersionNo());
+                d.setVersionId(item.getVersionId());
+                d.setDocumentId(item.getDocumentId());
+                d.setKbId(item.getKbId());
+                d.setDomainCode(item.getDomainCode());
+                d.setSectionType(item.getSectionType());
+                d.setSectionTitle(item.getSectionTitle());
+                d.setClaimNo(item.getClaimNo());
+                d.setPageStart(item.getPageStart());
+                d.setPageEnd(item.getPageEnd());
+                d.setApplicationNo(item.getApplicationNo());
+                d.setPublicationNo(item.getPublicationNo());
                 d.setScore(item.getScore());
                 d.setChannels(item.getChannels() != null ? new ArrayList<>(item.getChannels()) : null);
-                d.setChunkMetadata(item.getChunkMetadata()); // 专利来源卡片
+                d.setChunkMetadata(item.getChunkMetadata()); // 内部字段, 不对外展示
                 evidence.add(d);
             }
         }

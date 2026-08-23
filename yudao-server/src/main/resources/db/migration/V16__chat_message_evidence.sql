@@ -1,0 +1,36 @@
+-- V16: AI 会话消息证据快照(ai_message_evidence)
+-- 历史回答引用的是当时版本(如 V1)的证据; 即使当前知识升级到 V3, 历史会话仍须能说明"当时回答依据 V1",
+-- 因此持久化证据原文/元数据快照, 不随版本升级漂移。P0-08。
+
+CREATE TABLE IF NOT EXISTS `ai_message_evidence` (
+    `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',
+    `message_id` bigint NOT NULL COMMENT '消息编号(ai_message.id)',
+    `evidence_index` int NOT NULL DEFAULT 0 COMMENT '证据序号(0-based, 对应 [Cn] 的 n-1)',
+    `citation_label` varchar(16) DEFAULT NULL COMMENT '引用标注(如 C1, 对应回答中的 [C1])',
+    `document_id` bigint DEFAULT NULL COMMENT '来源文档编号',
+    `version_id` bigint DEFAULT NULL COMMENT '版本编号',
+    `chunk_id` bigint DEFAULT NULL COMMENT '片段编号',
+    `kb_id` bigint DEFAULT NULL COMMENT '知识库编号',
+    `domain_code` varchar(32) DEFAULT NULL COMMENT '知识领域编码(如 PATENT)',
+    `section_type` varchar(64) DEFAULT NULL COMMENT '片段类型(权利要求书/说明书/著录信息 等)',
+    `section_title` varchar(255) DEFAULT NULL COMMENT '片段小节标题',
+    `claim_no` varchar(32) DEFAULT NULL COMMENT '权利要求编号',
+    `page_start` int DEFAULT NULL COMMENT '起始页码',
+    `page_end` int DEFAULT NULL COMMENT '结束页码',
+    `application_no` varchar(64) DEFAULT NULL COMMENT '申请号',
+    `publication_no` varchar(64) DEFAULT NULL COMMENT '公布号',
+    `document_name` varchar(255) DEFAULT NULL COMMENT '来源文档名',
+    `version_no` varchar(32) DEFAULT NULL COMMENT '版本号',
+    `content_snapshot` text COMMENT '证据原文快照',
+    `metadata_snapshot` text COMMENT '元数据快照(JSON, 内部保留)',
+    `score` decimal(6,4) DEFAULT NULL COMMENT '归一化得分(0~1)',
+    `creator` varchar(64) DEFAULT '' COMMENT '创建者',
+    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updater` varchar(64) DEFAULT '' COMMENT '更新者',
+    `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    `deleted` bit(1) NOT NULL DEFAULT b'0' COMMENT '是否删除',
+    `tenant_id` bigint NOT NULL DEFAULT 0 COMMENT '租户编号',
+    PRIMARY KEY (`id`),
+    KEY `idx_message_id` (`message_id`),
+    KEY `idx_chunk_id` (`chunk_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI 会话消息证据快照';

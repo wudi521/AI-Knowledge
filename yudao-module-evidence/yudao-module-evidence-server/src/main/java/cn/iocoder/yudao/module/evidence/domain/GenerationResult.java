@@ -28,4 +28,25 @@ public class GenerationResult {
     /** 是否降级信任生成(验证器解析故障重试耗尽; 回答未完整验证, 仅供诊断) */
     private boolean verificationDegraded;
 
+    /** 是否超时终止(查询 Deadline 触发; 停止继续 repair, 未产出可靠回答) */
+    private boolean timedOut;
+
+    /** P0-09: 生成阶段耗时(ms) */
+    private long generateMs;
+
+    /** P0-09: 验证阶段耗时(ms) */
+    private long verifyMs;
+
+    /** P0-09: 修复阶段耗时(ms) */
+    private long repairMs;
+
+    /** P0-09: 生成次数 */
+    private int generateCount;
+
+    /** P0-09: 验证次数 */
+    private int verifyCount;
+
+    /** P0-09: 管线终止原因: success / unsupported-limit / deadline / verify-limit / generate-limit / verify-unparseable-limit */
+    private String outcome;
+
 }

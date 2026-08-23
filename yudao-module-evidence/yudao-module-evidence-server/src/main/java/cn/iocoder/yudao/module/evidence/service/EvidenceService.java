@@ -4,6 +4,8 @@ import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
+import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
+import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
 import cn.iocoder.yudao.module.evidence.domain.ClaimResult;
 import cn.iocoder.yudao.module.evidence.domain.Conflict;
@@ -134,8 +136,20 @@ public class EvidenceService {
     public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
                                            Long tenantId, Long userId, List<ChatTurnDTO> history,
                                            Boolean skipSlotDetection) {
+        return evaluate(query, kbIds, topK, tenantId, userId, history, skipSlotDetection, null);
+    }
+
+    /**
+     * 证据评估(Feign RPC 场景; 支持多轮上下文 + 跳过槽位检测 + 统一主 traceId)
+     *
+     * @param skipSlotDetection 是否跳过槽位检测(评测/批处理用: 测检索+回答质量, 不走对话层反问门)
+     * @param traceId           统一主 traceId(q- 前缀, 对话层下发; null 时本模块生成 ev- 兜底)
+     */
+    public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
+                                           Long tenantId, Long userId, List<ChatTurnDTO> history,
+                                           Boolean skipSlotDetection, String incomingTraceId) {
         long start = System.currentTimeMillis();
-        String traceId = newTraceId();
+        String traceId = StrUtil.isNotBlank(incomingTraceId) ? incomingTraceId : newTraceId();
 
         // 管线各环节产物(异常兜底时保留已产出部分)
         List<Evidence> deduped = Collections.emptyList();
@@ -198,7 +212,7 @@ public class EvidenceService {
         }
         try {
             // 1. 组装(检索 RPC → 归一化证据; RPC 失败/无结果返回空集, 不抛出)
-            AssembledEvidence assembled = assembler.assemble(query, kbIds, topK, tenantId, userId, history);
+            AssembledEvidence assembled = assembler.assemble(query, kbIds, topK, tenantId, userId, history, traceId);
             evalAnalysis = assembled.getAnalysis();
             evalChannels = assembled.getChannels();
             List<Evidence> evidences = assembled.getEvidences() != null
@@ -251,6 +265,8 @@ public class EvidenceService {
             }
         }
         resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+        // P0-09: 汇聚全链路阶段时序(检索阶段 + 证据阶段), 供对话层落库 Query Trace
+        resp.setStages(buildStages(evalAnalysis, generation, resp.getElapsedMs()));
 
         // 6. 落库(内部吞异常, 失败不阻断响应)
         recorder.record(resp, deduped, conflicts);
@@ -278,22 +294,98 @@ public class EvidenceService {
             resp.setClaims(generation.getClaims() != null
                     ? generation.getClaims().stream().map(this::toClaimVO).collect(Collectors.toList()) : null);
             resp.setClaimFail(generation.isClaimFail());
+            resp.setVerificationDegraded(generation.isVerificationDegraded());
+            resp.setTimedOut(generation.isTimedOut());
         } else {
             resp.setClaimFail(false);
         }
         return resp;
     }
 
+    /**
+     * P0-09: 汇聚全链路阶段时序 = 检索阶段(Query Planner 产出) + 证据阶段(组装/生成/验证/修复)。
+     * 仅记录阶段/状态/耗时摘要, 不含敏感内容。
+     */
+    private List<QueryStageTimingDTO> buildStages(RetrievalSearchRespDTO.RetrievalAnalysisDTO evalAnalysis,
+                                                  GenerationResult generation, int elapsedMs) {
+        List<QueryStageTimingDTO> stages = new ArrayList<>();
+        int seq = 0;
+        if (evalAnalysis != null && evalAnalysis.getStages() != null) {
+            stages.addAll(evalAnalysis.getStages());
+            seq = evalAnalysis.getStages().size();
+        }
+        // EVIDENCE 阶段 = 检索结果组装/去重/冲突/充分性(总耗时减去生成/验证/修复)
+        long genTotal = generation != null
+                ? generation.getGenerateMs() + generation.getVerifyMs() + generation.getRepairMs() : 0;
+        stages.add(buildStage("EVIDENCE", ++seq, Math.max(0, elapsedMs - genTotal),
+                "SUCCEEDED", null, null));
+        if (generation != null && generation.getGenerateCount() > 0) {
+            boolean success = "success".equals(generation.getOutcome());
+            QueryStageTimingDTO generate = buildStage("GENERATE", ++seq, generation.getGenerateMs(),
+                    "SUCCEEDED", null, null);
+            generate.setOutputSummary("generateCount=" + generation.getGenerateCount());
+            stages.add(generate);
+            QueryStageTimingDTO verify = buildStage("VERIFY", ++seq, generation.getVerifyMs(),
+                    success ? "SUCCEEDED" : "FAILED", null,
+                    success ? null : "断言未全部通过证据验证 (outcome=" + generation.getOutcome() + ")");
+            stages.add(verify);
+            if (generation.getVerifyCount() > 1) {
+                // repair 链路显式: GENERATE → VERIFY(FAILED) → REPAIR → VERIFY
+                stages.add(buildStage("REPAIR", ++seq, generation.getRepairMs(),
+                        "SUCCEEDED", null, null));
+                stages.add(buildStage("VERIFY", ++seq, 0,
+                        success ? "SUCCEEDED" : "FAILED", null,
+                        success ? null : "二次验证仍未通过 (outcome=" + generation.getOutcome() + ")"));
+            }
+        }
+        return stages;
+    }
+
+    private QueryStageTimingDTO buildStage(String stage, int seq, long elapsedMs, String status,
+                                           String errorCode, String errorMessage) {
+        QueryStageTimingDTO dto = new QueryStageTimingDTO();
+        dto.setStage(stage);
+        dto.setSeq(seq);
+        dto.setStatus(status);
+        dto.setElapsedMs(elapsedMs);
+        dto.setSkipped(false);
+        dto.setErrorCode(errorCode);
+        dto.setErrorMessage(errorMessage);
+        return dto;
+    }
+
     private EvidenceEvaluateRespVO.EvidenceItemVO toEvidenceItem(Evidence evidence) {
         EvidenceEvaluateRespVO.EvidenceItemVO vo = new EvidenceEvaluateRespVO.EvidenceItemVO();
+        vo.setEvidenceId(evidence.getChunkId());
         vo.setChunkId(evidence.getChunkId());
         vo.setContent(evidence.getContent());
         vo.setChunkMetadata(evidence.getChunkMetadata()); // 专利来源卡片
         vo.setDocumentName(evidence.getDocumentName());
         vo.setVersionNo(evidence.getVersionNo());
+        vo.setVersionId(evidence.getVersionId());
+        vo.setDocumentId(evidence.getDocumentId() != null ? Long.parseLong(evidence.getDocumentId()) : null);
         vo.setScore(evidence.getScore());
         vo.setChannels(evidence.getChannels() != null ? new ArrayList<>(evidence.getChannels()) : new ArrayList<>());
+        // P0-08: 解析片段元数据为结构化字段(仅供前端证据卡片/抽屉展示, 不暴露内部 JSON)
+        fillPatentMetadata(vo, evidence.getChunkMetadata());
         return vo;
+    }
+
+    /** 解析专利片段元数据 → 结构化字段(applicationNo/publicationNo/sectionType/sectionTitle/claimNo/pageStart/pageEnd) */
+    private void fillPatentMetadata(EvidenceEvaluateRespVO.EvidenceItemVO vo, String chunkMetadata) {
+        if (StrUtil.isBlank(chunkMetadata)) return;
+        try {
+            cn.hutool.json.JSONObject obj = cn.hutool.json.JSONUtil.parseObj(chunkMetadata);
+            vo.setApplicationNo(obj.getStr("applicationNo"));
+            vo.setPublicationNo(obj.getStr("publicationNo"));
+            vo.setSectionType(obj.getStr("sectionType"));
+            vo.setSectionTitle(obj.getStr("sectionTitle"));
+            vo.setClaimNo(obj.getStr("claimNo"));
+            vo.setPageStart(obj.getInt("pageStart"));
+            vo.setPageEnd(obj.getInt("pageEnd"));
+        } catch (Exception e) {
+            log.debug("[fillPatentMetadata][元数据解析失败, 忽略: {}]", chunkMetadata);
+        }
     }
 
     private EvidenceEvaluateRespVO.ConflictVO toConflictVO(Conflict conflict) {

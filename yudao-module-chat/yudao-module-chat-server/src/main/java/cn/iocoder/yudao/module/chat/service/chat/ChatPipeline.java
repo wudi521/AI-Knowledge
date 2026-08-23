@@ -67,6 +67,8 @@ public class ChatPipeline {
     private List<ChannelAdapter> channelAdapters;
     @Resource
     private KnowledgeApi knowledgeApi;
+    @Resource
+    private cn.iocoder.yudao.module.chat.service.trace.QueryTraceService queryTraceService;
 
     public ChatSendResult send(Long conversationId, String message, String channel, String customerId) {
         return send(conversationId, message, channel, customerId, (Long) null);
@@ -91,6 +93,8 @@ public class ChatPipeline {
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
         Long userId = loginUser != null ? loginUser.getId() : null;
+        // P0-09: 每个用户问题一个主 traceId(q- 前缀), 贯穿检索/证据全链路
+        String traceId = queryTraceService.newTraceId();
 
         // 1. 先解析/创建会话，确保后续所有会话级操作都有真实 conversationId。
         AiConversationDO conversation;
@@ -131,6 +135,10 @@ public class ChatPipeline {
             effectiveKbIds = List.of(knowledgeContext.kbId());
         }
 
+        // P0-09: 创建 Query Trace 主记录(仅正常可查询路径; 拒绝/关闭请求不落 trace)
+        queryTraceService.begin(traceId, conversationId, message,
+                knowledgeContext.kbId(), knowledgeContext.domainCode());
+
         // 3. USER 落库前读取历史，天然排除当前轮。
         List<ChatTurnDTO> history = buildHistory(messageService.getRecentMessages(
                 conversationId, chatProperties.getMaxContextMessages()));
@@ -145,17 +153,46 @@ public class ChatPipeline {
                     buildManualTransferResult(conversation, knowledgeContext, message, manualReason));
         }
 
-        // 6. 证据判定。
-        EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null, history, effectiveKbIds);
+        // 6. 证据判定(P0-09: 透传统一主 traceId)。
+        EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null, history,
+                effectiveKbIds, traceId);
 
+        ChatSendResult result;
         if (isClarifyRequired(resp)) {
-            return buildClarifyResult(conversation, knowledgeContext, resp);
+            result = buildClarifyResult(conversation, knowledgeContext, resp);
+        } else if (isAnswerable(resp)) {
+            result = buildAnswerResult(conversation, knowledgeContext, resp);
+        } else if (resp != null && Boolean.TRUE.equals(resp.getTimedOut())) {
+            // P0-11: 查询超时 → 降级结果(非转人工), 返回可理解提示
+            result = buildDegradedResult(conversation, knowledgeContext, resp,
+                    "本次查询超时，未能完成可靠回答，请稍后重试或调整问题。");
+        } else if (resp != null && Boolean.TRUE.equals(resp.getVerificationDegraded())) {
+            // P0-11: 验证降级且无可用回答 → 降级结果(非转人工)
+            result = buildDegradedResult(conversation, knowledgeContext, resp,
+                    "当前知识库中没有足够证据支持可靠回答。");
+        } else {
+            result = transferHandler.handleTransfer(conversationId, message,
+                    buildTransferResult(conversation, knowledgeContext, message, resp));
         }
-        if (isAnswerable(resp)) {
-            return buildAnswerResult(conversation, knowledgeContext, resp);
+
+        // P0-09: 落库全链路阶段 + 完成 Query Trace
+        if (resp != null) {
+            queryTraceService.recordStages(traceId, resp.getStages());
         }
-        return transferHandler.handleTransfer(conversationId, message,
-                buildTransferResult(conversation, knowledgeContext, message, resp));
+        if (result != null) {
+            queryTraceService.finish(traceId, result.getRoute(),
+                    result.getLatencyMs() != null ? result.getLatencyMs() : 0,
+                    deriveTraceStatus(resp, result));
+        }
+        return result;
+    }
+
+    /** P0-09: 由响应与结果推导 Trace 终态(SUCCEEDED/DEGRADED/FAILED) */
+    private String deriveTraceStatus(EvidenceEvaluateRespDTO resp, ChatSendResult result) {
+        if (Boolean.TRUE.equals(resp != null ? resp.getTimedOut() : null)) return "TIMEOUT";
+        if (Boolean.TRUE.equals(result.getDegraded())) return "DEGRADED";
+        if (Boolean.TRUE.equals(result.getTransferRequired())) return "DEGRADED";
+        return "SUCCEEDED";
     }
 
     private KnowledgeContext resolveKnowledgeContext(Long kbId, Long userId) {
@@ -233,13 +270,40 @@ public class ChatPipeline {
                 && !Boolean.TRUE.equals(resp.getClaimFail());
     }
 
+    /** P0-11: 降级结果(查询超时/验证降级): 非转人工, 返回可理解提示并落库 AI 消息 */
+    private ChatSendResult buildDegradedResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
+                                               EvidenceEvaluateRespDTO resp, String message) {
+        AiMessageDO aiMessage = messageService.addMessage(conversation.getId(), "AI", message,
+                null, null, null, null, resp != null ? resp.getTraceId() : null);
+        return ChatSendResult.builder()
+                .conversationId(conversation.getId())
+                .messageId(aiMessage != null ? aiMessage.getId() : null)
+                .kbId(knowledgeContext.kbId())
+                .domainCode(knowledgeContext.domainCode())
+                .route(ChatRouteEnum.ABSTAIN)
+                .intent(resolveIntent(resp))
+                .degraded(true)
+                .answer(message)
+                .answerable(false)
+                .confidence(resp != null ? resp.getConfidence() : null)
+                .citations(List.of())
+                .traceId(resp != null ? resp.getTraceId() : null)
+                .transferRequired(false)
+                .build();
+    }
+
     private ChatSendResult buildAnswerResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
                                              EvidenceEvaluateRespDTO resp) {
         List<Long> citations = buildCitations(resp);
-        List<ChatSendResult.EvidenceSummary> evidence = buildEvidenceSummaries(resp);
+        List<ChatSendResult.EvidenceSummary> evidence = buildEvidenceSummaries(resp,
+                knowledgeContext.kbId(), knowledgeContext.domainCode());
         AiMessageDO aiMessage = messageService.addMessage(conversation.getId(), "AI", resp.getAnswer(),
                 JSONUtil.toJsonStr(citations), null, null,
                 toConfidence(resp.getConfidence()), resp.getTraceId());
+        // P0-08: 证据快照随消息落库(历史会话刷新后 Evidence 不丢; 快照为当时版本, 不随知识升级漂移)
+        if (aiMessage != null) {
+            persistMessageEvidence(aiMessage.getId(), resp, knowledgeContext.kbId(), knowledgeContext.domainCode());
+        }
         return ChatSendResult.builder()
                 .conversationId(conversation.getId())
                 .messageId(aiMessage != null ? aiMessage.getId() : null)
@@ -258,21 +322,78 @@ public class ChatPipeline {
                 .build();
     }
 
-    private List<ChatSendResult.EvidenceSummary> buildEvidenceSummaries(EvidenceEvaluateRespDTO resp) {
+    private List<ChatSendResult.EvidenceSummary> buildEvidenceSummaries(EvidenceEvaluateRespDTO resp,
+                                                                         Long kbId, String domainCode) {
         if (resp == null || resp.getEvidence() == null || resp.getEvidence().isEmpty()) return List.of();
         List<ChatSendResult.EvidenceSummary> list = new ArrayList<>();
         for (EvidenceItemDTO e : resp.getEvidence()) {
             if (e == null || e.getChunkId() == null) continue;
-            String meta = e.getChunkMetadata();
             list.add(ChatSendResult.EvidenceSummary.builder()
+                    .evidenceId(e.getEvidenceId() != null ? e.getEvidenceId() : e.getChunkId())
                     .chunkId(e.getChunkId())
+                    .documentId(e.getDocumentId())
                     .documentName(e.getDocumentName())
+                    .versionId(e.getVersionId())
                     .versionNo(e.getVersionNo())
-                    .chunkMetadata(meta)
+                    .kbId(e.getKbId() != null ? e.getKbId() : kbId)
+                    .domainCode(e.getDomainCode() != null ? e.getDomainCode() : domainCode)
+                    .sectionType(e.getSectionType())
+                    .sectionTitle(e.getSectionTitle())
+                    .claimNo(e.getClaimNo())
+                    .pageStart(e.getPageStart())
+                    .pageEnd(e.getPageEnd())
+                    .applicationNo(e.getApplicationNo())
+                    .publicationNo(e.getPublicationNo())
                     .content(e.getContent() == null ? null : StrUtil.sub(e.getContent(), 0, 500))
+                    .score(e.getScore())
                     .build());
         }
         return list;
+    }
+
+    /**
+     * P0-08: 将证据评估响应中的证据列表落库为消息证据快照(ai_message_evidence)。
+     * 快照携带 文档/版本/片段/申请号/公布号/原文, 历史会话刷新后仍可还原"当时回答依据 V1"。
+     */
+    private void persistMessageEvidence(Long messageId, EvidenceEvaluateRespDTO resp, Long kbId, String domainCode) {
+        if (resp == null || resp.getEvidence() == null || resp.getEvidence().isEmpty()) return;
+        List<cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageEvidenceDO> rows = new ArrayList<>();
+        int index = 0;
+        for (EvidenceItemDTO e : resp.getEvidence()) {
+            if (e == null || e.getChunkId() == null) continue;
+            rows.add(toEvidenceSnapshot(messageId, index, e, kbId, domainCode));
+            index++;
+        }
+        if (!rows.isEmpty()) {
+            messageService.addMessageEvidence(messageId, rows);
+        }
+    }
+
+    private cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageEvidenceDO toEvidenceSnapshot(
+            Long messageId, int index, EvidenceItemDTO e, Long kbId, String domainCode) {
+        cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageEvidenceDO row =
+                new cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageEvidenceDO();
+        row.setMessageId(messageId);
+        row.setEvidenceIndex(index);
+        row.setCitationLabel("C" + (index + 1));
+        row.setDocumentId(e.getDocumentId());
+        row.setVersionId(e.getVersionId());
+        row.setChunkId(e.getChunkId());
+        row.setKbId(e.getKbId() != null ? e.getKbId() : kbId);
+        row.setDomainCode(e.getDomainCode() != null ? e.getDomainCode() : domainCode);
+        row.setSectionType(e.getSectionType());
+        row.setSectionTitle(e.getSectionTitle());
+        row.setClaimNo(e.getClaimNo());
+        row.setPageStart(e.getPageStart());
+        row.setPageEnd(e.getPageEnd());
+        row.setApplicationNo(e.getApplicationNo());
+        row.setPublicationNo(e.getPublicationNo());
+        row.setDocumentName(e.getDocumentName());
+        row.setVersionNo(e.getVersionNo());
+        row.setContentSnapshot(e.getContent() == null ? null : StrUtil.sub(e.getContent(), 0, 2000));
+        row.setMetadataSnapshot(e.getChunkMetadata());
+        row.setScore(e.getScore() == null ? null : BigDecimal.valueOf(e.getScore()).setScale(4, RoundingMode.HALF_UP));
+        return row;
     }
 
     /**
