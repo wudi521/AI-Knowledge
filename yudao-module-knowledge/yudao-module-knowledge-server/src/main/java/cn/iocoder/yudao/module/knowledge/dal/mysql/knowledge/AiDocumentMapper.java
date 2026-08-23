@@ -10,13 +10,20 @@ import org.apache.ibatis.annotations.Mapper;
 
 import java.util.List;
 
-/**
- * AI 文档 Mapper
- */
+/** AI 文档 Mapper */
 @Mapper
 public interface AiDocumentMapper extends BaseMapperX<AiDocumentDO> {
 
     default PageResult<AiDocumentDO> selectPage(AiDocumentPageReqVO reqVO) {
+        return selectPage(reqVO, new LambdaQueryWrapperX<AiDocumentDO>()
+                .eqIfPresent(AiDocumentDO::getKbId, reqVO.getKbId())
+                .likeIfPresent(AiDocumentDO::getName, reqVO.getName())
+                .eqIfPresent(AiDocumentDO::getParseStatus, reqVO.getParseStatus())
+                .inIfPresent(AiDocumentDO::getKbId, reqVO.getKbIds())
+                .orderByDesc(AiDocumentDO::getId));
+    }
+
+    default PageResult<AiDocumentDO> selectPageByVersionIds(AiDocumentPageReqVO reqVO, List<Long> versionIds) {
         return selectPage(reqVO, new LambdaQueryWrapperX<AiDocumentDO>()
                 .eqIfPresent(AiDocumentDO::getKbId, reqVO.getKbId())
                 .likeIfPresent(AiDocumentDO::getName, reqVO.getName())
@@ -34,8 +41,12 @@ public interface AiDocumentMapper extends BaseMapperX<AiDocumentDO> {
     }
 
     default List<AiDocumentDO> selectListByKbId(Long kbId) {
-        return selectList(new LambdaQueryWrapperX<AiDocumentDO>()
-                .eq(AiDocumentDO::getKbId, kbId));
+        return selectList(new LambdaQueryWrapperX<AiDocumentDO>().eq(AiDocumentDO::getKbId, kbId));
+    }
+
+    default List<AiDocumentDO> selectListByKbIds(List<Long> kbIds) {
+        if (kbIds == null || kbIds.isEmpty()) return List.of();
+        return selectList(new LambdaQueryWrapperX<AiDocumentDO>().in(AiDocumentDO::getKbId, kbIds));
     }
 
 }
