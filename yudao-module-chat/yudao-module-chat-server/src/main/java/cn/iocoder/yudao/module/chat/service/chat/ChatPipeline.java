@@ -32,49 +32,19 @@ import java.util.Set;
 
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
 
-/**
- * 对话编排管线: 会话 → 证据判定 → 回答或转人工
- * <p>
- * 流程:
- * <ol>
- *     <li><b>渠道解析</b>: 空渠道 → WEB; 未注册渠道(企微/钉钉等) → log.warn 降级为 WEB, 不报错;</li>
- *     <li><b>会话解析</b>: conversationId 为空 → 新建 ACTIVE 会话; 非空 → 校验存在(不存在抛
- *     {@link ServiceException} CONVERSATION_NOT_EXISTS); CLOSED 终态 → 告警并返回"会话已关闭"决策
- *     (不落库、不调评估); TRANSFERRED → 继续走 AI(机器人仍可尝试作答, 见 {@link #send} 决策说明);</li>
- *     <li><b>历史上下文读取</b>: USER 落库前读取最近 maxContextMessages 条 USER/AI 消息
- *     (排除 SYSTEM 交接, 天然不含当前轮), 构造 List&lt;ChatTurnDTO&gt; 注入证据评估;</li>
- *     <li><b>USER 消息落库</b>: 无论后续判定结果如何, 客户消息一律先落库;</li>
- *     <li><b>转人工早检</b>: {@link TransferHandler#detectTransferReason} 结构化关键词(情绪激烈/客户要求)
- *     命中 → 跳过证据评估直接转人工(省 LLM 成本);</li>
- *     <li><b>证据判定</b>: 调用 {@link EvidenceRpcAdapter#evaluate}, 失败返回 null;</li>
- *     <li><b>分流</b>: 可作答 → 落库 AI 消息并返回回答; 不可作答 → 转人工决策,
- *     由 {@link TransferHandler#handleTransfer} 落库 SYSTEM 交接摘要 + 状态迁移 ACTIVE→TRANSFERRED。</li>
- * </ol>
- * 约束: 除 CONVERSATION_NOT_EXISTS 外本管线永不抛出; 证据 RPC 失败 → 转人工 + 原因"评估服务暂不可用";
- * 依赖注入无环(TransferHandler 不反向依赖 ChatPipeline)。
- */
+/** 对话编排管线: 会话 → 证据判定 → 回答或转人工。 */
 @Slf4j
 @Component
 public class ChatPipeline {
 
-    /** 未注册渠道的降级目标 */
     private static final String DEFAULT_CHANNEL = "WEB";
-
-    /** 转人工原因: 评估服务不可用 */
     private static final String REASON_EVAL_UNAVAILABLE = "评估服务暂不可用";
-    /** 转人工原因: 证据冲突 */
     private static final String REASON_CONFLICT = "证据冲突";
-    /** 转人工原因: 产品不匹配 */
     private static final String REASON_PRODUCT_MISMATCH = "产品不匹配";
-    /** 转人工原因: 证据不足 */
     private static final String REASON_INSUFFICIENT = "证据不足";
-    /** 转人工原因: 检索阻断 */
     private static final String REASON_BLOCKED = "检索阻断";
-    /** 转人工原因: 超出知识库范围(意图 OUT_OF_SCOPE) */
     private static final String REASON_OUT_OF_SCOPE = "超出知识库范围";
-    /** 转人工原因: Claim 验证失败 */
     private static final String REASON_CLAIM_FAIL = "Claim验证失败";
-    /** 转人工原因: 证据不充分(兜底) */
     private static final String REASON_FALLBACK = "证据不充分";
 
     @Resource
@@ -90,38 +60,19 @@ public class ChatPipeline {
     @Resource
     private List<ChannelAdapter> channelAdapters;
 
-    /**
-     * 发送一条客户消息并返回处理结果
-     *
-     * @param conversationId 会话编号(为空则新建会话)
-     * @param message        客户消息内容
-     * @param channel        渠道标识(空或未注册 → 降级 WEB)
-     * @param customerId     客户标识(新建会话时使用)
-     * @return 回答或转人工决策(永不抛出, 除会话不存在外)
-     */
     public ChatSendResult send(Long conversationId, String message, String channel, String customerId) {
         return send(conversationId, message, channel, customerId, null);
     }
 
-    /** 带知识库绑定的发送(专利 MVP: kbIds 限定检索范围; 未选时由会话绑定兜底, 仍无则提示) */
+    /**
+     * 带知识库绑定的发送。
+     * 修复点: 必须先创建/校验会话，再读写会话绑定；新会话不得 bindKbIds(null, ...)。
+     */
     public ChatSendResult send(Long conversationId, String message, String channel, String customerId,
                                List<Long> kbIds) {
-        // 0. 知识库绑定(专利 MVP): 请求未带 kbIds 时尝试会话绑定; 新会话且未选择 → 明确提示, 不搜索全部
-        List<Long> effectiveKbIds = kbIds;
-        if (effectiveKbIds == null || effectiveKbIds.isEmpty()) {
-            effectiveKbIds = conversationService.getBoundKbIds(conversationId);
-        }
-        if (effectiveKbIds == null || effectiveKbIds.isEmpty()) {
-            log.info("[send][会话({}) 未绑定知识库, 拒绝默认全库检索: {}]", conversationId, message);
-            return buildKbRequiredResult(conversationId);
-        }
-        if (kbIds != null && !kbIds.isEmpty()) {
-            conversationService.bindKbIds(conversationId, kbIds); // 持久化会话绑定, 后续轮次复用
-        }
-        // 1. 渠道解析: 空 → WEB; 未注册渠道 → 降级 WEB(不报错)
         String resolvedChannel = resolveChannel(channel);
 
-        // 2. 会话解析
+        // 1. 先解析/创建会话，确保后续所有会话级操作都有真实 conversationId。
         AiConversationDO conversation;
         if (conversationId == null) {
             conversation = conversationService.createConversation(resolvedChannel, customerId);
@@ -131,36 +82,45 @@ public class ChatPipeline {
             if (conversation == null) {
                 throw new ServiceException(CONVERSATION_NOT_EXISTS);
             }
-            // 决策(见类注释): CLOSED 终态 → 忽略新消息(不落库、不调评估), 告警并返回"会话已关闭"决策;
-            // TRANSFERRED → 不拦截, 继续走 AI(机器人仍可尝试作答, 评估失败转人工时状态守卫自动幂等)
             if (ConversationStatusEnum.CLOSED.getStatus().equals(conversation.getStatus())) {
                 log.warn("[send][会话({}) 已关闭, 忽略新消息: {}]", conversationId, message);
                 return buildClosedResult(conversationId);
             }
         }
 
-        // 2.5 历史上下文读取(USER 落库前, 天然排除当前轮): 最近 maxContextMessages 条 USER/AI 消息(不含 SYSTEM 交接),
-        //     构造 List<ChatTurnDTO> 注入证据评估(检索消歧 + 生成带历史, 截断在证据侧 ContextFormatter)
+        // 2. 再解析知识库范围。请求显式 kbIds 优先；否则复用会话已有绑定。
+        List<Long> effectiveKbIds = kbIds;
+        if (effectiveKbIds == null || effectiveKbIds.isEmpty()) {
+            effectiveKbIds = conversationService.getBoundKbIds(conversationId);
+        }
+        if (effectiveKbIds == null || effectiveKbIds.isEmpty()) {
+            log.info("[send][会话({}) 未绑定知识库, 拒绝默认全库检索: {}]", conversationId, message);
+            return buildKbRequiredResult(conversationId);
+        }
+        if (kbIds != null && !kbIds.isEmpty()) {
+            conversationService.bindKbIds(conversationId, kbIds);
+        }
+
+        // 3. USER 落库前读取历史，天然排除当前轮。
         List<ChatTurnDTO> history = buildHistory(messageService.getRecentMessages(
                 conversationId, chatProperties.getMaxContextMessages()));
 
-        // 3. USER 消息落库(无论判定结果如何都必须持久化)
+        // 4. USER 消息落库。
         messageService.addMessage(conversationId, "USER", message, null, null, null, null, null);
 
-        // 3.5 转人工早检(结构化关键词, 非 LLM): 情绪激烈/客户要求 → 跳过证据评估直接转人工(省 LLM 成本)
+        // 5. 转人工早检。
         String manualReason = transferHandler.detectTransferReason(message);
         if (manualReason != null) {
             return transferHandler.handleTransfer(conversationId, message,
                     buildManualTransferResult(conversationId, message, manualReason));
         }
 
-        // 4. 证据判定(登录态租户/用户, null-safe → null 由证据侧降级)
+        // 6. 证据判定。
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
         Long userId = loginUser != null ? loginUser.getId() : null;
         EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null, history, effectiveKbIds);
 
-        // 5. 分流: 缺必填槽位 → 反问(不转人工); 可作答 → 回答; 否则 → 转人工决策
         if (isClarifyRequired(resp)) {
             return buildClarifyResult(conversationId, resp);
         }
@@ -170,29 +130,15 @@ public class ChatPipeline {
         return transferHandler.handleTransfer(conversationId, message, buildTransferResult(conversationId, message, resp));
     }
 
-    // ========== 渠道 ==========
-
     private String resolveChannel(String channel) {
-        if (StrUtil.isBlank(channel)) {
-            return DEFAULT_CHANNEL;
-        }
+        if (StrUtil.isBlank(channel)) return DEFAULT_CHANNEL;
         for (ChannelAdapter adapter : channelAdapters) {
-            if (adapter.supports(channel)) {
-                return adapter.channel();
-            }
+            if (adapter.supports(channel)) return adapter.channel();
         }
-        // 企微/钉钉等未注册渠道: 不报错, 降级为 WEB
         log.warn("[resolveChannel][渠道({}) 未注册适配器, 降级为 WEB]", channel);
         return DEFAULT_CHANNEL;
     }
 
-    // ========== 判定与分流 ==========
-
-    /**
-     * 是否需要反问(槽位检测缺必填信息): 证据评估返回 missingSlots 非空且给了反问问题。
-     * <p>
-     * 反问不是转人工: 客户补充信息后可继续作答, 会话保持 ACTIVE。
-     */
     private boolean isClarifyRequired(EvidenceEvaluateRespDTO resp) {
         return resp != null
                 && resp.getMissingSlots() != null
@@ -200,9 +146,6 @@ public class ChatPipeline {
                 && StrUtil.isNotBlank(resp.getClarifyQuestion());
     }
 
-    /**
-     * 反问路径: 落库 AI 消息(反问问题)并返回决策, 不转人工、不迁移会话状态。
-     */
     private ChatSendResult buildClarifyResult(Long conversationId, EvidenceEvaluateRespDTO resp) {
         messageService.addMessage(conversationId, "AI", resp.getClarifyQuestion(),
                 null, null, null, null, resp.getTraceId());
@@ -224,9 +167,6 @@ public class ChatPipeline {
                 && !Boolean.TRUE.equals(resp.getClaimFail());
     }
 
-    /**
-     * 可作答路径: 落库 AI 消息(含 citations / confidence / traceId)并返回回答结果
-     */
     private ChatSendResult buildAnswerResult(Long conversationId, EvidenceEvaluateRespDTO resp) {
         List<Long> citations = buildCitations(resp);
         messageService.addMessage(conversationId, "AI", resp.getAnswer(),
@@ -244,37 +184,24 @@ public class ChatPipeline {
                 .build();
     }
 
-    /** 来源卡片数据: 从证据评估响应的 evidence 列表提取摘要(chunkMetadata 携带专利元数据) */
     private List<ChatSendResult.EvidenceSummary> buildEvidenceSummaries(EvidenceEvaluateRespDTO resp) {
-        if (resp == null || resp.getEvidence() == null || resp.getEvidence().isEmpty()) {
-            return List.of();
-        }
-        java.util.List<ChatSendResult.EvidenceSummary> list = new java.util.ArrayList<>();
-        for (cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO e : resp.getEvidence()) {
-            if (e == null || e.getChunkId() == null) {
-                continue;
-            }
+        if (resp == null || resp.getEvidence() == null || resp.getEvidence().isEmpty()) return List.of();
+        List<ChatSendResult.EvidenceSummary> list = new ArrayList<>();
+        for (EvidenceItemDTO e : resp.getEvidence()) {
+            if (e == null || e.getChunkId() == null) continue;
             String meta = e.getChunkMetadata();
-            // 专利来源卡片只展示带领域元数据的证据(申请号/公布号/章节), 其余折叠为普通引用
-            if (meta == null || meta.isBlank() || !meta.contains("sectionType")) {
-                continue;
-            }
+            if (meta == null || meta.isBlank() || !meta.contains("sectionType")) continue;
             list.add(ChatSendResult.EvidenceSummary.builder()
                     .chunkId(e.getChunkId())
                     .documentName(e.getDocumentName())
                     .versionNo(e.getVersionNo())
                     .chunkMetadata(meta)
-                    .content(e.getContent() == null ? null : cn.hutool.core.util.StrUtil.sub(e.getContent(), 0, 500))
+                    .content(e.getContent() == null ? null : StrUtil.sub(e.getContent(), 0, 500))
                     .build());
         }
         return list;
     }
 
-    /**
-     * 转人工路径(评估后兜底): 本方法仅产出纯决策(原因 + 摘要草稿);
-     * 由调用方 {@link #send} 交给 {@link TransferHandler#handleTransfer} 完成
-     * 会话状态迁移(ACTIVE→TRANSFERRED) + SYSTEM 交接摘要消息落库。
-     */
     private ChatSendResult buildTransferResult(Long conversationId, String message, EvidenceEvaluateRespDTO resp) {
         String transferReason = deriveTransferReason(resp);
         String summary = buildSummaryDraft(message, transferReason, resp);
@@ -291,10 +218,6 @@ public class ChatPipeline {
                 .build();
     }
 
-    /**
-     * 关键词早检转人工决策(情绪激烈/客户要求): 未做证据评估, 摘要由
-     * {@link TransferHandler#buildSummary} 组装(无 AI 建议、无相关证据)。
-     */
     private ChatSendResult buildManualTransferResult(Long conversationId, String message, String reason) {
         return ChatSendResult.builder()
                 .conversationId(conversationId)
@@ -309,13 +232,6 @@ public class ChatPipeline {
                 .build();
     }
 
-    /**
-     * 会话已关闭决策: transferRequired=true + 原因"会话已关闭"。
-     * <p>
-     * CLOSED 为终态, 不落 SYSTEM 消息、不做状态迁移(会话本已关闭); 仅告警后返回
-     * 该决策, 供前端提示"会话已结束"。
-     */
-    /** 未绑定知识库提示(专利 MVP: 不默认搜索全部知识库) */
     private ChatSendResult buildKbRequiredResult(Long conversationId) {
         return ChatSendResult.builder()
                 .conversationId(conversationId)
@@ -339,17 +255,8 @@ public class ChatPipeline {
                 .build();
     }
 
-    // ========== 历史上下文 ==========
-
-    /**
-     * 历史上下文构造: 最近消息 → ChatTurnDTO 列表(USER/AI; SYSTEM 交接消息已由
-     * {@link MessageService#getRecentMessages} 排除, 这里按角色二次过滤兜底)。
-     * 空历史返回空列表(单轮兼容)。
-     */
     private List<ChatTurnDTO> buildHistory(List<AiMessageDO> recent) {
-        if (CollUtil.isEmpty(recent)) {
-            return List.of();
-        }
+        if (CollUtil.isEmpty(recent)) return List.of();
         List<ChatTurnDTO> history = new ArrayList<>(recent.size());
         for (AiMessageDO message : recent) {
             if ("USER".equals(message.getRole())) {
@@ -368,26 +275,14 @@ public class ChatPipeline {
         return turn;
     }
 
-    // ========== 引用证据(citations) ==========
-
-    /**
-     * 引用证据 chunkId 列表: 逐条扫描 claims, 取 verdict==SUPPORTED 且 evidenceIndex 落在
-     * evidence 列表范围内的断言, 映射为 evidence[evidenceIndex].chunkId, 保序去重。
-     */
     private List<Long> buildCitations(EvidenceEvaluateRespDTO resp) {
         List<Long> citations = new ArrayList<>();
-        if (resp == null || resp.getClaims() == null || resp.getEvidence() == null) {
-            return citations;
-        }
+        if (resp == null || resp.getClaims() == null || resp.getEvidence() == null) return citations;
         Set<Long> seen = new HashSet<>();
         for (EvidenceClaimDTO claim : resp.getClaims()) {
-            if (claim == null || !"SUPPORTED".equalsIgnoreCase(claim.getVerdict()) || claim.getEvidenceIndex() == null) {
-                continue;
-            }
+            if (claim == null || !"SUPPORTED".equalsIgnoreCase(claim.getVerdict()) || claim.getEvidenceIndex() == null) continue;
             int index = claim.getEvidenceIndex();
-            if (index < 0 || index >= resp.getEvidence().size()) {
-                continue;
-            }
+            if (index < 0 || index >= resp.getEvidence().size()) continue;
             EvidenceItemDTO item = resp.getEvidence().get(index);
             if (item != null && item.getChunkId() != null && seen.add(item.getChunkId())) {
                 citations.add(item.getChunkId());
@@ -396,47 +291,20 @@ public class ChatPipeline {
         return citations;
     }
 
-    // ========== 转人工原因 / 摘要 ==========
-
-    /**
-     * 转人工原因推导(配置无关的结构化映射):
-     * 评估服务不可用 → "评估服务暂不可用"; refusalReason 关键词映射; claimFail → "Claim验证失败"; 兜底 → "证据不充分"。
-     * <p>
-     * 注意顺序: "超出"(OUT_OF_SCOPE)判定必须先于 "证据不足", 因超范围阻断原因会被充分性判定
-     * 拼接 "证据不足(需至少X条)"(空证据 + 检索阻断原因), 后置会误映射为证据不足。
-     */
     private String deriveTransferReason(EvidenceEvaluateRespDTO resp) {
-        if (resp == null) {
-            return REASON_EVAL_UNAVAILABLE;
-        }
+        if (resp == null) return REASON_EVAL_UNAVAILABLE;
         String refusalReason = resp.getRefusalReason();
         if (StrUtil.isNotBlank(refusalReason)) {
-            if (refusalReason.contains("超出")) {
-                return REASON_OUT_OF_SCOPE;
-            }
-            if (refusalReason.contains("冲突")) {
-                return REASON_CONFLICT;
-            }
-            if (refusalReason.contains("产品不匹配")) {
-                return REASON_PRODUCT_MISMATCH;
-            }
-            if (refusalReason.contains("证据不足") || refusalReason.contains("未检索")) {
-                return REASON_INSUFFICIENT;
-            }
-            if (refusalReason.contains("阻断") || refusalReason.contains("拒绝作答")) {
-                return REASON_BLOCKED;
-            }
+            if (refusalReason.contains("超出")) return REASON_OUT_OF_SCOPE;
+            if (refusalReason.contains("冲突")) return REASON_CONFLICT;
+            if (refusalReason.contains("产品不匹配")) return REASON_PRODUCT_MISMATCH;
+            if (refusalReason.contains("证据不足") || refusalReason.contains("未检索")) return REASON_INSUFFICIENT;
+            if (refusalReason.contains("阻断") || refusalReason.contains("拒绝作答")) return REASON_BLOCKED;
         }
-        if (Boolean.TRUE.equals(resp.getClaimFail())) {
-            return REASON_CLAIM_FAIL;
-        }
+        if (Boolean.TRUE.equals(resp.getClaimFail())) return REASON_CLAIM_FAIL;
         return REASON_FALLBACK;
     }
 
-    /**
-     * 摘要草稿(评估兜底路径): "客户问题: {message} | 原因: {reason}" + (有 AI 建议时) " | AI建议: {answer 前 100 字}";
-     * 早检关键词路径的摘要由 {@link TransferHandler#buildSummary} 组装(含证据名片段)。
-     */
     private String buildSummaryDraft(String message, String transferReason, EvidenceEvaluateRespDTO resp) {
         StringBuilder summary = new StringBuilder("客户问题: ").append(message)
                 .append(" | 原因: ").append(transferReason);
@@ -446,13 +314,8 @@ public class ChatPipeline {
         return summary.toString();
     }
 
-    // ========== 工具 ==========
-
     private BigDecimal toConfidence(Double confidence) {
-        if (confidence == null) {
-            return null;
-        }
+        if (confidence == null) return null;
         return BigDecimal.valueOf(confidence).setScale(4, RoundingMode.HALF_UP);
     }
-
 }
