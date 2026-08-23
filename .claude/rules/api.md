@@ -663,3 +663,27 @@
 - `yudao-module-rule/yudao-module-rule-server/src/main/java/cn/iocoder/yudao/module/rule/controller/admin/rule/vo/AiRuleUpdateReqVO.java`
 - `yudao-module-rule/yudao-module-rule-server/src/main/java/cn/iocoder/yudao/module/rule/controller/admin/rule/vo/AiRuleValidateReqVO.java`
 - `yudao-module-system/yudao-module-system-api/.flattened-pom.xml`
+
+## New Routes (added 2026-08-23)
+- `yudao-module-agent/yudao-module-agent-api/.flattened-pom.xml`
+- `yudao-module-chat/yudao-module-chat-server/src/test/java/cn/iocoder/yudao/module/chat/controller/admin/conversation/ConversationControllerTest.java`
+- `yudao-module-governance/yudao-module-governance-api/.flattened-pom.xml`
+- `yudao-module-infra/yudao-module-infra-api/.flattened-pom.xml`
+- `yudao-module-ingestion/yudao-module-ingestion-api/src/main/java/cn/iocoder/yudao/module/ingestion/api/dto/IngestionJobTraceDTO.java`
+- `yudao-module-ingestion/yudao-module-ingestion-server/src/main/java/cn/iocoder/yudao/module/ingestion/controller/admin/ops/IngestionOpsController.java`
+- `yudao-module-knowledge/yudao-module-knowledge-api/src/main/java/cn/iocoder/yudao/module/knowledge/api/dto/KnowledgeScopeDTO.java`
+- `yudao-module-knowledge/yudao-module-knowledge-api/src/main/java/cn/iocoder/yudao/module/knowledge/api/dto/PatentDocumentLookupReqDTO.java`
+- `yudao-module-knowledge/yudao-module-knowledge-server/src/main/java/cn/iocoder/yudao/module/knowledge/controller/admin/acl/AiResourceAclController.java`
+- `yudao-module-knowledge/yudao-module-knowledge-server/src/main/java/cn/iocoder/yudao/module/knowledge/controller/admin/acl/vo/AiResourceAclSaveReqVO.java`
+- `yudao-module-knowledge/yudao-module-knowledge-server/src/main/java/cn/iocoder/yudao/module/knowledge/controller/admin/graph/GraphController.java`
+- `yudao-module-knowledge/yudao-module-knowledge-server/src/main/java/cn/iocoder/yudao/module/knowledge/controller/admin/ops/KnowledgeOpsController.java`
+- `yudao-module-retrieval/yudao-module-retrieval-server/src/main/java/cn/iocoder/yudao/module/retrieval/controller/admin/ops/RetrievalOpsController.java`
+- `yudao-module-workflow/yudao-module-workflow-api/.flattened-pom.xml`
+
+## New Routes (added 2026-08-24)
+- `yudao-module-chat/yudao-module-chat-server/src/main/java/cn/iocoder/yudao/module/chat/controller/admin/ops/ChatOpsController.java` — /chat/ops/query-trace?traceId=
+- `yudao-module-chat/yudao-module-chat-server/src/main/java/cn/iocoder/yudao/module/chat/dal/dataobject/trace/AiQueryTraceDO.java` + `AiQueryTraceStageDO.java`(ai_query_trace/ai_query_trace_stage, V17)
+- `yudao-module-chat/yudao-module-chat-server/src/main/java/cn/iocoder/yudao/module/chat/dal/dataobject/message/AiMessageEvidenceDO.java`(ai_message_evidence, V16)
+- `yudao-module-chat/yudao-module-chat-server/src/main/java/cn/iocoder/yudao/module/chat/service/trace/QueryTraceService.java`
+- `yudao-module-retrieval/yudao-module-retrieval-api/src/main/java/cn/iocoder/yudao/module/retrieval/api/dto/QueryStageTimingDTO.java`
+- `yudao-module-evidence/yudao-module-evidence-server/src/main/java/cn/iocoder/yudao/module/evidence/service/generate/CitationValidator.java`
