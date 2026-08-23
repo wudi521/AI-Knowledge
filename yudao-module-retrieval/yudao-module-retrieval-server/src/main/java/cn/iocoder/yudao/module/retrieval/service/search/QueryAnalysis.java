@@ -51,6 +51,9 @@ public class QueryAnalysis {
     /** 精确著录字段目标: CLAIM_COUNT/TITLE/APPLICANTS/... */
     private List<String> metadataFields;
 
+    /** 权利要求问题子类型: RAW / DEPENDENCY / SUMMARY(EXACT_CLAIM 时) */
+    private String claimQueryType;
+
     /** 检索路由建议: EXACT_METADATA / EXACT_CLAIM / SCOPED_RAG / HYBRID_RAG / ABSTAIN */
     private String route;
 }

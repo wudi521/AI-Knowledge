@@ -43,6 +43,21 @@ final class PatentExactMetadataAnswerer {
         return null;
     }
 
+    /**
+     * 是否为明确的专利著录信息查询(编号定位 + 著录字段关键词)。
+     * P0-05 fail closed: 命中该语义但确定性回答失败(缺字段/未命中/未发布/编号非法或不存在)时,
+     * 调用方应拒答而非回退 LLM。
+     */
+    static boolean isMetadataQuery(String query) {
+        if (StrUtil.isBlank(query)) return false;
+        // 含合法申请号/公布号格式或"申请号/公布号/公开号"文本, 均视为编号定位(非法编号也需被识别, 供 fail closed 拒答)
+        boolean hasApplicationIdentifier = APPLICATION_NO.matcher(query).find() || query.contains("申请号");
+        boolean hasPublicationIdentifier = PUBLICATION_NO.matcher(query).find()
+                || query.contains("公布号") || query.contains("公开号");
+        if (!hasApplicationIdentifier && !hasPublicationIdentifier) return false;
+        return !requestedFields(query, hasApplicationIdentifier, hasPublicationIdentifier).isEmpty();
+    }
+
     private static JSONObject patentMetadata(Evidence evidence) {
         if (evidence == null || StrUtil.isBlank(evidence.getChunkMetadata())) return null;
         try {

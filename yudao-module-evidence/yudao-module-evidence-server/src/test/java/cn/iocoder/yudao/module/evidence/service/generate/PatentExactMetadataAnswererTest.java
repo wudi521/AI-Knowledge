@@ -63,4 +63,26 @@ class PatentExactMetadataAnswererTest {
 
         assertNull(answer);
     }
+
+    @Test
+    void missingMetadataFieldFailsClosedInsteadOfLlmFallback() {
+        // evidence 缺 title → 确定性回答失败, 但该问题属于 metadata 查询, 调用方应 fail closed 拒答而非回退 LLM
+        String metadata = JSONUtil.toJsonStr(Map.ofEntries(
+                Map.entry("domainCode", "PATENT"),
+                Map.entry("applicationNo", "202311344028.2"),
+                Map.entry("claimCount", 7)
+        ));
+        Evidence evidence = Evidence.builder().chunkId(1L).documentId("58")
+                .content("x").chunkMetadata(metadata).build();
+
+        assertTrue(PatentExactMetadataAnswerer.isMetadataQuery("申请号 202311344028.2 的发明名称是什么？"));
+        assertNull(PatentExactMetadataAnswerer.tryAnswer("申请号 202311344028.2 的发明名称是什么？", List.of(evidence)));
+    }
+
+    @Test
+    void invalidIdentifierIsMetadataQueryButCannotAnswer() {
+        // P0-05 fail closed: 不存在的申请号 + 著录字段 → 是 metadata 查询但无法作答(调用方拒答)
+        assertTrue(PatentExactMetadataAnswerer.isMetadataQuery("申请号 999999999999.9 的申请人是谁？"));
+        assertNull(PatentExactMetadataAnswerer.tryAnswer("申请号 999999999999.9 的申请人是谁？", List.of()));
+    }
 }

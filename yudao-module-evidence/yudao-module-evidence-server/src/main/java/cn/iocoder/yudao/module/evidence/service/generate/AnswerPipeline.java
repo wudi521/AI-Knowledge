@@ -40,6 +40,11 @@ public class AnswerPipeline {
                     metadataDirect.evidenceIndex());
             return deterministic(metadataDirect.answer(), metadataDirect.evidenceIndex());
         }
+        // P0-05 fail closed: 明确的著录信息查询但确定性回答失败(缺字段/未命中/未发布/编号冲突) → 拒答, 禁止回退 LLM 编造
+        if (PatentExactMetadataAnswerer.isMetadataQuery(query)) {
+            log.info("[generateWithClaims][PATENT EXACT_METADATA 确定性回答失败, fail-closed 拒答, 不回退 LLM: query={}]", query);
+            return GenerationResult.builder().answer(null).claims(List.of()).claimFail(true).build();
+        }
 
         PatentExactClaimAnswerer.DirectAnswer claimDirect = PatentExactClaimAnswerer.tryAnswer(query, evidences);
         if (claimDirect != null) {

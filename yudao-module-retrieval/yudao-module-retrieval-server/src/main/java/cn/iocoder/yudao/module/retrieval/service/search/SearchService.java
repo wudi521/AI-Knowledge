@@ -82,7 +82,14 @@ public class SearchService {
             return searchExactClaim(query, analysis, kbIds, startMs);
         }
 
-        return searchHybrid(query, analysis, domainPolicy, kbIds, tenantId, topKFinal, startMs);
+        // P0-07: SCOPED_RAG 必须在 BM25/ANN 前限定目标文档(hard scope), 禁止全库检索后过滤
+        List<Long> scopedDocumentIds = "SCOPED_RAG".equals(route) ? resolvePatentDocumentIds(analysis, kbIds) : null;
+        if ("SCOPED_RAG".equals(route) && (scopedDocumentIds == null || scopedDocumentIds.isEmpty())) {
+            // P0-07 fail closed: 明确申请号/公布号但未定位到文档 → 拒答, 不得全库 Hybrid fallback
+            log.info("[search][SCOPED_RAG 文档定位失败, fail-closed, 不走全库 Hybrid: query={}]", query);
+            return blocked(query, analysis, "未找到对应专利文档");
+        }
+        return searchHybrid(query, analysis, domainPolicy, kbIds, tenantId, topKFinal, startMs, scopedDocumentIds);
     }
 
     private RetrievalRespVO searchExactMetadata(String query, QueryAnalysis analysis, List<Long> kbIds,
@@ -104,9 +111,20 @@ public class SearchService {
             return resp;
         }
         Map<Long, String> metadataMap = resultFilter.getChunkMetadatas(publishedIds);
+        Map<Long, ChunkDocInfoDTO> docInfoMap = resultFilter.getChunkDocInfo(publishedIds);
+        // P0-05 fail closed: 同专利编号命中多个不同文档(编号冲突) → 无法确认唯一结果, 拒答
+        java.util.Set<String> docIds = new java.util.HashSet<>();
+        for (ChunkDocInfoDTO info : docInfoMap.values()) {
+            if (info != null && info.getDocumentId() != null) docIds.add(String.valueOf(info.getDocumentId()));
+        }
+        if (docIds.size() > 1) {
+            log.warn("[searchExactMetadata][同专利编号命中多个文档, fail-closed: docIds={}, query={}]", docIds, query);
+            resp.setResults(List.of());
+            recordTrace(query, resp, 1, startMs);
+            return resp;
+        }
         Long anchorId = chooseExactMetadataAnchor(publishedIds, metadataMap);
         Map<Long, String> contentsMap = resultFilter.getChunkContents(List.of(anchorId));
-        Map<Long, ChunkDocInfoDTO> docInfoMap = resultFilter.getChunkDocInfo(List.of(anchorId));
         resp.setResults(List.of(buildResult(anchorId, contentsMap, docInfoMap, Map.of(anchorId, 1D), null,
                 Set.of(anchorId), Set.of(), Map.of(), Map.of(), metadataMap)));
         recordTrace(query, resp, 1, startMs);
@@ -182,7 +200,8 @@ public class SearchService {
 
     private RetrievalRespVO searchHybrid(String query, QueryAnalysis analysis,
                                          cn.iocoder.yudao.module.retrieval.service.domain.DomainQueryPolicy domainPolicy,
-                                         List<Long> kbIds, Long tenantId, int topKFinal, long startMs) {
+                                         List<Long> kbIds, Long tenantId, int topKFinal, long startMs,
+                                         List<Long> scopedDocumentIds) {
         List<String> variants = new ArrayList<>();
         variants.add(query);
         if (analysis.isSuccess()) {
@@ -192,11 +211,13 @@ public class SearchService {
         variants = variants.stream().distinct().limit(VARIANT_LIMIT).toList();
 
         List<Map.Entry<Long, Double>> bm25Hits = new ArrayList<>();
-        for (String variant : variants) bm25Hits.addAll(bm25Searcher.search(variant, tenantId, kbIds, RECALL_TOP_K));
+        for (String variant : variants) {
+            bm25Hits.addAll(bm25Searcher.search(variant, tenantId, kbIds, RECALL_TOP_K, scopedDocumentIds));
+        }
         bm25Hits = dedupMax(bm25Hits);
         Set<Long> bm25HitIds = bm25Hits.stream().map(Map.Entry::getKey).collect(Collectors.toSet());
 
-        List<Map.Entry<Long, Double>> vectorHits = dedupMax(vectorSearch(variants, tenantId, kbIds));
+        List<Map.Entry<Long, Double>> vectorHits = dedupMax(vectorSearch(variants, tenantId, kbIds, scopedDocumentIds));
         Set<Long> vectorHitIds = vectorHits.stream().map(Map.Entry::getKey).collect(Collectors.toSet());
         List<Map.Entry<Long, Double>> fused = rrfMerger.merge(List.of(bm25Hits, vectorHits), RECALL_TOP_K);
         Map<Long, Double> rrfMap = fused.stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
@@ -238,6 +259,11 @@ public class SearchService {
             int idx = r.getKey();
             if (idx < 0 || idx >= candidates.size()) continue;
             Long chunkId = candidates.get(idx).getKey();
+            // P0-07 Evidence gate: SCOPED_RAG 候选必须属于目标文档, 候选阶段即不允许串文档
+            if (scopedDocumentIds != null && !scopedDocumentIds.isEmpty()) {
+                ChunkDocInfoDTO info = docInfoMap.get(chunkId);
+                if (info == null || info.getDocumentId() == null || !scopedDocumentIds.contains(info.getDocumentId())) continue;
+            }
             results.add(buildResult(chunkId, contentsMap, docInfoMap, rrfMap, r.getValue(), bm25HitIds, vectorHitIds,
                     parentMap, truncatedParents, metadataMap));
         }
@@ -389,11 +415,12 @@ public class SearchService {
         return products;
     }
 
-    private List<Map.Entry<Long, Double>> vectorSearch(List<String> variants, Long tenantId, List<Long> kbIds) {
+    private List<Map.Entry<Long, Double>> vectorSearch(List<String> variants, Long tenantId, List<Long> kbIds,
+                                                       List<Long> documentIds) {
         try {
             List<List<Float>> vectors = modelApi.embedding(variants).getCheckedData();
             if (vectors == null || vectors.isEmpty()) return List.of();
-            return vectorSearcher.search(vectors, tenantId, kbIds, RECALL_TOP_K);
+            return vectorSearcher.search(vectors, tenantId, kbIds, RECALL_TOP_K, documentIds);
         } catch (Exception e) {
             log.warn("[vectorSearch][向量检索失败, 跳过向量通道: {}]", e.getMessage());
             return List.of();

@@ -66,16 +66,27 @@ public class Bm25Searcher {
     }
 
     public List<Map.Entry<Long, Double>> search(String query, Long tenantId, List<Long> kbIds, int topK) {
+        return search(query, tenantId, kbIds, topK, null);
+    }
+
+    /** BM25 检索(支持显式 documentId 硬过滤; P0-07: SCOPED_RAG 必须限定目标文档) */
+    public List<Map.Entry<Long, Double>> search(String query, Long tenantId, List<Long> kbIds, int topK,
+                                                List<Long> documentIds) {
         if (client == null) return List.of();
         try {
             List<Map<String, Object>> filter = baseFilters(tenantId, kbIds);
-            List<Long> patentDocumentIds = resolvePatentDocumentIds(query, kbIds);
-            if (patentDocumentIds != null) {
-                if (patentDocumentIds.isEmpty()) {
-                    log.info("[search][专利精确标识未定位到文档, BM25 fail-closed 返回空: query={}]", query);
-                    return List.of();
+            if (documentIds != null && !documentIds.isEmpty()) {
+                // 显式 scope: 只检索目标文档, 不依赖 query 文本重新解析
+                filter.add(Map.of("terms", Map.of("document_id", documentIds)));
+            } else {
+                List<Long> patentDocumentIds = resolvePatentDocumentIds(query, kbIds);
+                if (patentDocumentIds != null) {
+                    if (patentDocumentIds.isEmpty()) {
+                        log.info("[search][专利精确标识未定位到文档, BM25 fail-closed 返回空: query={}]", query);
+                        return List.of();
+                    }
+                    filter.add(Map.of("terms", Map.of("document_id", patentDocumentIds)));
                 }
-                filter.add(Map.of("terms", Map.of("document_id", patentDocumentIds)));
             }
 
             Map<String, Object> bool = new HashMap<>();

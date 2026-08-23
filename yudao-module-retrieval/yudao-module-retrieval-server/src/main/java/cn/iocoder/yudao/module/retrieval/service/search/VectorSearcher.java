@@ -41,6 +41,9 @@ public class VectorSearcher {
 
     private MilvusServiceClient client;
 
+    /** 当前集合已存在的标量字段名(P0-07: SCOPED Vector 硬过滤前置检测) */
+    private java.util.Set<String> scalarFields = java.util.Set.of();
+
     @PostConstruct
     public void init() {
         try {
@@ -48,9 +51,31 @@ public class VectorSearcher {
                     .withHost(host)
                     .withPort(port)
                     .build());
+            scalarFields = describeFields();
         } catch (Exception e) {
             // 连接失败不阻断启动, 后续检索会因 client 为空而走降级(记日志)
             log.error("[init][Milvus 客户端初始化失败: {}:{}]", host, port, e);
+        }
+    }
+
+    private java.util.Set<String> describeFields() {
+        try {
+            io.milvus.param.R<io.milvus.grpc.DescribeCollectionResponse> resp = client.describeCollection(
+                    io.milvus.param.collection.DescribeCollectionParam.newBuilder()
+                            .withCollectionName(collection).build());
+            if (resp.getStatus() != io.milvus.param.R.Status.Success.getCode()) {
+                log.warn("[describeFields][集合 {} 描述失败: {}]", collection, resp.getMessage());
+                return java.util.Set.of();
+            }
+            java.util.Set<String> fields = new java.util.HashSet<>();
+            for (io.milvus.grpc.FieldSchema schema : resp.getData().getSchema().getFieldsList()) {
+                if (schema != null && schema.getName() != null) fields.add(schema.getName());
+            }
+            log.info("[describeFields][集合 {} 标量字段: {}]", collection, fields);
+            return java.util.Set.copyOf(fields);
+        } catch (Exception e) {
+            log.warn("[describeFields][字段描述失败, 回退空: {}]", e.getMessage());
+            return java.util.Set.of();
         }
     }
 
@@ -64,6 +89,17 @@ public class VectorSearcher {
      * @return [chunkId, score] 列表(score 已换算为 1-similarity, 单调递增即相关); 失败返回空列表
      */
     public List<Map.Entry<Long, Double>> search(List<List<Float>> vectors, Long tenantId, List<Long> kbIds, int topK) {
+        return search(vectors, tenantId, kbIds, topK, null);
+    }
+
+    /**
+     * 向量检索(支持 documentId 硬过滤, P0-07)
+     *
+     * @param documentIds 目标文档编号(非空时要求 collection 含 document_id 标量字段并在 ANN 前过滤;
+     *                     schema 缺失时降级返回空, 禁止全库 ANN 后过滤冒充 Scoped)
+     */
+    public List<Map.Entry<Long, Double>> search(List<List<Float>> vectors, Long tenantId, List<Long> kbIds, int topK,
+                                                List<Long> documentIds) {
         if (client == null) {
             log.error("[search][Milvus client 未初始化, 返回空]");
             return List.of();
@@ -75,7 +111,7 @@ public class VectorSearcher {
             if (loadResp.getStatus() != R.Status.Success.getCode()) {
                 log.error("[search][集合 {} 加载失败: {}]", collection, loadResp.getMessage());
             }
-            // 标量过滤表达式: 租户必选, 知识库可选
+            // 标量过滤表达式: 租户必选, 知识库/文档可选
             StringBuilder expr = new StringBuilder("tenant_id == ").append(tenantId);
             if (kbIds != null && !kbIds.isEmpty()) {
                 expr.append(" && kb_id in [");
@@ -84,6 +120,22 @@ public class VectorSearcher {
                         expr.append(",");
                     }
                     expr.append(kbIds.get(i));
+                }
+                expr.append("]");
+            }
+            if (documentIds != null && !documentIds.isEmpty()) {
+                if (!scalarFields.contains("document_id")) {
+                    // P0-07: Milvus schema 尚无 document_id, SCOPED Vector 降级空(BM25 scope 兜底),
+                    // 禁止全 KB ANN 后过滤冒充 Scoped Vector(会丢失 recall)
+                    log.warn("[search][SCOPED Vector 需要 document_id 过滤但集合 {} 缺该字段, 降级返回空]", collection);
+                    return List.of();
+                }
+                expr.append(" && document_id in [");
+                for (int i = 0; i < documentIds.size(); i++) {
+                    if (i > 0) {
+                        expr.append(",");
+                    }
+                    expr.append(documentIds.get(i));
                 }
                 expr.append("]");
             }

@@ -66,11 +66,32 @@ public class PatentQueryPreParser {
 
         builder.metadataFields(metadataFields);
         builder.claimCountIntent(claimCountIntent);
-        builder.claimDependencyIntent(!claimCountIntent
-                && containsAny(query, "引用", "依赖", "从属", "在先权利要求", "引用了哪些", "根据权利要求"));
+        boolean dependencyIntent = !claimCountIntent
+                && containsAny(query, "引用", "依赖", "从属", "在先权利要求", "引用了哪些", "根据权利要求");
+        builder.claimDependencyIntent(dependencyIntent);
         builder.bibliographicIntent(!metadataFields.isEmpty());
         builder.claimIntent(!claimCountIntent && query.contains("权利要求"));
+        if (!claimCountIntent && hasClaimScope(claimNos)) {
+            builder.claimQueryType(resolveClaimQueryType(query, dependencyIntent));
+        }
         return builder.build();
+    }
+
+    /** 是否问题中出现了权利要求号(单/范围/列表) */
+    private boolean hasClaimScope(List<Integer> claimNos) {
+        return claimNos != null && !claimNos.isEmpty();
+    }
+
+    /** 权利要求问题子类型: RAW(原文) / DEPENDENCY(引用依赖) / SUMMARY(概括) */
+    private String resolveClaimQueryType(String query, boolean dependencyIntent) {
+        if (dependencyIntent) {
+            return "DEPENDENCY";
+        }
+        if (containsAny(query, "原文", "条文", "具体内容是什么", "内容是什么", "写了什么")) {
+            return "RAW";
+        }
+        // 其余权利要求问题(主要限定/概括/是什么/解决什么问题)统一走受约束概括
+        return "SUMMARY";
     }
 
     private List<String> parseMetadataFields(String query, String applicationNo, String publicationNo,
@@ -159,6 +180,8 @@ public class PatentQueryPreParser {
         private boolean claimDependencyIntent;
         private boolean bibliographicIntent;
         private boolean claimIntent;
+        /** 权利要求问题子类型: RAW / DEPENDENCY / SUMMARY(仅在 hasExactClaim 时有意义) */
+        private String claimQueryType;
 
         public boolean hasExactDocumentIdentifier() {
             return applicationNo != null || publicationNo != null;

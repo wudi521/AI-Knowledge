@@ -54,7 +54,7 @@ public class QueryAnalysisService {
     public QueryAnalysis analyze(String query, List<ChatTurnDTO> history, List<IntentDTO> intents, DomainQueryPolicy policy) {
         QueryAnalysis result = new QueryAnalysis();
         result.setSuccess(false);
-        PatentQueryPreParser.PatentQueryHints patentHints = preParsePatent(query, policy);
+        PatentQueryPreParser.PatentQueryHints patentHints = preParsePatent(query, policy, history);
 
         // PATENT 强结构查询：字段/claim 都已由规则确定，不需要先让 LLM 再分类一次。
         if (patentHints != null && patentHints.hasDeterministicExactMetadata()) {
@@ -67,10 +67,10 @@ public class QueryAnalysisService {
         }
         if (patentHints != null && patentHints.hasExactClaim()) {
             applyPatentHints(result, patentHints, policy);
-            result.setIntent(patentHints.isClaimDependencyIntent() ? "CLAIM_DEPENDENCY" : "CLAIM_LOOKUP");
+            // intent 已由 applyPatentHints 按 claimQueryType 设置(CLAIM_LOOKUP/CLAIM_DEPENDENCY/CLAIM_SUMMARY)
             prepareDeterministic(result, "EXACT_CLAIM");
-            log.info("[analyze][PATENT EXACT_CLAIM 规则短路 LLM, applicationNo={}, publicationNo={}, claimNo={}, intent={}]",
-                    result.getApplicationNo(), result.getPublicationNo(), result.getClaimNo(), result.getIntent());
+            log.info("[analyze][PATENT EXACT_CLAIM 规则短路 LLM, applicationNo={}, publicationNo={}, claimNo={}, intent={}, claimQueryType={}]",
+                    result.getApplicationNo(), result.getPublicationNo(), result.getClaimNo(), result.getIntent(), result.getClaimQueryType());
             return result;
         }
 
@@ -113,9 +113,42 @@ public class QueryAnalysisService {
         result.setSuccess(true);
     }
 
-    private PatentQueryPreParser.PatentQueryHints preParsePatent(String query, DomainQueryPolicy policy) {
+    private PatentQueryPreParser.PatentQueryHints preParsePatent(String query, DomainQueryPolicy policy,
+                                                                 List<ChatTurnDTO> history) {
         if (policy == null || !"PATENT".equalsIgnoreCase(policy.domainCode())) return null;
+        // P0-07 多轮: 当前轮无申请号/公布号时, 从历史继承最近一次专利编号, 保持目标文档 Scope
+        if (!containsPatentIdentifier(query)) {
+            String inherited = extractPatentIdentifierFromHistory(history);
+            if (inherited != null) {
+                query = query + " " + inherited;
+                log.info("[preParsePatent][多轮继承专利编号 {} -> query={}]", inherited, query);
+            }
+        }
         return patentQueryPreParser.parse(query);
+    }
+
+    /** 当前问题是否已含申请号/公布号 */
+    private boolean containsPatentIdentifier(String query) {
+        if (StrUtil.isBlank(query)) return false;
+        return java.util.regex.Pattern.compile("20\\d{10}\\.\\d").matcher(query).find()
+                || java.util.regex.Pattern.compile("(?i)\\bCN\\s*\\d{8,12}\\s*[A-Z]\\b").matcher(query).find();
+    }
+
+    /** 从历史(最近的 USER 消息优先)提取最近一次申请号/公布号 */
+    private String extractPatentIdentifierFromHistory(List<ChatTurnDTO> history) {
+        if (history == null || history.isEmpty()) return null;
+        java.util.regex.Pattern app = java.util.regex.Pattern.compile("20\\d{10}\\.\\d");
+        java.util.regex.Pattern pub = java.util.regex.Pattern.compile("(?i)\\bCN\\s*\\d{8,12}\\s*[A-Z]\\b");
+        for (int i = history.size() - 1; i >= 0; i--) {
+            ChatTurnDTO turn = history.get(i);
+            if (turn == null || !"USER".equalsIgnoreCase(turn.getRole()) || StrUtil.isBlank(turn.getContent())) continue;
+            String content = turn.getContent();
+            java.util.regex.Matcher m = app.matcher(content);
+            if (m.find()) return "申请号 " + m.group();
+            m = pub.matcher(content);
+            if (m.find()) return m.group();
+        }
+        return null;
     }
 
     private void applyPatentHints(QueryAnalysis result, PatentQueryPreParser.PatentQueryHints hints, DomainQueryPolicy policy) {
@@ -125,8 +158,16 @@ public class QueryAnalysisService {
         result.setClaimNo(hints.getClaimNo());
         result.setClaimNos(hints.getClaimNos());
         result.setMetadataFields(hints.getMetadataFields());
+        result.setClaimQueryType(hints.getClaimQueryType());
 
-        if (hints.isClaimDependencyIntent()) result.setIntent("CLAIM_DEPENDENCY");
+        // P0-06: 权利要求问题按子类型(RAW/DEPENDENCY/SUMMARY)区分意图, 不再混为 CLAIM_LOOKUP
+        if (hints.getClaimQueryType() != null) {
+            switch (hints.getClaimQueryType()) {
+                case "DEPENDENCY" -> result.setIntent("CLAIM_DEPENDENCY");
+                case "RAW" -> result.setIntent("CLAIM_LOOKUP");
+                default -> result.setIntent("CLAIM_SUMMARY");
+            }
+        } else if (hints.isClaimDependencyIntent()) result.setIntent("CLAIM_DEPENDENCY");
         else if (hints.isClaimIntent()) result.setIntent("CLAIM_LOOKUP");
         else if (hints.isBibliographicIntent() && hints.hasExactDocumentIdentifier()) result.setIntent("BIBLIOGRAPHIC_LOOKUP");
         else if ("OUT_OF_SCOPE".equals(result.getIntent())) {

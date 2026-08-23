@@ -33,7 +33,18 @@ class PatentExactClaimAnswererTest {
                 "申请号 202311832214.0 的权利要求8引用了哪些在先权利要求？", List.of(claim8()));
 
         assertEquals(0, answer.evidenceIndex());
-        assertTrue(answer.answer().contains("权利要求1至7中的任意一项"));
+        // P0-06: 保守表述, 只陈述"引用的在先权利要求包括", 不推断"任意一项"语义
+        assertTrue(answer.answer().contains("权利要求8引用的在先权利要求包括1、2、3、4、5、6、7"));
+        assertTrue(answer.answer().contains("[C1]"));
+    }
+
+    @Test
+    void rawQuestionReturnsClaimContentVerbatim() {
+        PatentExactClaimAnswerer.DirectAnswer answer = PatentExactClaimAnswerer.tryAnswer(
+                "申请号 202311832214.0 的权利要求8原文是什么？", List.of(claim8()));
+
+        assertEquals(0, answer.evidenceIndex());
+        assertTrue(answer.answer().contains("根据权利要求1至7中任意一项所述的粒子化磁涌装置"));
         assertTrue(answer.answer().contains("[C1]"));
     }
 

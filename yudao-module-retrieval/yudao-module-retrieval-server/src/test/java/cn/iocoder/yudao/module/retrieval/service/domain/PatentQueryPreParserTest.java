@@ -98,4 +98,16 @@ class PatentQueryPreParserTest {
         assertFalse(hints.hasExactClaim());
         assertFalse(hints.hasDeterministicExactMetadata());
     }
+
+    @Test
+    void parseClaimQueryTypeRawDependencySummary() {
+        PatentQueryPreParser.PatentQueryHints raw = parser.parse("申请号 202311042981.1 的权利要求1原文是什么？");
+        assertEquals("RAW", raw.getClaimQueryType());
+
+        PatentQueryPreParser.PatentQueryHints dep = parser.parse("申请号 202311832214.0 的权利要求8引用哪些在先权利要求？");
+        assertEquals("DEPENDENCY", dep.getClaimQueryType());
+
+        PatentQueryPreParser.PatentQueryHints summary = parser.parse("申请号 202311042981.1 的权利要求1主要限定什么？");
+        assertEquals("SUMMARY", summary.getClaimQueryType());
+    }
 }
