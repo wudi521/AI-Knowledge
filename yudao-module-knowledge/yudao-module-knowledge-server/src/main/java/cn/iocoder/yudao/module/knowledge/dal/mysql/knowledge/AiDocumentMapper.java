@@ -23,15 +23,6 @@ public interface AiDocumentMapper extends BaseMapperX<AiDocumentDO> {
                 .orderByDesc(AiDocumentDO::getId));
     }
 
-    default PageResult<AiDocumentDO> selectPageByVersionIds(AiDocumentPageReqVO reqVO, List<Long> versionIds) {
-        return selectPage(reqVO, new LambdaQueryWrapperX<AiDocumentDO>()
-                .eqIfPresent(AiDocumentDO::getKbId, reqVO.getKbId())
-                .likeIfPresent(AiDocumentDO::getName, reqVO.getName())
-                .eqIfPresent(AiDocumentDO::getParseStatus, reqVO.getParseStatus())
-                .inIfPresent(AiDocumentDO::getKbId, reqVO.getKbIds())
-                .orderByDesc(AiDocumentDO::getId));
-    }
-
     default int updateParseStatus(Long id, String parseStatus, Integer chunkCount, String errorMsg) {
         return update(null, new LambdaUpdateWrapper<AiDocumentDO>()
                 .eq(AiDocumentDO::getId, id)
