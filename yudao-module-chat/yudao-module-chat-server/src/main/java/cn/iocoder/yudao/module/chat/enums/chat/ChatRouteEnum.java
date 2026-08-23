@@ -12,8 +12,21 @@ public final class ChatRouteEnum {
     /** 硬规则命中(确定性规则, 如 跨省→3天) */
     public static final String RULE = "RULE";
 
-    /** 知识库整体聚合统计(几个专利/多少文档/总数等; 确定性, 不走检索/LLM) */
+    /**
+     * 结构化查询(Platform Core Structured Query Engine 权威产出)。
+     * <p>
+     * 不再新增 KB_AGGREGATE 等平级路由; 具体类型由证据响应的 intent 表达:
+     * STRUCTURED_EXACT_LOOKUP / STRUCTURED_AGGREGATE / STRUCTURED_LIST / STRUCTURED_GROUP /
+     * STRUCTURED_SORT / STRUCTURED_TOP_N。
+     *
+     * @deprecated 历史兼容: 旧版本内部使用 KB_AGGREGATE, 新链路统一 STRUCTURED_QUERY;
+     * 存量 trace/message 快照中的 KB_AGGREGATE 不回迁(快照语义)。
+     */
+    @Deprecated
     public static final String KB_AGGREGATE = "KB_AGGREGATE";
+
+    /** 结构化查询需要反问(scope/metric/operation 无法消解) */
+    public static final String CLARIFY = "CLARIFY";
 
     /** 结构化元数据精确查询(申请号/公布号/标题/权利要求数量等) */
     public static final String EXACT_METADATA = "EXACT_METADATA";

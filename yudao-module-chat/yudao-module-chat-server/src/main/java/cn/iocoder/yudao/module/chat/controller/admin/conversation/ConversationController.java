@@ -125,6 +125,8 @@ public class ConversationController {
             vo.setIntent(message.getIntent());
             vo.setConfidence(message.getConfidence());
             vo.setTraceId(message.getTraceId());
+            vo.setQueryTraceId(message.getQueryTraceId());
+            vo.setRoute(message.getRoute());
             vo.setCreateTime(message.getCreateTime());
             vo.setEvidence(toEvidenceVO(evidenceMap.getOrDefault(message.getId(), Collections.emptyList())));
             result.add(vo);

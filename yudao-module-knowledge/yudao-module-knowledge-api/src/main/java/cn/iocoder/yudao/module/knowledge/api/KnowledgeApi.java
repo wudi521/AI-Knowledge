@@ -8,6 +8,8 @@ import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeScopeDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeSlotDefinitionDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.PatentDocumentLookupReqDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryReqDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRespDTO;
 import cn.iocoder.yudao.module.knowledge.enums.ApiConstants;
 import feign.FeignIgnore;
 import org.springframework.cloud.openfeign.FeignClient;
@@ -86,5 +88,14 @@ public interface KnowledgeApi {
                                          @RequestParam("metric") String metric,
                                          @RequestParam(value = "publishedOnly", required = false) Boolean publishedOnly,
                                          @RequestParam(value = "domainCode", required = false) String domainCode);
+
+    /**
+     * Structured Query 数据访问(白名单化, 非任意 SQL):
+     * 返回范围内完整结构化数据集(每对象一行), 供 Core Executor 计算 COUNT/SUM/AVG/MIN/MAX/TOP_N 等。
+     * metric 白名单: DOCUMENT_COUNT / CLAIM_COUNT(PATENT 领域)。
+     * 权限: 调用方传入的 kbId 已做可见性裁剪; 本方法仅按 kbId/已发布/领域/已解析文档集合过滤。
+     */
+    @PostMapping(ApiConstants.PREFIX + "/structured-query")
+    CommonResult<StructuredQueryRespDTO> structuredQuery(@RequestBody StructuredQueryReqDTO req);
 
 }

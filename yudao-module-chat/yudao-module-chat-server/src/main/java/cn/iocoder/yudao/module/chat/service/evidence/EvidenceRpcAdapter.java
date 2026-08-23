@@ -64,6 +64,13 @@ public class EvidenceRpcAdapter {
     /** 带知识库绑定 + 统一主 traceId 的评估(P0-09: q- 前缀贯穿全链路) */
     public EvidenceEvaluateRespDTO evaluate(String query, Long tenantId, Long userId, Integer topK,
                                             List<ChatTurnDTO> history, List<Long> kbIds, String traceId) {
+        return evaluate(query, tenantId, userId, topK, history, kbIds, traceId, null);
+    }
+
+    /** 带知识库绑定 + 统一主 traceId + 领域编码的评估(领域编码用于证据侧 Structured Query 路由) */
+    public EvidenceEvaluateRespDTO evaluate(String query, Long tenantId, Long userId, Integer topK,
+                                            List<ChatTurnDTO> history, List<Long> kbIds, String traceId,
+                                            String domainCode) {
         // 登录态兜底: 调用方未显式传租户/用户时, 从安全上下文补齐
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         if (tenantId == null && loginUser != null) {
@@ -80,6 +87,7 @@ public class EvidenceRpcAdapter {
         req.setHistory(history);
         req.setKbIds(kbIds); // 专利 MVP 知识库绑定(空=全部可见, 由证据侧按现有语义处理)
         req.setTraceId(traceId); // P0-09 统一主 traceId
+        req.setDomainCode(domainCode); // 会话绑定 KB 领域, Structured Query 路由用
         CommonResult<EvidenceEvaluateRespDTO> resp;
         try {
             resp = evidenceApi.evaluate(req);

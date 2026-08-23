@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.chat.channel.ChannelAdapter;
+import cn.iocoder.yudao.module.chat.controller.admin.chat.vo.ChatStreamEvent;
 import cn.iocoder.yudao.module.chat.dal.dataobject.conversation.AiConversationDO;
 import cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageDO;
 import cn.iocoder.yudao.module.chat.framework.chat.ChatProperties;
@@ -18,6 +19,7 @@ import cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceSlotValueDTO;
+import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,6 +32,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -107,13 +110,13 @@ class ChatPipelineTest {
         when(knowledgeApi.getVisibleKbIds(42L)).thenReturn(CommonResult.success(Set.of(6L)));
         when(knowledgeApi.getKbDomainCodes(List.of(6L))).thenReturn(CommonResult.success(Map.of(6L, "PATENT")));
         when(conversationService.createConversation("WEB", null, 6L, "PATENT", 42L)).thenReturn(conversation);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(null);
 
         pipeline.send(null, "专利权利要求1是什么？", "web", null, 6L);
 
         verify(conversationService).createConversation("WEB", null, 6L, "PATENT", 42L);
-        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any());
+        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any());
     }
 
     @Test
@@ -127,13 +130,13 @@ class ChatPipelineTest {
         EvidenceAnalysisDTO analysis = new EvidenceAnalysisDTO();
         analysis.setIntent("PATENT_QA");
         response.setAnalysis(analysis);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
         AiMessageDO answerMessage = new AiMessageDO();
         answerMessage.setId(3021L);
-        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(userMessage, answerMessage);
 
         ChatSendResult result = pipeline.send(100L, "问题", "web", null, 7L);
@@ -157,13 +160,13 @@ class ChatPipelineTest {
         EvidenceAnalysisDTO analysis = new EvidenceAnalysisDTO();
         analysis.setIntent("PATENT_CLARIFY");
         response.setAnalysis(analysis);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
         AiMessageDO clarifyMessage = new AiMessageDO();
         clarifyMessage.setId(3022L);
-        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(userMessage, clarifyMessage);
 
         ChatSendResult result = pipeline.send(100L, "问题", "web", null, 7L);
@@ -186,7 +189,7 @@ class ChatPipelineTest {
         EvidenceAnalysisDTO analysis = new EvidenceAnalysisDTO();
         analysis.setIntent("PATENT_OUT_OF_SCOPE");
         response.setAnalysis(analysis);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(response);
         ChatSendResult transferResult = ChatSendResult.builder()
                 .conversationId(100L)
@@ -241,7 +244,7 @@ class ChatPipelineTest {
                 .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
 
         verify(conversationService, never()).createConversation(anyString(), isNull(), any(), anyString(), any());
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
     }
 
     @Test
@@ -253,7 +256,7 @@ class ChatPipelineTest {
                 .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
 
         verify(conversationService, never()).createConversation(anyString(), isNull(), any(), anyString(), any());
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
     }
 
     @Test
@@ -265,7 +268,7 @@ class ChatPipelineTest {
                 .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
 
         verify(conversationService, never()).createConversation(anyString(), isNull(), any(), anyString(), any());
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
     }
 
     @Test
@@ -277,20 +280,20 @@ class ChatPipelineTest {
                 .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
 
         verify(conversationService, never()).createConversation(anyString(), isNull(), any(), anyString(), any());
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
     }
 
     @Test
     void existingConversationRevalidatesKbVisibilityEachRound() {
         AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
         when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(null);
 
         pipeline.send(100L, "问题", "web", null, 7L);
 
         verify(knowledgeApi).getVisibleKbIds(42L);
-        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any());
+        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any());
     }
 
     @Test
@@ -303,7 +306,7 @@ class ChatPipelineTest {
                 .isInstanceOf(ServiceException.class)
                 .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
 
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
     }
 
     @Test
@@ -314,7 +317,7 @@ class ChatPipelineTest {
                 .isInstanceOf(ServiceException.class)
                 .extracting("code").isEqualTo(CONVERSATION_NOT_EXISTS.getCode());
 
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
     }
 
     @Test
@@ -327,7 +330,7 @@ class ChatPipelineTest {
 
         assertThat(result.getConversationId()).isEqualTo(100L);
         assertThat(result.getAnswerable()).isFalse();
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
         verify(knowledgeApi, never()).getVisibleKbIds(any());
     }
 
@@ -335,7 +338,7 @@ class ChatPipelineTest {
     void unavailableEvaluationTransferIsMarkedDegraded() {
         AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
         when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(null);
         ChatSendResult transferResult = ChatSendResult.builder()
                 .conversationId(100L).transferRequired(true).build();
@@ -380,8 +383,8 @@ class ChatPipelineTest {
         verify(knowledgeApi, never()).getVisibleKbIds(any());
         verify(knowledgeApi, never()).getKbDomainCodes(anyList());
         verify(messageService, never()).getRecentMessages(any(), anyInt());
-        verify(messageService, never()).addMessage(any(), any(), any(), any(), any(), any(), any(), any());
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(messageService, never()).addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
     }
 
     @Test
@@ -393,13 +396,13 @@ class ChatPipelineTest {
         response.setAnswerable(true);
         response.setAnswer("答案");
         response.setRoute(ChatRouteEnum.EXACT_METADATA);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
         AiMessageDO answerMessage = new AiMessageDO();
         answerMessage.setId(3021L);
-        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(userMessage, answerMessage);
 
         ChatSendResult result = pipeline.send(100L, "CN 122621758 A 一共有几项权利要求?", "web", null, 6L);
@@ -417,13 +420,13 @@ class ChatPipelineTest {
         response.setAnswerable(true);
         response.setAnswer("答案");
         response.setRoute(ChatRouteEnum.EXACT_CLAIM);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
         AiMessageDO answerMessage = new AiMessageDO();
         answerMessage.setId(3021L);
-        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(userMessage, answerMessage);
 
         ChatSendResult result = pipeline.send(100L, "申请号 202311042981.1 权利要求1原文是什么?", "web", null, 6L);
@@ -441,13 +444,13 @@ class ChatPipelineTest {
         response.setAnswer("答案");
         // GENERAL 证据无 sectionType, 不应被丢弃
         response.setEvidence(List.of(evidenceItem(2091L, null)));
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
         AiMessageDO answerMessage = new AiMessageDO();
         answerMessage.setId(3021L);
-        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(userMessage, answerMessage);
 
         ChatSendResult result = pipeline.send(100L, "退换货政策是什么?", "web", null, 6L);
@@ -475,7 +478,7 @@ class ChatPipelineTest {
         EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
         response.setAnswerable(false);
         response.setRefusalReason("证据不足");
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(response);
         ChatSendResult transferResult = ChatSendResult.builder()
                 .conversationId(100L)
@@ -497,13 +500,13 @@ class ChatPipelineTest {
         AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
         conversation.setDomainCode("PATENT");
         when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(null);
 
         pipeline.send(100L, "问题", "web", null, 7L);
 
         verify(knowledgeApi).getKbDomainCodes(List.of(6L));
-        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any());
+        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any());
     }
 
     @Test
@@ -518,7 +521,7 @@ class ChatPipelineTest {
                 .isInstanceOf(ServiceException.class)
                 .extracting("code").isEqualTo(CONVERSATION_CONTEXT_STALE.getCode());
 
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
     }
 
     @Test
@@ -532,7 +535,7 @@ class ChatPipelineTest {
                 .isInstanceOf(ServiceException.class)
                 .extracting("code").isEqualTo(KNOWLEDGE_DOMAIN_UNAVAILABLE.getCode());
 
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
     }
 
     @Test
@@ -544,13 +547,13 @@ class ChatPipelineTest {
         response.setAnswerable(true);
         response.setAnswer("跨省寄送预计 3 天送达。");
         response.setRoute(ChatRouteEnum.RULE);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
         AiMessageDO answerMessage = new AiMessageDO();
         answerMessage.setId(3021L);
-        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(userMessage, answerMessage);
 
         ChatSendResult result = pipeline.send(100L, "跨省寄送要多久?", "web", null, 6L);
@@ -568,19 +571,120 @@ class ChatPipelineTest {
         response.setAnswerable(true);
         response.setAnswer("答案");
         response.setRoute(null); // 异常缺失时 Chat 兜底 ABSTAIN, 不允许 null(RF2-06)
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
         AiMessageDO answerMessage = new AiMessageDO();
         answerMessage.setId(3021L);
-        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any()))
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(userMessage, answerMessage);
 
         ChatSendResult result = pipeline.send(100L, "问题", "web", null, 6L);
 
         assertThat(result.getAnswerable()).isTrue();
         assertThat(result.getRoute()).isEqualTo(ChatRouteEnum.ABSTAIN);
+    }
+
+    // ==================== P0-08 流式(stream) ====================
+
+    @Test
+    void streamAnswerEmitsConversationStageEvidenceDeltaVerificationDone() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        conversation.setDomainCode("PATENT");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+        EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
+        response.setAnswerable(true);
+        response.setAnswer("该专利的核心技术方案是组合模块化设计。");
+        response.setRoute(ChatRouteEnum.SCOPED_RAG);
+        response.setEvidence(List.of(evidenceItem(2091L, null)));
+        response.setStages(List.of(stage("BM25", "SUCCEEDED", 12L), stage("EVIDENCE", "SUCCEEDED", 5L)));
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+                .thenReturn(response);
+        AiMessageDO userMessage = new AiMessageDO();
+        userMessage.setId(3020L);
+        AiMessageDO answerMessage = new AiMessageDO();
+        answerMessage.setId(3021L);
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(userMessage, answerMessage);
+
+        RecordingSink sink = new RecordingSink();
+        pipeline.stream(100L, "问题", "web", null, 6L, sink);
+
+        List<String> types = sink.events().stream().map(ChatStreamEvent::getType).toList();
+        // 事件顺序: conversation → stage → evidence → delta → done(权威收尾)
+        assertThat(types).containsSubsequence(ChatStreamEvent.TYPE_CONVERSATION, ChatStreamEvent.TYPE_STAGE,
+                ChatStreamEvent.TYPE_EVIDENCE, ChatStreamEvent.TYPE_DELTA, ChatStreamEvent.TYPE_DONE);
+        assertThat(types).last().isEqualTo(ChatStreamEvent.TYPE_DONE);
+        ChatStreamEvent done = sink.events().stream()
+                .filter(e -> ChatStreamEvent.TYPE_DONE.equals(e.getType())).findFirst().orElseThrow();
+        assertThat(done.getMessageId()).isEqualTo(3021L);
+        assertThat(done.getAnswer()).isEqualTo("该专利的核心技术方案是组合模块化设计。");
+        assertThat(done.getRoute()).isEqualTo(ChatRouteEnum.SCOPED_RAG);
+        assertThat(done.getTraceId()).isEqualTo("q-test123456");
+        // 重放阶段与 Query Trace 同源(BM25 阶段可见)
+        assertThat(sink.events().stream().anyMatch(e -> ChatStreamEvent.TYPE_STAGE.equals(e.getType())
+                && "BM25".equals(e.getStage()))).isTrue();
+    }
+
+    @Test
+    void streamBusinessErrorEmitsErrorEvent() {
+        // getConversationForUser 返回 null → CONVERSATION_NOT_EXISTS → error 事件(非抛出)
+        RecordingSink sink = new RecordingSink();
+        pipeline.stream(100L, "问题", "web", null, 6L, sink);
+
+        List<ChatStreamEvent> errors = sink.events().stream()
+                .filter(e -> ChatStreamEvent.TYPE_ERROR.equals(e.getType())).toList();
+        assertThat(errors).hasSize(1);
+        assertThat(errors.get(0).getCode()).isEqualTo(String.valueOf(CONVERSATION_NOT_EXISTS.getCode()));
+        assertThat(errors.get(0).getRetryable()).isFalse();
+        assertThat(sink.events().stream().noneMatch(e -> ChatStreamEvent.TYPE_DONE.equals(e.getType()))).isTrue();
+    }
+
+    @Test
+    void streamCancelledBeforeRpcSkipsConversationAndPersist() {
+        AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
+        conversation.setDomainCode("PATENT");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+
+        RecordingSink sink = new RecordingSink();
+        sink.cancelled.set(true); // 客户端在连接后立即断开
+        pipeline.stream(100L, "问题", "web", null, 6L, sink);
+
+        // 取消后不再输出 conversation/delta/done, 不落 USER/AI 消息, 不发起 RPC
+        assertThat(sink.events().stream().noneMatch(e -> ChatStreamEvent.TYPE_CONVERSATION.equals(e.getType()))).isTrue();
+        assertThat(sink.events().stream().noneMatch(e -> ChatStreamEvent.TYPE_DONE.equals(e.getType()))).isTrue();
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(messageService, never()).addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    private QueryStageTimingDTO stage(String code, String status, long elapsedMs) {
+        QueryStageTimingDTO s = new QueryStageTimingDTO();
+        s.setStage(code);
+        s.setStatus(status);
+        s.setElapsedMs(elapsedMs);
+        return s;
+    }
+
+    /** 测试用事件收集 sink(可控制取消) */
+    private static class RecordingSink implements ChatStreamSink {
+        private final List<ChatStreamEvent> events = new ArrayList<>();
+        private final java.util.concurrent.atomic.AtomicBoolean cancelled =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        @Override
+        public void emit(ChatStreamEvent event) {
+            events.add(event);
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        public List<ChatStreamEvent> events() {
+            return events;
+        }
     }
 
     private AiConversationDO conversation(Long id, Long kbId, Long userId, String status) {

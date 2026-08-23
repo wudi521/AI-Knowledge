@@ -4,23 +4,29 @@ import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
+import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.chat.channel.ChannelAdapter;
+import cn.iocoder.yudao.module.chat.controller.admin.chat.vo.ChatStreamEvent;
 import cn.iocoder.yudao.module.chat.dal.dataobject.conversation.AiConversationDO;
 import cn.iocoder.yudao.module.chat.dal.dataobject.message.AiMessageDO;
+import cn.iocoder.yudao.module.chat.enums.chat.ChatRouteEnum;
+import cn.iocoder.yudao.module.chat.enums.chat.QueryStageEnum;
 import cn.iocoder.yudao.module.chat.enums.conversation.ConversationStatusEnum;
 import cn.iocoder.yudao.module.chat.framework.chat.ChatProperties;
 import cn.iocoder.yudao.module.chat.service.conversation.ConversationService;
 import cn.iocoder.yudao.module.chat.service.evidence.EvidenceRpcAdapter;
 import cn.iocoder.yudao.module.chat.service.message.MessageService;
+import cn.iocoder.yudao.module.chat.service.trace.QueryTraceService;
 import cn.iocoder.yudao.module.chat.service.transfer.TransferHandler;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceClaimDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO;
+import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
-import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -33,12 +39,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import cn.iocoder.yudao.module.chat.enums.chat.ChatRouteEnum;
-
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_CONTEXT_STALE;
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
 
-/** 对话编排管线: 会话 → 证据判定 → 回答或转人工。 */
+/** 对话编排管线: 会话 → 证据判定 → 回答或转人工; 支持同步 send 与 SSE 流式 stream。 */
 @Slf4j
 @Component
 public class ChatPipeline {
@@ -68,7 +72,7 @@ public class ChatPipeline {
     @Resource
     private KnowledgeApi knowledgeApi;
     @Resource
-    private cn.iocoder.yudao.module.chat.service.trace.QueryTraceService queryTraceService;
+    private QueryTraceService queryTraceService;
 
     public ChatSendResult send(Long conversationId, String message, String channel, String customerId) {
         return send(conversationId, message, channel, customerId, (Long) null);
@@ -77,7 +81,7 @@ public class ChatPipeline {
     public ChatSendResult send(Long conversationId, String message, String channel, String customerId,
                                Long kbId) {
         long startNanos = System.nanoTime();
-        ChatSendResult result = doSend(conversationId, message, channel, customerId, kbId);
+        ChatSendResult result = doSend(conversationId, message, channel, customerId, kbId, null);
         if (result != null) {
             result.setLatencyMs((int) ((System.nanoTime() - startNanos) / 1_000_000));
         }
@@ -85,10 +89,34 @@ public class ChatPipeline {
     }
 
     /**
+     * 流式问答(SSE): 复用 {@link #send} 同一条 Query Pipeline 语义, 仅额外向 {@code sink} 输出
+     * conversation/stage/evidence/delta/verification/done 事件。业务异常 → error 事件。
+     * done 事件在 {@link #doSend} 内发出; 本方法只负责兜底异常转 error。
+     */
+    public void stream(Long conversationId, String message, String channel, String customerId, Long kbId,
+                       ChatStreamSink sink) {
+        long startNanos = System.nanoTime();
+        try {
+            ChatSendResult result = doSend(conversationId, message, channel, customerId, kbId, sink);
+            if (result != null && result.getLatencyMs() == null) {
+                result.setLatencyMs((int) ((System.nanoTime() - startNanos) / 1_000_000));
+            }
+        } catch (ServiceException e) {
+            log.warn("[stream][会话({}) 业务错误: code={}, msg={}]", conversationId, e.getCode(), e.getMessage());
+            emitError(sink, String.valueOf(e.getCode()), e.getMessage(), isRetryableError(e.getCode()), null);
+        } catch (Exception e) {
+            log.error("[stream][会话({}) 系统异常]", conversationId, e);
+            emitError(sink, "INTERNAL", "系统繁忙，请稍后重试", false, null);
+        }
+    }
+
+    /**
      * 发送消息。知识库上下文由新会话请求或既有会话的持久化绑定决定。
+     *
+     * @param sink 流式事件输出通道; 同步 {@code /send} 传 null 保持原行为
      */
     private ChatSendResult doSend(Long conversationId, String message, String channel, String customerId,
-                                  Long kbId) {
+                                  Long kbId, ChatStreamSink sink) {
         String resolvedChannel = resolveChannel(channel);
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
@@ -97,6 +125,18 @@ public class ChatPipeline {
         String traceId = queryTraceService.newTraceId();
         // AG-10: trace 总耗时使用整个 Query 墙钟(queryStart → final result), 不依赖 result.latencyMs(在 send() 才赋值)
         long traceStartMs = System.currentTimeMillis();
+        // SQ-10: 管线级阶段归因(定位"阶段总和远小于 total latency"的未归因耗时)
+        long t0 = traceStartMs;
+        long tConv;
+        long tCtx;
+        long tRpc0;
+        long tRpc1;
+        long tResult;
+
+        // P0-08: 连接建立即输出首个阶段(让用户在 100~500ms 内感知系统已开始处理)
+        if (sink != null) {
+            emitStage(sink, QueryStageEnum.ANALYZE.getCode(), "RUNNING", "正在理解问题", 0L, null, null, null, null);
+        }
 
         // 1. 先解析/创建会话，确保后续所有会话级操作都有真实 conversationId。
         AiConversationDO conversation;
@@ -115,13 +155,13 @@ public class ChatPipeline {
             }
             if (ConversationStatusEnum.CLOSED.getStatus().equals(conversation.getStatus())) {
                 log.warn("[send][会话({}) 已关闭, 忽略新消息: {}]", conversationId, message);
-                return buildClosedResult(conversationId);
+                return emitDoneAndReturn(buildClosedResult(conversationId), traceId, sink, traceStartMs);
             }
             Long persistedKbId = conversation.getKbId();
             if (persistedKbId == null) {
                 // RF-07: 无绑定历史会话只读历史, 继续发送由前端新建会话; 禁止回退旧 kb_ids 全库检索
                 log.info("[send][会话({}) 未绑定知识库, 拒绝继续查询: {}]", conversationId, message);
-                return buildKbRequiredResult(conversationId);
+                return emitDoneAndReturn(buildKbRequiredResult(conversationId), traceId, sink, traceStartMs);
             }
             // RF-01: 每轮重新校验当前用户对该绑定 KB 的可见性(权限被撤销则拒绝继续)
             ensureKbVisible(persistedKbId, userId);
@@ -136,6 +176,20 @@ public class ChatPipeline {
             knowledgeContext = new KnowledgeContext(persistedKbId, currentDomain);
             effectiveKbIds = List.of(knowledgeContext.kbId());
         }
+        // SQ-10: 会话解析(含权限校验 + 领域解析)阶段归因
+        tConv = System.currentTimeMillis();
+
+        // P0-08: 会话上下文就绪 → 输出 conversation + 粗粒度阶段(已理解问题/已锁定知识库)
+        if (sink != null) {
+            if (sink.isCancelled()) {
+                log.info("[stream][traceId({}) 客户端取消, 中止]", traceId);
+                return null;
+            }
+            emitConversation(sink, conversationId, traceId, knowledgeContext);
+            emitStage(sink, QueryStageEnum.ANALYZE.getCode(), "DONE", "已理解问题", 0L, null, null, null, null);
+            emitStage(sink, QueryStageEnum.SCOPE_FILTER.getCode(), "DONE", "已锁定知识库", 0L, null,
+                    "kbId=" + knowledgeContext.kbId() + ", domain=" + knowledgeContext.domainCode(), null, null);
+        }
 
         // P0-09: 创建 Query Trace 主记录(仅正常可查询路径; 拒绝/关闭请求不落 trace)
         queryTraceService.begin(traceId, conversationId, message,
@@ -146,40 +200,76 @@ public class ChatPipeline {
                 conversationId, chatProperties.getMaxContextMessages()));
 
         // 4. USER 消息落库。
-        messageService.addMessage(conversationId, "USER", message, null, null, null, null, null);
+        messageService.addMessage(conversationId, "USER", message, null, null, null, null, null, null, null);
 
         // 5. 转人工早检。
         String manualReason = transferHandler.detectTransferReason(message);
         if (manualReason != null) {
-            return transferHandler.handleTransfer(conversationId, message,
-                    buildManualTransferResult(conversation, knowledgeContext, message, manualReason));
+            return emitDoneAndReturn(transferHandler.handleTransfer(conversationId, message,
+                    buildManualTransferResult(conversation, knowledgeContext, message, manualReason)),
+                    traceId, sink, traceStartMs);
+        }
+        // SQ-10: 上下文组装(历史加载 + USER 消息落库 + 转人工早检)阶段归因
+        tCtx = System.currentTimeMillis();
+
+        // P0-08: 进入证据判定前输出 EVIDENCE RUNNING(同步 RPC 阻塞期间用户看到"正在检索/生成")
+        if (sink != null) {
+            if (sink.isCancelled()) {
+                log.info("[stream][traceId({}) 客户端取消, 中止]", traceId);
+                return null;
+            }
+            emitStage(sink, QueryStageEnum.EVIDENCE.getCode(), "RUNNING", "正在评估证据、检索知识", 0L, null, null, null, null);
         }
 
-        // 6. 证据判定(P0-09: 透传统一主 traceId)。
+        // 6. 证据判定(P0-09: 透传统一主 traceId; SQ-10: 会话绑定 KB 领域透传供 Structured Query 路由)。
+        tRpc0 = System.currentTimeMillis();
         EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null, history,
-                effectiveKbIds, traceId);
+                effectiveKbIds, traceId, knowledgeContext.domainCode());
+        tRpc1 = System.currentTimeMillis();
+
+        // P0-08: RPC 返回后若客户端已断开, 不再生成/落库 AI 消息(USER 消息已保留)
+        if (sink != null && sink.isCancelled()) {
+            log.info("[stream][traceId({}) 客户端取消, 不再生成/落库]", traceId);
+            queryTraceService.finish(traceId, null, System.currentTimeMillis() - traceStartMs, "CANCELLED");
+            return null;
+        }
 
         ChatSendResult result;
         if (isClarifyRequired(resp)) {
-            result = buildClarifyResult(conversation, knowledgeContext, resp);
+            result = buildClarifyResult(conversation, knowledgeContext, resp, traceId);
         } else if (isAnswerable(resp)) {
-            result = buildAnswerResult(conversation, knowledgeContext, resp);
+            result = buildAnswerResult(conversation, knowledgeContext, resp, traceId);
         } else if (resp != null && Boolean.TRUE.equals(resp.getTimedOut())) {
             // P0-11: 查询超时 → 降级结果(非转人工), 返回可理解提示
             result = buildDegradedResult(conversation, knowledgeContext, resp,
-                    "本次查询超时，未能完成可靠回答，请稍后重试或调整问题。");
+                    "本次查询超时，未能完成可靠回答，请稍后重试或调整问题。", traceId);
         } else if (resp != null && Boolean.TRUE.equals(resp.getVerificationDegraded())) {
             // P0-11: 验证降级且无可用回答 → 降级结果(非转人工)
             result = buildDegradedResult(conversation, knowledgeContext, resp,
-                    "当前知识库中没有足够证据支持可靠回答。");
+                    "当前知识库中没有足够证据支持可靠回答。", traceId);
         } else {
             result = transferHandler.handleTransfer(conversationId, message,
                     buildTransferResult(conversation, knowledgeContext, message, resp));
         }
+        // SQ-10: 结果组装(AI 消息落库 + 证据快照)阶段归因
+        tResult = System.currentTimeMillis();
+
+        // P0-08: 流式输出最终执行过程与答案(与 Query Trace 同源: 阶段均来自 resp.getStages())
+        if (sink != null && result != null) {
+            replayStages(sink, resp, traceId);
+            emitEvidenceEvent(sink, result);
+            emitVerificationEvent(sink, resp, traceId);
+            emitDelta(sink, result);
+            result.setQueryTraceId(traceId);
+            result.setLatencyMs((int) (System.currentTimeMillis() - traceStartMs));
+            emitDone(sink, result, traceId);
+        }
 
         // P0-09: 落库全链路阶段 + 完成 Query Trace
+        // SQ-10: 汇聚管线级阶段(含 RPC/持久化归因) + 证据侧阶段, 定位"阶段总和 << total latency"缺口
         if (resp != null) {
-            queryTraceService.recordStages(traceId, resp.getStages());
+            queryTraceService.recordStages(traceId, mergePipelineStages(
+                    t0, tConv, tCtx, tRpc0, tRpc1, tResult, System.currentTimeMillis(), resp.getStages()));
         }
         if (result != null) {
             queryTraceService.finish(traceId, result.getRoute(),
@@ -195,6 +285,45 @@ public class ChatPipeline {
         if (Boolean.TRUE.equals(result.getDegraded())) return "DEGRADED";
         if (Boolean.TRUE.equals(result.getTransferRequired())) return "DEGRADED";
         return "SUCCEEDED";
+    }
+
+    /**
+     * SQ-10: 汇聚管线级阶段与会话侧阶段, 使 Trace 阶段总和 ≈ total latency(定位未归因耗时)。
+     * 阶段归因口径: CONVERSATION_LOAD(含权限校验/领域解析) / CONTEXT_RESOLVE(历史+USER落库+转人工早检)
+     * / RPC(证据评估) / MESSAGE_PERSIST(AI 落库+证据快照) / TRACE_PERSIST(Query Trace 落库)。
+     */
+    private List<QueryStageTimingDTO> mergePipelineStages(long t0, long tConv, long tCtx, long tRpc0,
+                                                          long tRpc1, long tResult, long tFinish,
+                                                          List<QueryStageTimingDTO> evidenceStages) {
+        List<QueryStageTimingDTO> stages = new ArrayList<>();
+        int seq = 0;
+        stages.add(pipelineStage("PIPELINE_ENTER", ++seq, 0, "SUCCEEDED"));
+        stages.add(pipelineStage("CONVERSATION_LOAD", ++seq, Math.max(0, tConv - t0), "SUCCEEDED"));
+        stages.add(pipelineStage("PERMISSION_CHECK", ++seq, 0, "SUCCEEDED")); // 并入 CONVERSATION_LOAD
+        stages.add(pipelineStage("CONTEXT_RESOLVE", ++seq, Math.max(0, tCtx - tConv), "SUCCEEDED"));
+        stages.add(pipelineStage("RPC", ++seq, Math.max(0, tRpc1 - tRpc0), "SUCCEEDED"));
+        // 证据侧内部阶段(RPC 内部分解: 检索/生成或 Structured Query 阶段)
+        if (evidenceStages != null) {
+            for (QueryStageTimingDTO s : evidenceStages) {
+                if (s == null) continue;
+                s.setSeq(++seq);
+                stages.add(s);
+            }
+        }
+        stages.add(pipelineStage("MESSAGE_PERSIST", ++seq, Math.max(0, tResult - tRpc1), "SUCCEEDED"));
+        stages.add(pipelineStage("TRACE_PERSIST", ++seq, Math.max(0, tFinish - tResult), "SUCCEEDED"));
+        stages.add(pipelineStage("PIPELINE_EXIT", ++seq, 0, "SUCCEEDED"));
+        return stages;
+    }
+
+    private QueryStageTimingDTO pipelineStage(String stage, int seq, long elapsedMs, String status) {
+        QueryStageTimingDTO dto = new QueryStageTimingDTO();
+        dto.setStage(stage);
+        dto.setSeq(seq);
+        dto.setStatus(status);
+        dto.setElapsedMs(elapsedMs);
+        dto.setSkipped(false);
+        return dto;
     }
 
     private KnowledgeContext resolveKnowledgeContext(Long kbId, Long userId) {
@@ -238,23 +367,25 @@ public class ChatPipeline {
     }
 
     private boolean isClarifyRequired(EvidenceEvaluateRespDTO resp) {
-        return resp != null
-                && resp.getMissingSlots() != null
-                && !resp.getMissingSlots().isEmpty()
-                && StrUtil.isNotBlank(resp.getClarifyQuestion());
+        if (resp == null) return false;
+        // 槽位反问(缺必填槽位) 或 结构化反问(CLARIFY 路由: scope/metric/operation 无法消解)
+        boolean slotClarify = resp.getMissingSlots() != null && !resp.getMissingSlots().isEmpty();
+        boolean structuredClarify = ChatRouteEnum.CLARIFY.equals(resp.getRoute());
+        return (slotClarify || structuredClarify) && StrUtil.isNotBlank(resp.getClarifyQuestion());
     }
 
     private ChatSendResult buildClarifyResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
-                                              EvidenceEvaluateRespDTO resp) {
+                                              EvidenceEvaluateRespDTO resp, String queryTraceId) {
+        String route = ChatRouteEnum.CLARIFY.equals(resp.getRoute()) ? ChatRouteEnum.CLARIFY : ChatRouteEnum.ABSTAIN;
         AiMessageDO aiMessage = messageService.addMessage(conversation.getId(), "AI", resp.getClarifyQuestion(),
-                null, null, null, null, resp.getTraceId());
+                null, null, null, null, resp.getTraceId(), queryTraceId, route);
         return ChatSendResult.builder()
                 .conversationId(conversation.getId())
                 .messageId(aiMessage != null ? aiMessage.getId() : null)
                 .kbId(knowledgeContext.kbId())
                 .domainCode(knowledgeContext.domainCode())
                 .intent(resolveIntent(resp))
-                .route(ChatRouteEnum.ABSTAIN)
+                .route(route)
                 .degraded(false)
                 .answer(resp.getClarifyQuestion())
                 .answerable(false)
@@ -274,9 +405,9 @@ public class ChatPipeline {
 
     /** P0-11: 降级结果(查询超时/验证降级): 非转人工, 返回可理解提示并落库 AI 消息 */
     private ChatSendResult buildDegradedResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
-                                               EvidenceEvaluateRespDTO resp, String message) {
+                                               EvidenceEvaluateRespDTO resp, String message, String queryTraceId) {
         AiMessageDO aiMessage = messageService.addMessage(conversation.getId(), "AI", message,
-                null, null, null, null, resp != null ? resp.getTraceId() : null);
+                null, null, null, null, resp != null ? resp.getTraceId() : null, queryTraceId, ChatRouteEnum.ABSTAIN);
         return ChatSendResult.builder()
                 .conversationId(conversation.getId())
                 .messageId(aiMessage != null ? aiMessage.getId() : null)
@@ -295,13 +426,13 @@ public class ChatPipeline {
     }
 
     private ChatSendResult buildAnswerResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
-                                             EvidenceEvaluateRespDTO resp) {
+                                             EvidenceEvaluateRespDTO resp, String queryTraceId) {
         List<Long> citations = buildCitations(resp);
         List<ChatSendResult.EvidenceSummary> evidence = buildEvidenceSummaries(resp,
                 knowledgeContext.kbId(), knowledgeContext.domainCode());
         AiMessageDO aiMessage = messageService.addMessage(conversation.getId(), "AI", resp.getAnswer(),
                 JSONUtil.toJsonStr(citations), null, null,
-                toConfidence(resp.getConfidence()), resp.getTraceId());
+                toConfidence(resp.getConfidence()), resp.getTraceId(), queryTraceId, resolveRoute(resp));
         // P0-08: 证据快照随消息落库(历史会话刷新后 Evidence 不丢; 快照为当时版本, 不随知识升级漂移)
         if (aiMessage != null) {
             persistMessageEvidence(aiMessage.getId(), resp, knowledgeContext.kbId(), knowledgeContext.domainCode());
@@ -577,5 +708,171 @@ public class ChatPipeline {
     private BigDecimal toConfidence(Double confidence) {
         if (confidence == null) return null;
         return BigDecimal.valueOf(confidence).setScale(4, RoundingMode.HALF_UP);
+    }
+
+    // ==================== P0-08 流式事件输出 ====================
+
+    /** 返回前输出 done 事件(仅流式路径; 同步路径直接返回) */
+    private ChatSendResult emitDoneAndReturn(ChatSendResult result, String traceId, ChatStreamSink sink, long traceStartMs) {
+        if (sink != null && result != null) {
+            result.setQueryTraceId(traceId);
+            result.setLatencyMs((int) (System.currentTimeMillis() - traceStartMs));
+            emitDone(sink, result, traceId);
+        }
+        return result;
+    }
+
+    private void emitConversation(ChatStreamSink sink, Long conversationId, String traceId, KnowledgeContext ctx) {
+        if (sink == null) return;
+        emitIfPresent(sink, ChatStreamEvent.builder()
+                .type(ChatStreamEvent.TYPE_CONVERSATION)
+                .conversationId(conversationId)
+                .queryId(traceId)
+                .traceId(traceId)
+                .kbId(ctx.kbId())
+                .domainCode(ctx.domainCode())
+                .build());
+    }
+
+    private void emitStage(ChatStreamSink sink, String stage, String status, String label, Long elapsedMs,
+                           String inputSummary, String outputSummary, String errorCode, String modelCallId) {
+        if (sink == null) return;
+        emitIfPresent(sink, ChatStreamEvent.builder()
+                .type(ChatStreamEvent.TYPE_STAGE)
+                .stage(stage)
+                .status(status)
+                .label(label)
+                .elapsedMs(elapsedMs)
+                .inputSummary(inputSummary)
+                .outputSummary(outputSummary)
+                .errorCode(errorCode)
+                .modelCallId(modelCallId)
+                .build());
+    }
+
+    /** 重放权威阶段(与 Query Trace 同源, 均来自 resp.getStages()) */
+    private void replayStages(ChatStreamSink sink, EvidenceEvaluateRespDTO resp, String traceId) {
+        if (sink == null || resp == null || resp.getStages() == null) return;
+        for (QueryStageTimingDTO s : resp.getStages()) {
+            if (s == null) continue;
+            QueryStageEnum se = QueryStageEnum.of(s.getStage());
+            emitStage(sink, s.getStage(), mapStageStatus(s.getStatus()),
+                    se != null ? se.getLabel() : s.getStage(),
+                    s.getElapsedMs(), s.getInputSummary(), s.getOutputSummary(), s.getErrorCode(), s.getModelCallId());
+        }
+    }
+
+    private String mapStageStatus(String status) {
+        if (status == null) return "DONE";
+        return switch (status) {
+            case "SUCCEEDED" -> "DONE";
+            case "FAILED" -> "FAILED";
+            case "SKIPPED" -> "SKIPPED";
+            default -> status;
+        };
+    }
+
+    private void emitEvidenceEvent(ChatStreamSink sink, ChatSendResult result) {
+        if (sink == null || result == null || CollUtil.isEmpty(result.getEvidence())) return;
+        emitIfPresent(sink, ChatStreamEvent.builder()
+                .type(ChatStreamEvent.TYPE_EVIDENCE)
+                .count(result.getEvidence().size())
+                .items(result.getEvidence())
+                .build());
+    }
+
+    private void emitVerificationEvent(ChatStreamSink sink, EvidenceEvaluateRespDTO resp, String traceId) {
+        if (sink == null) return;
+        boolean fail = resp != null && (Boolean.TRUE.equals(resp.getClaimFail())
+                || Boolean.TRUE.equals(resp.getTimedOut())
+                || Boolean.TRUE.equals(resp.getVerificationDegraded()));
+        int repairCount = resp != null && resp.getStages() != null
+                ? (int) resp.getStages().stream()
+                .filter(s -> s != null && "REPAIR".equals(s.getStage())).count()
+                : 0;
+        emitIfPresent(sink, ChatStreamEvent.builder()
+                .type(ChatStreamEvent.TYPE_VERIFICATION)
+                .verifyStatus(fail ? "FAILED" : "PASSED")
+                .repairCount(repairCount)
+                .traceId(traceId)
+                .build());
+    }
+
+    /** delta 切片输出: 模型网关为同步返回, 后端对最终答案按码点切片模拟流式(默认 60 字符/10ms) */
+    private void emitDelta(ChatStreamSink sink, ChatSendResult result) {
+        if (sink == null || result == null || StrUtil.isBlank(result.getAnswer())) return;
+        int chunkSize = Math.max(1, chatProperties.getStreamChunkSize());
+        long delayMs = Math.max(0, chatProperties.getStreamChunkDelayMs());
+        int[] codePoints = result.getAnswer().codePoints().toArray();
+        for (int i = 0; i < codePoints.length; i += chunkSize) {
+            if (sink.isCancelled()) break;
+            int end = Math.min(codePoints.length, i + chunkSize);
+            StringBuilder sb = new StringBuilder(end - i);
+            for (int j = i; j < end; j++) {
+                sb.appendCodePoint(codePoints[j]);
+            }
+            emitIfPresent(sink, ChatStreamEvent.builder()
+                    .type(ChatStreamEvent.TYPE_DELTA)
+                    .content(sb.toString())
+                    .build());
+            if (delayMs > 0 && end < codePoints.length) {
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+    }
+
+    private void emitDone(ChatStreamSink sink, ChatSendResult result, String traceId) {
+        if (sink == null || result == null) return;
+        emitIfPresent(sink, ChatStreamEvent.builder()
+                .type(ChatStreamEvent.TYPE_DONE)
+                .conversationId(result.getConversationId())
+                .queryId(traceId)
+                .traceId(traceId)
+                .messageId(result.getMessageId())
+                .route(result.getRoute())
+                .answerable(result.getAnswerable())
+                .answer(result.getAnswer())
+                .citations(result.getCitations())
+                .evidence(result.getEvidence())
+                .confidence(result.getConfidence())
+                .latencyMs(result.getLatencyMs())
+                .degraded(result.getDegraded())
+                .transferRequired(result.getTransferRequired())
+                .transferReason(result.getTransferReason())
+                .build());
+    }
+
+    private void emitError(ChatStreamSink sink, String code, String message, Boolean retryable, String traceId) {
+        if (sink == null) return;
+        emitIfPresent(sink, ChatStreamEvent.builder()
+                .type(ChatStreamEvent.TYPE_ERROR)
+                .code(code)
+                .message(message)
+                .retryable(retryable)
+                .traceId(traceId)
+                .build());
+    }
+
+    private void emitIfPresent(ChatStreamSink sink, ChatStreamEvent event) {
+        if (sink == null) return;
+        try {
+            sink.emit(event);
+        } catch (Exception e) {
+            log.warn("[emitIfPresent][事件输出失败, 按取消处理: {}]", e.getMessage());
+        }
+    }
+
+    /** 会话/知识库类错误用户需修正后重试(不可自动重试); 其余(超时/模型/检索)可重试 */
+    private boolean isRetryableError(Integer code) {
+        if (code == null) return false;
+        return switch (code) {
+            case 1_003_000_002, 1_003_000_005, 1_003_000_007, 1_003_000_008 -> false; // 会话/知识库上下文错误
+            default -> true;
+        };
     }
 }

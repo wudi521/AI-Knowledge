@@ -32,6 +32,12 @@ public class MessageVO {
     @Schema(description = "证据链路追踪号(证据评估 traceId, AI 消息)")
     private String traceId;
 
+    @Schema(description = "统一主追踪号(q- 前缀, AI 消息)")
+    private String queryTraceId;
+
+    @Schema(description = "权威检索路由(RULE/EXACT_METADATA/EXACT_CLAIM/SCOPED_RAG/HYBRID_RAG/ABSTAIN, AI 消息)")
+    private String route;
+
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 

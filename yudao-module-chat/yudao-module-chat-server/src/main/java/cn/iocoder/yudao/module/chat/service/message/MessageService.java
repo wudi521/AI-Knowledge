@@ -37,6 +37,13 @@ public class MessageService {
     @Resource
     private ConversationService conversationService;
 
+    /** 便捷重载: 无 queryTraceId/route 上下文时委托完整签名(null) */
+    public AiMessageDO addMessage(Long conversationId, String role, String content, String citationsJson,
+                                  String intent, String entitiesJson, BigDecimal confidence, String traceId) {
+        return addMessage(conversationId, role, content, citationsJson, intent, entitiesJson, confidence, traceId,
+                null, null);
+    }
+
     /**
      * 落库一条消息(null-safe), 并同步自增会话消息计数(尽力而为, 失败仅告警不阻断落库)
      *
@@ -47,10 +54,13 @@ public class MessageService {
      * @param entitiesJson   实体 JSON 字符串(可空)
      * @param confidence     置信度 0~1(可空)
      * @param traceId        链路追踪号(可空)
+     * @param queryTraceId   统一主追踪号(q- 前缀, 可空; AI 消息反馈/校验关联 Query Trace 用)
+     * @param route          权威检索路由(可空; AI 消息)
      * @return 落库后的消息(含自增 id / 框架填充的 creator、createTime、tenantId)
      */
     public AiMessageDO addMessage(Long conversationId, String role, String content, String citationsJson,
-                                  String intent, String entitiesJson, BigDecimal confidence, String traceId) {
+                                  String intent, String entitiesJson, BigDecimal confidence, String traceId,
+                                  String queryTraceId, String route) {
         AiMessageDO message = new AiMessageDO();
         message.setConversationId(conversationId);
         message.setRole(StrUtil.blankToDefault(role, "SYSTEM"));
@@ -60,6 +70,8 @@ public class MessageService {
         message.setEntities(entitiesJson);
         message.setConfidence(confidence);
         message.setTraceId(traceId);
+        message.setQueryTraceId(queryTraceId);
+        message.setRoute(route);
         aiMessageMapper.insert(message);
         // 消息计数自增(USER/AI/SYSTEM 全部角色统一在此计数, 每消息一次)
         try {

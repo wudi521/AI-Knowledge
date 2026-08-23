@@ -109,3 +109,31 @@
 - `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/prompt/AiPromptService.java`
 - `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/prompt/PromptCache.java`
 - `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/prompt/impl/AiPromptServiceImpl.java`
+
+## New Models (added 2026-08-23)
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/secret/SecretCryptoService.java`
+- `yudao-module-model/yudao-module-model-server/src/main/java/cn/iocoder/yudao/module/model/service/secret/impl/AesGcmSecretCryptoService.java`
+- `yudao-server/src/main/resources/db/migration/README.txt`
+- `yudao-server/src/main/resources/db/migration/V10__knowledge_ops_trace.sql`
+- `yudao-server/src/main/resources/db/migration/V11__ops_menu.sql`
+- `yudao-server/src/main/resources/db/migration/V12__workspace_menu.sql`
+- `yudao-server/src/main/resources/db/migration/V13__golden_cases.sql`
+- `yudao-server/src/main/resources/db/migration/V14__chat_conversation_context.sql`
+- `yudao-server/src/main/resources/db/migration/V2__ai_chunk_metadata.sql`
+- `yudao-server/src/main/resources/db/migration/V3__outbox_ingestion_job.sql`
+- `yudao-server/src/main/resources/db/migration/V4__acl_scope.sql`
+- `yudao-server/src/main/resources/db/migration/V5__knowledge_layer.sql`
+- `yudao-server/src/main/resources/db/migration/V6__evidence_lineage_trace.sql`
+- `yudao-server/src/main/resources/db/migration/V7__backfill_prior_migrations.sql`
+- `yudao-server/src/main/resources/db/migration/V8__patent_mvp.sql`
+- `yudao-server/src/main/resources/db/migration/V9__chat_conversation_kb.sql`
+
+## New Models (added 2026-08-23)
+- `yudao-server/src/main/resources/db/migration/V15__chat_conversation_domain_semantics.sql`
+
+## New Models (added 2026-08-23)
+- `yudao-server/src/main/resources/db/migration/V16__chat_message_evidence.sql`
+- `yudao-server/src/main/resources/db/migration/V17__query_trace.sql`
+
+## New Models (added 2026-08-23)
+- `yudao-server/src/main/resources/db/migration/V18__chat_feedback_and_message_context.sql`

@@ -76,7 +76,7 @@ public class EvidenceEvaluateRespDTO {
     /** 检索路由(Query Planner 权威产出: EXACT_METADATA/EXACT_CLAIM/SCOPED_RAG/HYBRID_RAG/ABSTAIN) */
     private String route;
 
-    /** 意图(如 KB_STATISTICS; 聚合等确定性路径) */
+    /** 意图(如 STRUCTURED_AGGREGATE; 聚合等确定性路径) */
     private String intent;
 
     /** 通道召回统计(BM25/向量/融合; 供前端检索诊断) */

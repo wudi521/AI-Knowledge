@@ -687,3 +687,12 @@
 - `yudao-module-chat/yudao-module-chat-server/src/main/java/cn/iocoder/yudao/module/chat/service/trace/QueryTraceService.java`
 - `yudao-module-retrieval/yudao-module-retrieval-api/src/main/java/cn/iocoder/yudao/module/retrieval/api/dto/QueryStageTimingDTO.java`
 - `yudao-module-evidence/yudao-module-evidence-server/src/main/java/cn/iocoder/yudao/module/evidence/service/generate/CitationValidator.java`
+
+## New Routes (added 2026-08-23)
+- `yudao-module-chat/yudao-module-chat-server/src/main/java/cn/iocoder/yudao/module/chat/controller/admin/chat/vo/ChatStreamEvent.java`
+- `yudao-module-chat/yudao-module-chat-server/src/main/java/cn/iocoder/yudao/module/chat/controller/admin/feedback/vo/FeedbackRespVO.java`
+- `yudao-module-chat/yudao-module-chat-server/src/main/java/cn/iocoder/yudao/module/chat/controller/admin/feedback/vo/FeedbackStatsRespVO.java`
+- `yudao-module-chat/yudao-module-chat-server/src/main/java/cn/iocoder/yudao/module/chat/controller/admin/feedback/vo/FeedbackUpsertReqVO.java`
+- `yudao-module-knowledge/yudao-module-knowledge-api/src/main/java/cn/iocoder/yudao/module/knowledge/api/dto/StructuredQueryReqDTO.java`
+- `yudao-module-knowledge/yudao-module-knowledge-api/src/main/java/cn/iocoder/yudao/module/knowledge/api/dto/StructuredQueryRespDTO.java`
+- `yudao-module-knowledge/yudao-module-knowledge-api/src/main/java/cn/iocoder/yudao/module/knowledge/api/dto/StructuredQueryRowDTO.java`

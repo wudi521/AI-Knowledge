@@ -59,6 +59,9 @@ public class ChatSendResult {
     /** 证据评估链路追踪号(ev- 前缀) */
     private String traceId;
 
+    /** 统一主追踪号(q- 前缀; 流式 done 事件透传, 反馈/校验关联 Query Trace 用) */
+    private String queryTraceId;
+
     /** 本次请求整体耗时(ms) */
     private Integer latencyMs;
 

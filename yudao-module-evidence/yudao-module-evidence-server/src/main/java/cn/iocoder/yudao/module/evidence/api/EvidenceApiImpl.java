@@ -36,7 +36,8 @@ public class EvidenceApiImpl implements EvidenceApi {
     @Override
     public CommonResult<EvidenceEvaluateRespDTO> evaluate(EvidenceEvaluateReqDTO req) {
         EvidenceEvaluateRespVO vo = evidenceService.evaluate(req.getQuery(), req.getKbIds(), req.getTopK(),
-                req.getTenantId(), req.getUserId(), req.getHistory(), req.getSkipSlotDetection(), req.getTraceId());
+                req.getTenantId(), req.getUserId(), req.getHistory(), req.getSkipSlotDetection(), req.getTraceId(),
+                req.getDomainCode());
         // 映射 EvidenceEvaluateRespVO -> EvidenceEvaluateRespDTO
         EvidenceEvaluateRespDTO dto = new EvidenceEvaluateRespDTO();
         dto.setTraceId(vo.getTraceId());
@@ -117,7 +118,7 @@ public class EvidenceApiImpl implements EvidenceApi {
         dto.setChannels(toChannelStatDTO(vo.getChannels()));
         // 检索路由透传(Query Planner 权威产出; 供对话层直接使用, 不自行推断)
         dto.setRoute(vo.getRoute());
-        // 意图透传(如 KB_STATISTICS; 聚合等确定性路径)
+        // 意图透传(如 STRUCTURED_AGGREGATE; 聚合等确定性路径)
         dto.setIntent(vo.getIntent());
         // 上下文回显(evidence-api ChatTurnDTO, 与 VO 同类型, 直接透传)
         dto.setHistory(vo.getHistory());

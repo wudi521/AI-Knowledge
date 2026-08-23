@@ -56,4 +56,10 @@ public class AiMessageDO extends TenantBaseDO {
     /** 链路追踪号(证据评估 traceId, AI 消息) */
     private String traceId;
 
+    /** 统一主追踪号(q- 前缀, AI 消息; 反馈/服务端校验自动关联 Query Trace 用) */
+    private String queryTraceId;
+
+    /** 权威检索路由(RULE/EXACT_METADATA/EXACT_CLAIM/SCOPED_RAG/HYBRID_RAG/ABSTAIN, AI 消息) */
+    private String route;
+
 }

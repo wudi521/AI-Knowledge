@@ -84,7 +84,7 @@ public class TransferHandler {
                 .anyMatch(msg -> "SYSTEM".equals(msg.getRole()));
         if (!hasSystemMessage) {
             messageService.addMessage(conversationId, "SYSTEM", decision.getSummary(),
-                    null, null, null, null, decision.getTraceId());
+                    null, null, null, null, decision.getTraceId(), null, null);
         } else {
             log.info("[handleTransfer][会话({}) 已有 SYSTEM 交接消息, 跳过重复落库(幂等)]", conversationId);
         }
@@ -167,7 +167,7 @@ public class TransferHandler {
         conversationService.updateContextSummary(conversationId, buildRecentContext(conversationId));
         // SYSTEM 留痕
         messageService.addMessage(conversationId, "SYSTEM", "会话已转人工: " + transferReason,
-                null, null, null, null, null);
+                null, null, null, null, null, null, null);
         return summary;
     }
 
@@ -186,7 +186,7 @@ public class TransferHandler {
         conversationService.takeOver(conversationId, operatorId);
         // SYSTEM 留痕
         messageService.addMessage(conversationId, "SYSTEM", "坐席已接管会话",
-                null, null, null, null, null);
+                null, null, null, null, null, null, null);
     }
 
     // ========== 工具 ==========

@@ -12,6 +12,9 @@ import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgePublishedChunkDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeSlotDefinitionDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeVersionRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.PatentDocumentLookupReqDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryReqDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRespDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRowDTO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.intent.AiIntentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
@@ -311,6 +314,92 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return null;
         try {
             return JSONUtil.parseObj(doc.getDomainMetadata()).getStr("applicationNo");
+        } catch (Exception ignore) {
+            return null;
+        }
+    }
+
+    /** 文档 domainMetadata 中的 claimCount(未识别返回 null) */
+    private Integer docClaimCount(AiDocumentDO doc) {
+        if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return null;
+        try {
+            return JSONUtil.parseObj(doc.getDomainMetadata()).getInt("claimCount");
+        } catch (Exception ignore) {
+            return null;
+        }
+    }
+
+    /**
+     * Structured Query 数据访问(白名单化): 按 kbId + 已发布 + PATENT 领域(可选已解析文档集合)返回
+     * 完整结构化数据集(每对象一行)。Core Executor 基于完整 rows 计算聚合, 禁止 TopK。
+     */
+    @Override
+    public CommonResult<StructuredQueryRespDTO> structuredQuery(StructuredQueryReqDTO req) {
+        StructuredQueryRespDTO resp = new StructuredQueryRespDTO();
+        resp.setRows(new ArrayList<>());
+        if (req == null || req.getKbId() == null || StrUtil.isBlank(req.getMetricCode())) {
+            return success(resp);
+        }
+        try {
+            boolean published = !Boolean.FALSE.equals(req.getPublishedOnly());
+            List<AiDocumentDO> docs = aiDocumentMapper.selectListByKbId(req.getKbId());
+            if (CollUtil.isEmpty(docs)) {
+                return success(resp);
+            }
+            // 已发布过滤
+            final Set<Long> publishedDocIds;
+            if (published) {
+                publishedDocIds = aiDocVersionMapper.selectPublishedByDocIds(
+                                docs.stream().map(AiDocumentDO::getId).toList())
+                        .stream().map(AiDocVersionDO::getDocId).collect(Collectors.toSet());
+            } else {
+                publishedDocIds = null;
+            }
+            Set<Long> resolvedIds = req.getResolvedEntityIds() == null
+                    ? Set.of() : new java.util.HashSet<>(req.getResolvedEntityIds());
+            int cap = req.getRowCap() == null || req.getRowCap() <= 0 ? 2000 : req.getRowCap();
+
+            for (AiDocumentDO doc : docs) {
+                if (publishedDocIds != null && !publishedDocIds.contains(doc.getId())) continue;
+                if (!"PATENT".equalsIgnoreCase(domainCodeOf(doc, "PATENT"))) continue;
+                if (!resolvedIds.isEmpty() && !resolvedIds.contains(doc.getId())) continue;
+                if (resp.getRows().size() >= cap) {
+                    resp.setTruncated(true);
+                    break;
+                }
+                StructuredQueryRowDTO row = new StructuredQueryRowDTO();
+                row.setDocumentId(doc.getId());
+                row.setDocumentName(doc.getName());
+                row.setApplicationNo(docApplicationNo(doc));
+                row.setPublicationNo(docPublicationNo(doc));
+                row.setValue(metricValue(doc, req.getMetricCode()));
+                resp.getRows().add(row);
+            }
+            return success(resp);
+        } catch (Exception e) {
+            log.warn("[structuredQuery][kbId({}) metric({}) 失败, 返回空: {}]",
+                    req.getKbId(), req.getMetricCode(), e.getMessage());
+            return success(resp);
+        }
+    }
+
+    /** 单对象指标值(白名单 metric; DOCUMENT_COUNT 恒为 1, CLAIM_COUNT 取 claimCount) */
+    private Double metricValue(AiDocumentDO doc, String metricCode) {
+        switch (metricCode.toUpperCase()) {
+            case "DOCUMENT_COUNT":
+                return 1d;
+            case "CLAIM_COUNT":
+                Integer claimCount = docClaimCount(doc);
+                return claimCount == null ? 0d : claimCount.doubleValue();
+            default:
+                return null;
+        }
+    }
+
+    private String docPublicationNo(AiDocumentDO doc) {
+        if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return null;
+        try {
+            return JSONUtil.parseObj(doc.getDomainMetadata()).getStr("publicationNo");
         } catch (Exception ignore) {
             return null;
         }

@@ -20,7 +20,11 @@ import cn.iocoder.yudao.module.evidence.service.conflict.ConflictDetector;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
 import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
 import cn.iocoder.yudao.module.evidence.service.rule.RuleShortCircuit;
-import cn.iocoder.yudao.module.evidence.service.rule.AggregateHandler;
+import cn.iocoder.yudao.module.evidence.service.structured.core.CompletenessGuard;
+import cn.iocoder.yudao.module.evidence.service.structured.core.QueryType;
+import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
+import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult;
+import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryService;
 import cn.iocoder.yudao.module.evidence.service.slot.SlotDetectionResult;
 import cn.iocoder.yudao.module.evidence.service.slot.SlotDetector;
 import cn.iocoder.yudao.module.evidence.service.sufficiency.SufficiencyJudge;
@@ -70,7 +74,9 @@ public class EvidenceService {
     @Resource
     private RuleShortCircuit ruleShortCircuit;
     @Resource
-    private cn.iocoder.yudao.module.evidence.service.rule.AggregateHandler aggregateHandler;
+    private cn.iocoder.yudao.module.evidence.service.structured.core.CompletenessGuard completenessGuard;
+    @Resource
+    private cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryService structuredQueryService;
     @Resource
     private cn.iocoder.yudao.module.knowledge.api.KnowledgeApi knowledgeApi;
     @Resource
@@ -139,7 +145,7 @@ public class EvidenceService {
     public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
                                            Long tenantId, Long userId, List<ChatTurnDTO> history,
                                            Boolean skipSlotDetection) {
-        return evaluate(query, kbIds, topK, tenantId, userId, history, skipSlotDetection, null);
+        return evaluate(query, kbIds, topK, tenantId, userId, history, skipSlotDetection, null, null);
     }
 
     /**
@@ -151,6 +157,20 @@ public class EvidenceService {
     public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
                                            Long tenantId, Long userId, List<ChatTurnDTO> history,
                                            Boolean skipSlotDetection, String incomingTraceId) {
+        return evaluate(query, kbIds, topK, tenantId, userId, history, skipSlotDetection, incomingTraceId, null);
+    }
+
+    /**
+     * 证据评估(Feign RPC 场景; 支持多轮上下文 + 跳过槽位检测 + 统一主 traceId + 领域编码)
+     *
+     * @param skipSlotDetection 是否跳过槽位检测(评测/批处理用: 测检索+回答质量, 不走对话层反问门)
+     * @param traceId           统一主 traceId(q- 前缀, 对话层下发; null 时本模块生成 ev- 兜底)
+     * @param domainCode        知识库领域编码(如 PATENT; Structured Query 路由/领域注册表使用)
+     */
+    public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
+                                           Long tenantId, Long userId, List<ChatTurnDTO> history,
+                                           Boolean skipSlotDetection, String incomingTraceId,
+                                           String domainCode) {
         long start = System.currentTimeMillis();
         String traceId = StrUtil.isNotBlank(incomingTraceId) ? incomingTraceId : newTraceId();
 
@@ -176,23 +196,39 @@ public class EvidenceService {
             return resp;
         }
 
-        // AG-02/03/04: 知识库聚合统计(KB_STATISTICS intent) — 计数问题不走 TopK RAG(否则漏数)
-        // AG-06 Completeness Guard: 完整性/聚合深度问题不可用结构化聚合时拒绝作答, 不根据 TopK 猜完整性结论
-        if (AggregateHandler.isCompletenessIntent(query)) {
-            AggregateHandler.AggregateResult aggregate = aggregateHandler.evaluate(query, kbIds);
-            if (aggregate != null) {
-                EvidenceEvaluateRespVO resp = buildAggregateResp(traceId, query, history, aggregate, kbIds.get(0), start);
+        // Structured Query(Platform Core): 聚合/列举/排序等完整数据集查询走结构化引擎, 不走 TopK RAG。
+        // Completeness Guard: RAG TopK 永远不能证明全集; 完整数据集语义无法结构化作答时明确拒绝, 不猜。
+        boolean structuredCandidate = completenessGuard.isStructuredCandidate(query);
+        boolean completenessSemantics = completenessGuard.requiresCompleteDataset(query);
+        if (structuredCandidate || completenessSemantics) {
+            Long singleKbId = kbIds != null && kbIds.size() == 1 ? kbIds.get(0) : null;
+            StructuredQueryService.HandleResult structured = null;
+            if (structuredCandidate && domainCode != null) {
+                structured = structuredQueryService.handle(query, singleKbId, domainCode, history);
+            }
+            if (structured != null && structured.state() == StructuredQueryService.State.ANSWER) {
+                EvidenceEvaluateRespVO resp = buildStructuredResp(traceId, query, history, structured, start);
                 recorder.record(resp, List.of(), List.of());
                 return resp;
             }
-            judgement = buildJudgement(false, 0.0, "该问题需要基于全部数据统计，当前无法可靠回答。", 0, 0);
-            EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
-            resp.setRoute("KB_AGGREGATE");
-            resp.setIntent("KB_STATISTICS");
-            resp.setElapsedMs((int) (System.currentTimeMillis() - start));
-            resp.setStages(buildAggregateStages(resp.getElapsedMs(), "REJECTED"));
-            recorder.record(resp, List.of(), List.of());
-            return resp;
+            if (structured != null && structured.state() == StructuredQueryService.State.CLARIFY) {
+                EvidenceEvaluateRespVO resp = buildStructuredClarifyResp(traceId, query, history, structured, start);
+                recorder.record(resp, List.of(), List.of());
+                return resp;
+            }
+            // 完整数据集语义(或结构化候选不可作答: 指标/运算不支持/非单库/数据集不完整) → 明确拒绝, 不猜
+            if (structured == null || structured.state() == StructuredQueryService.State.UNANSWERABLE
+                    || completenessSemantics) {
+                judgement = buildJudgement(false, 0.0, "该问题需要基于全部数据统计，当前无法可靠回答。", 0, 0);
+                EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
+                resp.setRoute("STRUCTURED_QUERY");
+                resp.setIntent("STRUCTURED_QUERY_REJECTED");
+                resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+                resp.setStages(buildStructuredStages(resp.getElapsedMs(), "REJECTED"));
+                recorder.record(resp, List.of(), List.of());
+                return resp;
+            }
+            // NOT_STRUCTURED 且非完整数据集语义 → 交还原有检索管线
         }
 
         // 0. 槽位检测(检索之前; 缺必填槽位 → 反问短路, 不检索; 检测失败/无定义 → 走原流程)
@@ -376,40 +412,67 @@ public class EvidenceService {
         return dto;
     }
 
-    /** AG-04/09: KB_AGGREGATE 确定性回答 + STRUCTURED_AGGREGATE 证据 */
-    private EvidenceEvaluateRespVO buildAggregateResp(String traceId, String query, List<ChatTurnDTO> history,
-                                                      cn.iocoder.yudao.module.evidence.service.rule.AggregateHandler.AggregateResult agg,
-                                                      Long kbId, long start) {
+    /** Structured Query 确定性回答 + STRUCTURED_RESULT 证据 */
+    private EvidenceEvaluateRespVO buildStructuredResp(String traceId, String query, List<ChatTurnDTO> history,
+                                                       StructuredQueryService.HandleResult structured, long start) {
         Judgement j = buildJudgement(true, 1.0, null, 0, 0);
         EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
-        resp.setAnswer(agg.answer());
-        resp.setRoute("KB_AGGREGATE");
-        resp.setIntent("KB_STATISTICS");
+        resp.setAnswer(structured.answer());
+        resp.setRoute("STRUCTURED_QUERY");
+        resp.setIntent(subTypeIntent(structured.plan()));
         resp.setElapsedMs((int) (System.currentTimeMillis() - start));
         EvidenceEvaluateRespVO.EvidenceItemVO ev = new EvidenceEvaluateRespVO.EvidenceItemVO();
-        ev.setEvidenceType("STRUCTURED_AGGREGATE");
-        ev.setKbId(kbId);
-        ev.setDomainCode("PATENT");
-        ev.setMetric(agg.metric().name());
-        ev.setAggregateValue(agg.value());
-        ev.setFilters(agg.filters());
-        ev.setContent(agg.answer());
+        ev.setEvidenceType("STRUCTURED_RESULT");
+        ev.setKbId(structured.plan().getScope() != null ? structured.plan().getScope().getCurrentKbId() : null);
+        ev.setDomainCode(structured.plan().getDomainCode());
+        ev.setMetric(structured.plan().getMetricCode());
+        if (structured.result() != null && structured.result().getValue() != null) {
+            ev.setAggregateValue(structured.result().getValue()
+                    == Math.floor(structured.result().getValue())
+                    ? (int) Math.round(structured.result().getValue()) : null);
+        }
+        ev.setFilters("operation=" + structured.plan().getOperation()
+                + ",scope=" + (structured.plan().getScope() != null ? structured.plan().getScope().getType() : "null")
+                + ",rows=" + (structured.result() != null ? structured.result().getRowCount() : 0));
+        ev.setContent(structured.answer());
         ev.setScore(1.0);
         resp.setEvidence(List.of(ev));
-        resp.setStages(buildAggregateStages(resp.getElapsedMs(), "SUCCEEDED"));
+        resp.setStages(buildStructuredStages(resp.getElapsedMs(), "SUCCEEDED"));
         return resp;
     }
 
-    /** AG-09: KB_AGGREGATE 阶段时间轴(ANALYZE deterministic/ROUTE/AGGREGATE_LOOKUP/ANSWER, 其余 SKIPPED) */
-    private List<QueryStageTimingDTO> buildAggregateStages(int elapsedMs, String outcome) {
+    /** Structured Query 需要反问(scope/metric/operation 无法消解; 禁止猜测/随机) */
+    private EvidenceEvaluateRespVO buildStructuredClarifyResp(String traceId, String query, List<ChatTurnDTO> history,
+                                                              StructuredQueryService.HandleResult structured, long start) {
+        Judgement j = buildJudgement(false, 0.0, structured.clarificationQuestion(), 0, 0);
+        EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
+        resp.setRoute("CLARIFY");
+        resp.setIntent("STRUCTURED_CLARIFY");
+        resp.setClarifyQuestion(structured.clarificationQuestion());
+        resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+        resp.setStages(buildStructuredStages(resp.getElapsedMs(), "CLARIFY"));
+        return resp;
+    }
+
+    private String subTypeIntent(StructuredQueryPlan plan) {
+        QueryType type = plan.getQueryType();
+        return "STRUCTURED_" + (type == null ? "QUERY" : type.name());
+    }
+
+    /** Structured Query 阶段时间轴(CONTEXT_RESOLVE/ANALYZE/PLAN/SCOPE_RESOLVE/METRIC_RESOLVE/STRUCTURED_EXECUTE/ANSWER, 其余 SKIPPED) */
+    private List<QueryStageTimingDTO> buildStructuredStages(int elapsedMs, String outcome) {
         List<QueryStageTimingDTO> stages = new ArrayList<>();
         int seq = 0;
         stages.add(buildStage("ANALYZE", ++seq, 1, "SUCCEEDED", null, null));
-        stages.add(buildStage("ROUTE", ++seq, 0, "SUCCEEDED", null, null));
-        stages.add(buildStage("AGGREGATE_LOOKUP", ++seq, elapsedMs, outcome, null, null));
+        stages.add(buildStage("CONTEXT_RESOLVE", ++seq, 1, "SUCCEEDED", null, null));
+        stages.add(buildStage("PLAN", ++seq, 1, "SUCCEEDED", null, null));
+        stages.add(buildStage("SCOPE_RESOLVE", ++seq, 1, "SUCCEEDED", null, null));
+        stages.add(buildStage("METRIC_RESOLVE", ++seq, 1, "SUCCEEDED", null, null));
+        stages.add(buildStage("STRUCTURED_EXECUTE", ++seq, Math.max(0, elapsedMs - 5), outcome, null, null));
         stages.add(buildStage("ANSWER", ++seq, 0, "SUCCEEDED", null, null));
         stages.add(buildStage("BM25", ++seq, 0, "SKIPPED", null, null));
         stages.add(buildStage("VECTOR", ++seq, 0, "SKIPPED", null, null));
+        stages.add(buildStage("FUSION", ++seq, 0, "SKIPPED", null, null));
         stages.add(buildStage("RERANK", ++seq, 0, "SKIPPED", null, null));
         stages.add(buildStage("GENERATE", ++seq, 0, "SKIPPED", null, null));
         stages.add(buildStage("VERIFY", ++seq, 0, "SKIPPED", null, null));
