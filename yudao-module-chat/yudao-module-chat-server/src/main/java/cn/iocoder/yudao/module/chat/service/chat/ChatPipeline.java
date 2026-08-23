@@ -182,6 +182,7 @@ public class ChatPipeline {
         // P0-08: 会话上下文就绪 → 输出 conversation + 粗粒度阶段(已理解问题/已锁定知识库)
         if (sink != null) {
             if (sink.isCancelled()) {
+                // SSE-03: 客户端取消属于正常终态, 返回 null 由 Controller 幂等 complete 收尾(不再二次 complete)
                 log.info("[stream][traceId({}) 客户端取消, 中止]", traceId);
                 return null;
             }
@@ -215,7 +216,9 @@ public class ChatPipeline {
         // P0-08: 进入证据判定前输出 EVIDENCE RUNNING(同步 RPC 阻塞期间用户看到"正在检索/生成")
         if (sink != null) {
             if (sink.isCancelled()) {
+                // SSE-03: 客户端取消属于正常终态; Query Trace 终态记为 CLIENT_CANCELLED(SSE-08)
                 log.info("[stream][traceId({}) 客户端取消, 中止]", traceId);
+                queryTraceService.finish(traceId, null, System.currentTimeMillis() - traceStartMs, "CLIENT_CANCELLED");
                 return null;
             }
             emitStage(sink, QueryStageEnum.EVIDENCE.getCode(), "RUNNING", "正在评估证据、检索知识", 0L, null, null, null, null);
@@ -230,7 +233,7 @@ public class ChatPipeline {
         // P0-08: RPC 返回后若客户端已断开, 不再生成/落库 AI 消息(USER 消息已保留)
         if (sink != null && sink.isCancelled()) {
             log.info("[stream][traceId({}) 客户端取消, 不再生成/落库]", traceId);
-            queryTraceService.finish(traceId, null, System.currentTimeMillis() - traceStartMs, "CANCELLED");
+            queryTraceService.finish(traceId, null, System.currentTimeMillis() - traceStartMs, "CLIENT_CANCELLED");
             return null;
         }
 

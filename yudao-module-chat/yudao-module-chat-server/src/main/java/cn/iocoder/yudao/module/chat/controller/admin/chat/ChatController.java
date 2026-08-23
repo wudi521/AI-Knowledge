@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.chat.controller.admin.chat;
 
+import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
@@ -61,6 +62,13 @@ public class ChatController {
         return success(BeanUtils.toBean(result, ChatSendRespVO.class));
     }
 
+    /**
+     * SSE 流式发送。SSE-08: 禁用普通业务 ApiAccessLog——MVC afterCompletion 只能体现 HTTP
+     * handshake 耗时(约 0ms), 无法表达真实 SSE 生命周期; 真实生命周期由 Query Trace 记录
+     * (startTime/endTime/totalMs/terminalStatus)。禁用后同时规避访问日志异步写 infra 失败
+     * 对 Chat 主请求的间接干扰(SSE-09)。
+     */
+    @ApiAccessLog(enable = false)
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @Operation(summary = "流式发送消息(SSE: conversation/stage/evidence/delta/verification/done/error)")
     @PreAuthorize("@ss.hasPermission('chat:chat:send')")
@@ -105,6 +113,10 @@ public class ChatController {
                 if (userId != null) {
                     streamInflight.remove(userId);
                 }
+                // SSE-04: complete 幂等——仅 OPEN→COMPLETED 才真正 emitter.complete();
+                // 已 CLIENT_CANCELLED(客户端断开/停止)/TIMEOUT/ERROR/COMPLETED 时为 no-op,
+                // 不再对已关闭连接二次 complete(避免 Tomcat MimeHeaders.setValue NPE)。
+                // 客户端取消属于正常终态: 不在此处 completeWithError。
                 sink.complete();
             }
         });
