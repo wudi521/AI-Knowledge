@@ -19,7 +19,9 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 冲突判定器: 同主题证据对(规则) + LLM 结构化判定 + 程序级一致性校验。
+ * 通用证据冲突判定器。
+ * PATENT 文献默认不使用“客服政策冲突”门禁：不同专利、不同权利要求、不同实施例的差异本身就是正常研究对象，
+ * 不能因为文字不同就阻断回答；专利领域的矛盾/对比应由专门的 Patent Evidence Policy 在后续版本实现。
  */
 @Slf4j
 @Component
@@ -28,7 +30,6 @@ public class ConflictDetector {
     private static final double TOPIC_SIMILARITY_THRESHOLD = 0.5;
     private static final int MAX_CANDIDATE_PAIRS = 10;
     private static final int CONTENT_MAX_LEN = 300;
-
     private static final List<String> NON_CONFLICT_REASON_MARKERS = List.of(
             "无矛盾", "没有矛盾", "不存在矛盾", "无冲突", "没有冲突", "不存在冲突",
             "描述一致", "说法一致", "内容一致", "两者一致", "相同", "一致，无", "一致,无"
@@ -39,219 +40,129 @@ public class ConflictDetector {
             仅仅是内容不同、信息互补、一个更详细、来自不同文档或不同实施例，都不算冲突。
             只输出 JSON，不要输出任何其他文字：
             {"conflicts":[{"pair":[0,1],"conflict":true,"reason":"两条证据在同一事实点上的互斥内容"}]}
-            要求:
-            1. conflicts 数组必须包含给出的全部证据对；
-            2. pair 原样回填证据编号；
-            3. 只有确实互斥时 conflict=true；
-            4. 若两条证据一致、相同、互补、范围不同或无法判断，conflict=false 且 reason=""；
-            5. 严禁出现 conflict=true 但 reason 又写“无矛盾/一致/不冲突”的自相矛盾结果。
+            要求: conflicts 包含全部证据对；pair 原样回填；只有确实互斥时 conflict=true；
+            一致、互补、范围不同或无法判断一律 conflict=false；严禁 true 与“无矛盾/一致”同时出现。
             """;
 
-    @Resource
-    private ModelApi modelApi;
-    @Resource
-    private PromptSupport promptSupport;
+    @Resource private ModelApi modelApi;
+    @Resource private PromptSupport promptSupport;
 
     public List<Conflict> detect(List<Evidence> evidences) {
-        if (evidences == null || evidences.size() < 2) {
-            return List.of();
-        }
-        // 专利精确 Claim 查询: 同一申请、同一 claim 的多个命中本质是同一法定文本的重复/补充表示，
-        // 不应调用通用“客服冲突检测”产生额外延迟或误杀。
-        if (isSamePatentExactClaim(evidences)) {
-            log.debug("[detect][同一专利同一权利要求证据, 跳过冲突检测]");
+        if (evidences == null || evidences.size() < 2) return List.of();
+        if (isPatentEvidenceSet(evidences)) {
+            log.debug("[detect][PATENT 证据集跳过通用冲突检测, evidenceCount={}]", evidences.size());
             return List.of();
         }
         List<int[]> pairs = buildCandidatePairs(evidences);
-        if (pairs.isEmpty()) {
-            return List.of();
-        }
-        String resp;
+        if (pairs.isEmpty()) return List.of();
         try {
             ModelChatReqDTO req = new ModelChatReqDTO();
             req.setSystem(promptSupport.get("conflict-detect", SYSTEM_PROMPT));
             req.setUser(buildUserPrompt(evidences, pairs));
-            resp = modelApi.chat(req).getCheckedData();
+            return parseConflicts(modelApi.chat(req).getCheckedData(), pairs);
         } catch (Exception e) {
             log.warn("[detect][LLM 冲突判定调用异常, 保守降级为无冲突: {}]", e.getMessage());
             return List.of();
         }
-        return parseConflicts(resp, pairs);
     }
 
-    private boolean isSamePatentExactClaim(List<Evidence> evidences) {
-        String applicationNo = null;
-        Integer claimNo = null;
-        boolean sawPatentClaim = false;
+    private boolean isPatentEvidenceSet(List<Evidence> evidences) {
+        boolean sawPatent = false;
         for (Evidence evidence : evidences) {
-            if (evidence == null || StrUtil.isBlank(evidence.getChunkMetadata())) {
-                return false;
-            }
+            if (evidence == null || StrUtil.isBlank(evidence.getChunkMetadata())) return false;
             try {
                 JSONObject meta = JSONUtil.parseObj(evidence.getChunkMetadata());
-                if (!"PATENT".equalsIgnoreCase(meta.getStr("domainCode"))
-                        || !"CLAIMS".equalsIgnoreCase(meta.getStr("sectionType"))) {
-                    return false;
-                }
-                String app = meta.getStr("applicationNo");
-                Integer claim = meta.getInt("claimNo");
-                if (StrUtil.isBlank(app) || claim == null) {
-                    return false;
-                }
-                if (!sawPatentClaim) {
-                    applicationNo = app;
-                    claimNo = claim;
-                    sawPatentClaim = true;
-                } else if (!applicationNo.equals(app) || !claimNo.equals(claim)) {
-                    return false;
-                }
+                if (!"PATENT".equalsIgnoreCase(meta.getStr("domainCode"))) return false;
+                sawPatent = true;
             } catch (Exception e) {
                 return false;
             }
         }
-        return sawPatentClaim;
+        return sawPatent;
     }
 
     private List<int[]> buildCandidatePairs(List<Evidence> evidences) {
         List<int[]> all = new ArrayList<>();
         for (int i = 0; i < evidences.size() - 1; i++) {
             for (int j = i + 1; j < evidences.size(); j++) {
-                String contentA = evidences.get(i).getContent();
-                String contentB = evidences.get(j).getContent();
-                if (StrUtil.isBlank(contentA) || StrUtil.isBlank(contentB)) {
-                    continue;
-                }
-                if (EvidenceSimilarity.similarity(contentA, contentB) >= TOPIC_SIMILARITY_THRESHOLD) {
-                    all.add(new int[]{i, j});
-                }
+                String a = evidences.get(i).getContent(), b = evidences.get(j).getContent();
+                if (StrUtil.isBlank(a) || StrUtil.isBlank(b)) continue;
+                if (EvidenceSimilarity.similarity(a, b) >= TOPIC_SIMILARITY_THRESHOLD) all.add(new int[]{i, j});
             }
         }
         if (all.size() > MAX_CANDIDATE_PAIRS) {
             all.sort((a, b) -> Double.compare(
                     EvidenceSimilarity.similarity(evidences.get(b[0]).getContent(), evidences.get(b[1]).getContent()),
                     EvidenceSimilarity.similarity(evidences.get(a[0]).getContent(), evidences.get(a[1]).getContent())));
-            log.warn("[detect][同主题候选对共 {} 对, 按相似度降序截断至前 {} 对]", all.size(), MAX_CANDIDATE_PAIRS);
             return new ArrayList<>(all.subList(0, MAX_CANDIDATE_PAIRS));
         }
         return all;
     }
 
     private String buildUserPrompt(List<Evidence> evidences, List<int[]> pairs) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("请审查以下 ").append(pairs.size()).append(" 对证据:\n\n");
+        StringBuilder sb = new StringBuilder("请审查以下 ").append(pairs.size()).append(" 对证据:\n\n");
         for (int k = 0; k < pairs.size(); k++) {
-            int a = pairs.get(k)[0];
-            int b = pairs.get(k)[1];
-            sb.append("证据对 ").append(k + 1).append(":\n");
-            sb.append("证据[").append(a).append("]: ").append(truncate(evidences.get(a).getContent())).append('\n');
-            sb.append("证据[").append(b).append("]: ").append(truncate(evidences.get(b).getContent())).append("\n\n");
+            int a = pairs.get(k)[0], b = pairs.get(k)[1];
+            sb.append("证据对 ").append(k + 1).append(":\n证据[").append(a).append("]: ")
+                    .append(truncate(evidences.get(a).getContent())).append("\n证据[").append(b).append("]: ")
+                    .append(truncate(evidences.get(b).getContent())).append("\n\n");
         }
         return sb.toString();
     }
 
     private String truncate(String content) {
-        if (content == null) {
-            return "";
-        }
-        if (content.length() <= CONTENT_MAX_LEN) {
-            return content;
-        }
-        return content.substring(0, CONTENT_MAX_LEN) + "…";
+        if (content == null) return "";
+        return content.length() <= CONTENT_MAX_LEN ? content : content.substring(0, CONTENT_MAX_LEN) + "…";
     }
 
     private List<Conflict> parseConflicts(String resp, List<int[]> pairs) {
         try {
-            if (StrUtil.isBlank(resp)) {
-                log.warn("[detect][LLM 响应为空, 视为无冲突]");
-                return List.of();
-            }
+            if (StrUtil.isBlank(resp)) return List.of();
             String jsonText = JsonExtract.extractObject(resp);
-            if (jsonText == null) {
-                log.warn("[detect][LLM 响应未包含 JSON 对象, 视为无冲突: {}]", StrUtil.maxLength(resp, 200));
-                return List.of();
-            }
-            JSONObject root = JSONUtil.parseObj(jsonText);
-            JSONArray conflicts = root.getJSONArray("conflicts");
-            if (conflicts == null) {
-                log.warn("[detect][LLM 响应缺少 conflicts 字段, 视为无冲突]");
-                return List.of();
-            }
+            if (jsonText == null) return List.of();
+            JSONArray conflicts = JSONUtil.parseObj(jsonText).getJSONArray("conflicts");
+            if (conflicts == null) return List.of();
             List<Conflict> result = new ArrayList<>();
-            for (int k = 0; k < conflicts.size(); k++) {
-                Conflict conflict = parseEntry(conflicts.getJSONObject(k), pairs);
-                if (conflict != null) {
-                    result.add(conflict);
-                }
+            for (int i = 0; i < conflicts.size(); i++) {
+                Conflict conflict = parseEntry(conflicts.getJSONObject(i), pairs);
+                if (conflict != null) result.add(conflict);
             }
             return result;
         } catch (Exception e) {
-            log.warn("[detect][LLM 冲突结果解析失败, 保守降级为无冲突: {}]", e.getMessage());
+            log.warn("[detect][LLM 冲突结果解析失败, 视为无冲突: {}]", e.getMessage());
             return List.of();
         }
     }
 
     private Conflict parseEntry(JSONObject entry, List<int[]> pairs) {
-        if (entry == null) {
-            return null;
-        }
+        if (entry == null) return null;
         try {
             JSONArray pairArr = entry.getJSONArray("pair");
-            if (pairArr == null || pairArr.size() < 2) {
-                return null;
-            }
-            int a = pairArr.getInt(0);
-            int b = pairArr.getInt(1);
-            if (a > b) {
-                int tmp = a;
-                a = b;
-                b = tmp;
-            }
-            if (!containsPair(pairs, a, b)) {
-                log.warn("[detect][LLM 返回的 pair [{},{}] 不在候选对中, 跳过]", a, b);
-                return null;
-            }
-            if (!Boolean.TRUE.equals(entry.getBool("conflict", false))) {
-                return null;
-            }
+            if (pairArr == null || pairArr.size() < 2) return null;
+            int a = pairArr.getInt(0), b = pairArr.getInt(1);
+            if (a > b) { int t = a; a = b; b = t; }
+            if (!containsPair(pairs, a, b) || !Boolean.TRUE.equals(entry.getBool("conflict", false))) return null;
             String reason = StrUtil.nullToEmpty(entry.getStr("reason")).trim();
-            if (isSelfContradictoryConflictReason(reason)) {
-                log.warn("[detect][LLM 冲突判定自相矛盾, 降级为无冲突: pair=[{},{}], reason={}]", a, b, reason);
+            if (StrUtil.isBlank(reason) || isSelfContradictoryConflictReason(reason)) {
+                log.warn("[detect][自相矛盾/无原因的 conflict=true 被忽略: pair=[{},{}], reason={}]", a, b, reason);
                 return null;
             }
-            if (StrUtil.isBlank(reason)) {
-                log.warn("[detect][LLM conflict=true 但缺少原因, 降级为无冲突: pair=[{},{}]]", a, b);
-                return null;
-            }
-            return Conflict.builder()
-                    .evidenceIndexA(a)
-                    .evidenceIndexB(b)
-                    .reason(reason)
-                    .build();
+            return Conflict.builder().evidenceIndexA(a).evidenceIndexB(b).reason(reason).build();
         } catch (Exception e) {
-            log.warn("[detect][单条冲突记录解析失败, 跳过: {}]", e.getMessage());
             return null;
         }
     }
 
     private boolean isSelfContradictoryConflictReason(String reason) {
-        if (StrUtil.isBlank(reason)) {
-            return false;
-        }
-        String normalized = reason.toLowerCase(Locale.ROOT).replace(" ", "");
+        String normalized = StrUtil.nullToEmpty(reason).toLowerCase(Locale.ROOT).replace(" ", "");
         for (String marker : NON_CONFLICT_REASON_MARKERS) {
-            if (normalized.contains(marker.toLowerCase(Locale.ROOT).replace(" ", ""))) {
-                return true;
-            }
+            if (normalized.contains(marker.toLowerCase(Locale.ROOT).replace(" ", ""))) return true;
         }
         return false;
     }
 
     private boolean containsPair(List<int[]> pairs, int a, int b) {
-        for (int[] pair : pairs) {
-            if (pair[0] == a && pair[1] == b) {
-                return true;
-            }
-        }
+        for (int[] pair : pairs) if (pair[0] == a && pair[1] == b) return true;
         return false;
     }
 }
