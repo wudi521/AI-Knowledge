@@ -6,8 +6,11 @@ import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.ingestion.controller.admin.chunk.vo.ChunkPageReqVO;
 import cn.iocoder.yudao.module.ingestion.dal.dataobject.ChunkDO;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
 
@@ -57,6 +60,16 @@ public interface ChunkMapper extends BaseMapperX<ChunkDO> {
     default int deleteByVersionId(Long versionId) {
         return delete(new LambdaQueryWrapper<ChunkDO>().eq(ChunkDO::getVersionId, versionId));
     }
+
+    /**
+     * 按版本物理删除旧片段(重试入库用)
+     * <p>
+     * 不能用 MyBatis-Plus 逻辑删除: deleted=1 的旧行仍占用 uk_tenant_version_key(tenant_id,
+     * version_id, chunk_key), 而 chunkKey 每次重排都从 c000000 开始, 必然唯一键冲突。
+     */
+    @InterceptorIgnore(tenantLine = "true") // version_id 全局唯一, 无需租户条件
+    @Delete("DELETE FROM ai_chunk WHERE version_id = #{versionId}")
+    int deleteByVersionIdPhysical(@Param("versionId") Long versionId);
 
     /** 按版本查询片段 */
     default List<ChunkDO> selectListByVersionId(Long versionId) {

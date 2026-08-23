@@ -245,9 +245,21 @@ public class AiDocVersionServiceImpl implements AiDocVersionService {
         });
         // C5 阶段3.5(事务外): 级联清理被过期版本的检索索引(MySQL chunk 置 DISABLED + ES/Milvus 删除)
         cleanupExpiredVersionIndexes(version.getDocId(), versionId);
-        // 异步 LLM 意图/槽位总结(无活跃事务, 直接触发; 失败仅告警, 可手动 summarize 重跑)
-        intentSummarizer.summarizeByKbAsync(doc.getKbId());
-        slotSummarizer.summarizeByKbAsync(doc.getKbId());
+        // 异步 LLM 意图/槽位总结(客服类知识库专用; 专利等专业领域意图由领域固定集提供,
+        // 不自动总结——否则客服式意图如"合同条款"会污染专利意图分类)
+        boolean domainAutoSummarize = true;
+        try {
+            AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(doc.getKbId());
+            if (kb != null && "PATENT".equalsIgnoreCase(kb.getDomainCode())) {
+                domainAutoSummarize = false;
+            }
+        } catch (Exception summarizeEx) {
+            log.warn("[publish][知识库 {} 领域解析失败, 按自动总结处理: {}]", doc.getKbId(), summarizeEx.getMessage());
+        }
+        if (domainAutoSummarize) {
+            intentSummarizer.summarizeByKbAsync(doc.getKbId());
+            slotSummarizer.summarizeByKbAsync(doc.getKbId());
+        }
         log.info("[publish][版本 {} 发布完成, 文档 {}]", versionId, doc.getId());
     }
 

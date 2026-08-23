@@ -34,4 +34,8 @@ public interface DomainQueryPolicy {
     default List<String> supportedIntents() {
         return List.of();
     }
+    /** 是否启用发布后的客服式意图自动总结(GENERAL=true, PATENT=false——专利意图由领域固定集提供) */
+    default boolean enableAutoIntentSummary() {
+        return true;
+    }
 }
