@@ -55,6 +55,21 @@ public class QueryAnalysisService {
         QueryAnalysis result = new QueryAnalysis();
         result.setSuccess(false);
         PatentQueryPreParser.PatentQueryHints patentHints = preParsePatent(query, policy);
+
+        // 专利强结构著录查询不需要 LLM：编号 + 查询字段都已由规则确定，直接进入 EXACT_METADATA。
+        if (patentHints != null && patentHints.hasDeterministicExactMetadata()) {
+            applyPatentHints(result, patentHints, policy);
+            result.setIntent("BIBLIOGRAPHIC_LOOKUP");
+            result.setRoute("EXACT_METADATA");
+            result.setRewrites(List.of());
+            result.setSubQuestions(List.of());
+            result.setProducts(List.of());
+            result.setSuccess(true);
+            log.info("[analyze][PATENT EXACT_METADATA 规则短路 LLM, applicationNo={}, publicationNo={}, fields={}]",
+                    result.getApplicationNo(), result.getPublicationNo(), result.getMetadataFields());
+            return result;
+        }
+
         try {
             List<IntentDTO> effectiveIntents = effectiveIntents(intents, policy);
             ModelChatReqDTO req = new ModelChatReqDTO();
@@ -102,6 +117,7 @@ public class QueryAnalysisService {
         result.setPublicationNo(hints.getPublicationNo());
         result.setClaimNo(hints.getClaimNo());
         result.setClaimNos(hints.getClaimNos());
+        result.setMetadataFields(hints.getMetadataFields());
 
         if (hints.isClaimDependencyIntent()) result.setIntent("CLAIM_DEPENDENCY");
         else if (hints.isClaimIntent()) result.setIntent("CLAIM_LOOKUP");
@@ -112,7 +128,7 @@ public class QueryAnalysisService {
         }
 
         if (hints.hasExactClaim()) result.setRoute("EXACT_CLAIM");
-        else if (hints.hasExactDocumentIdentifier() && "BIBLIOGRAPHIC_LOOKUP".equals(result.getIntent())) result.setRoute("EXACT_METADATA");
+        else if (hints.hasDeterministicExactMetadata()) result.setRoute("EXACT_METADATA");
         else if (hints.hasExactDocumentIdentifier()) result.setRoute("SCOPED_RAG");
         else result.setRoute("HYBRID_RAG");
 
