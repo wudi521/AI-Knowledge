@@ -62,6 +62,20 @@ public class PatentSplitter {
         return result;
     }
 
+    /**
+     * 使用与真实切片完全相同的章节识别口径统计权利要求数量。
+     * 这样不会再用独立正则误命中封面“权利要求书1页 说明书2页”的页数汇总行。
+     */
+    public int countClaims(ParsedDocument doc) {
+        if (doc == null || doc.isEmpty()) return 0;
+        for (Section section : detectSections(doc)) {
+            if (!SEC_CLAIMS.equals(section.type)) continue;
+            List<ParsedDocument.Element> elements = doc.getElements().subList(section.start, section.end);
+            return parseClaims(elements).size();
+        }
+        return 0;
+    }
+
     private record Section(String type, String title, int start, int end) {}
     private record PageRange(int start, int end) {}
 
@@ -89,10 +103,14 @@ public class PatentSplitter {
         String t = text == null ? "" : text.trim();
         if (t.isEmpty()) return null;
         String compact = t.replaceAll("[\\s\\u3000]+", "");
+        // 真实专利章节页常见“权利要求书1/1页”；优先作为章节边界。
         if (compact.matches(".*[0-9]+/[0-9]+页.*")) {
-            for (Map.Entry<String, String> e : SECTION_TITLES.entrySet()) if (compact.contains(e.getKey())) return e.getValue();
+            for (Map.Entry<String, String> e : SECTION_TITLES.entrySet()) {
+                if (compact.contains(e.getKey())) return e.getValue();
+            }
             return null;
         }
+        // 封面常见“权利要求书1页 说明书2页 附图1页”，只是页数汇总，不是章节边界。
         if (compact.matches(".*[0-9]+页.*")) return null;
         for (Map.Entry<String, String> e : SECTION_TITLES.entrySet()) {
             if (compact.startsWith(e.getKey()) || compact.contains(e.getKey())) return e.getValue();
@@ -100,15 +118,22 @@ public class PatentSplitter {
         return null;
     }
 
-    private List<Chunk> splitClaims(List<ParsedDocument.Element> elements, PatentMetadata metadata) {
-        List<Chunk> result = new ArrayList<>();
+    private List<PatentClaimParser.PatentClaim> parseClaims(List<ParsedDocument.Element> elements) {
         StringBuilder claimsText = new StringBuilder();
         for (ParsedDocument.Element e : elements) {
+            // 图片 text() 可能携带 contextBefore，从而重复带入权利要求正文；统计和切片都统一排除。
             if (e instanceof ParsedDocument.ImageElement) continue;
             claimsText.append(e.text()).append('\n');
         }
-        List<PatentClaimParser.PatentClaim> claims = claimParser.parse(claimsText.toString());
-        if (claims.isEmpty()) return splitDescription(new Section(SEC_CLAIMS, "权利要求书", 0, elements.size()), elements, metadata, 500);
+        return claimParser.parse(claimsText.toString());
+    }
+
+    private List<Chunk> splitClaims(List<ParsedDocument.Element> elements, PatentMetadata metadata) {
+        List<Chunk> result = new ArrayList<>();
+        List<PatentClaimParser.PatentClaim> claims = parseClaims(elements);
+        if (claims.isEmpty()) {
+            return splitDescription(new Section(SEC_CLAIMS, "权利要求书", 0, elements.size()), elements, metadata, 500);
+        }
 
         Map<Integer, PageRange> pageRanges = resolveClaimPageRanges(elements);
         for (PatentClaimParser.PatentClaim claim : claims) {
@@ -182,7 +207,9 @@ public class PatentSplitter {
             if (!(e instanceof ParsedDocument.ImageElement) && matchSection(t) != null) continue;
             if (current.length() > 0 && SplitUtils.estimateTokens(current.toString()) + SplitUtils.estimateTokens(t) > targetTokens) {
                 result.add(descriptionChunk(section, current.toString(), metadata, pageStart, pageEnd));
-                current.setLength(0); pageStart = -1; pageEnd = -1;
+                current.setLength(0);
+                pageStart = -1;
+                pageEnd = -1;
             }
             if (current.length() > 0) current.append('\n');
             current.append(t);
@@ -249,7 +276,7 @@ public class PatentSplitter {
         if (dependsOn != null) m.put("dependsOn", dependsOn);
         if (pageStart > 0) m.put("pageStart", pageStart);
         if (pageEnd > 0) m.put("pageEnd", pageEnd);
-        m.put("extractorVersion", "patent-mvp-1.2");
+        m.put("extractorVersion", "patent-mvp-1.3");
         return m;
     }
 }
