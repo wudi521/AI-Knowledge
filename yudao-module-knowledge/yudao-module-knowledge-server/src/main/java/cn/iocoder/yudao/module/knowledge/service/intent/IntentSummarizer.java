@@ -6,6 +6,8 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.intent.AiIntentDO;
+import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
+import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.service.common.PublishedContentCollector;
 import cn.iocoder.yudao.module.knowledge.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.model.api.ModelApi;
@@ -20,22 +22,12 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 
 /**
- * 知识库意图总结器(LLM): 拉取知识库已发布内容 -> LLM 总结客户意图 -> 覆盖式写入 LLM_AUTO 意图
- * <p>
- * 失败语义: 任何失败(Feign/LLM/解析/落库)只 log.warn 并返回 -1, 绝不抛出,
- * 保证发布流程/手动接口不被 LLM 故障拖垮; LLM_AUTO 由 replaceAutoIntents 覆盖重写, MANUAL 永远保留。
+ * 知识库意图总结器。当前自动总结属于 GENERAL 客服能力；PATENT 使用固定领域意图，不参与该流程。
  */
 @Slf4j
 @Component
 public class IntentSummarizer {
 
-    /**
-     * 意图总结专用线程池(守护线程, 不阻止 JVM 退出; 单线程避免并发重复总结同一知识库)
-     * 任务包装 TtlRunnable, 传递发布/请求线程的租户上下文(TenantBaseDO 落库必需)
-     * <p>
-     * P2-18: 有界队列(100) + 拒绝告警——一个知识库总结卡死(LLM 挂起)时,
-     * 后续任务被拒绝并记录, 不无限堆积内存; 单线程语义保持(不并发重复总结)
-     */
     private static final ExecutorService ASYNC_EXECUTOR = new java.util.concurrent.ThreadPoolExecutor(
             1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
             new java.util.concurrent.ArrayBlockingQueue<>(100),
@@ -51,14 +43,11 @@ public class IntentSummarizer {
             只输出合法 JSON, 不要输出其他文字。格式: {"intents":[{"name":"保修","description":"保修期与免费维修政策"}]}
             要求:
             1. 意图名简短名词, 覆盖该库实际内容, 不要编造库中不存在的业务;
-            2. 内容含价格/收费/计费/费用/合同条款时, 必须提炼出"收费/定价"或"合同条款"类意图(如"收费","费用说明","合同条款"), 不得遗漏;
-            3. 内容为多类文档混合(如行业报告+FAQ+合同)时, 意图应覆盖各类文档的客户问题, 而非只覆盖部分。
+            2. 内容含价格/收费/计费/费用/合同条款时, 必须提炼出"收费/定价"或"合同条款"类意图;
+            3. 内容为多类文档混合时, 意图应覆盖各类文档的客户问题。
             """;
 
-    /** 意图名字段上限(varchar(64)) */
     private static final int MAX_NAME_LEN = 64;
-
-    /** 意图说明字段上限(varchar(500)) */
     private static final int MAX_DESC_LEN = 500;
 
     @Resource
@@ -69,22 +58,23 @@ public class IntentSummarizer {
     private ModelApi modelApi;
     @Resource
     private PromptSupport promptSupport;
+    @Resource
+    private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
 
-    /**
-     * 同步总结知识库意图(手动 summarize 与异步任务共用)
-     *
-     * @param kbId 知识库编号
-     * @return 新生成的意图数; 无已发布内容返回 0; 任何失败返回 -1(绝不抛异常)
-     */
     public int summarizeByKb(Long kbId) {
         try {
-            // 1. 收集知识库已发布内容(≤40 片段 × 200 字, 跨版本均衡采样)
+            AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(kbId);
+            if (kb != null && "PATENT".equalsIgnoreCase(kb.getDomainCode())) {
+                log.info("[summarizeByKb][知识库 {} 为 PATENT, 使用固定领域意图, 跳过客服自动意图总结]", kbId);
+                return 0;
+            }
+
             String content = publishedContentCollector.collectPublishedContent(kbId);
             if (StrUtil.isBlank(content)) {
                 log.warn("[summarizeByKb][知识库 {} 无已发布内容, 跳过总结]", kbId);
                 return 0;
             }
-            // 2. LLM 总结
+
             ModelChatReqDTO req = new ModelChatReqDTO();
             req.setSystem(promptSupport.get("intent-summarize", SYSTEM_PROMPT));
             req.setUser(content);
@@ -98,20 +88,15 @@ public class IntentSummarizer {
                 log.warn("[summarizeByKb][知识库 {} LLM 输出无可解析意图, 跳过; 原文: {}]", kbId, resp);
                 return -1;
             }
-            // 3. 覆盖写入 LLM_AUTO(事务内; MANUAL 保留)
             intentService.replaceAutoIntents(kbId, intents);
             log.info("[summarizeByKb][知识库 {} 意图总结完成: {} 个意图]", kbId, intents.size());
             return intents.size();
         } catch (Exception e) {
-            // 任何失败不上抛, 保留旧意图; 可通过手动 summarize 重跑
             log.warn("[summarizeByKb][知识库 {} 意图总结失败: {}]", kbId, e.getMessage(), e);
             return -1;
         }
     }
 
-    /**
-     * 异步总结: 立即返回不阻塞调用方; 内部 try/catch 保证绝不抛出
-     */
     public void summarizeByKbAsync(Long kbId) {
         Runnable task = () -> {
             try {
@@ -120,12 +105,9 @@ public class IntentSummarizer {
                 log.warn("[summarizeByKbAsync][知识库 {} 意图总结异常: {}]", kbId, e.getMessage(), e);
             }
         };
-        ASYNC_EXECUTOR.execute(TtlRunnable.get(task)); // 传递租户上下文
+        ASYNC_EXECUTOR.execute(TtlRunnable.get(task));
     }
 
-    /**
-     * 解析 LLM 输出 {"intents":[{"name","description"}]}; 容错截取首个 { 到末个 }
-     */
     private List<AiIntentDO> parseIntents(String resp) {
         int start = resp.indexOf('{');
         int end = resp.lastIndexOf('}');
@@ -140,19 +122,17 @@ public class IntentSummarizer {
         List<AiIntentDO> intents = new ArrayList<>();
         for (Object o : arr) {
             if (!(o instanceof JSONObject obj)) {
-                continue; // 模型输出非对象元素时跳过, 不中断整批
+                continue;
             }
             String name = StrUtil.nullToEmpty(obj.getStr("name")).trim();
             if (StrUtil.isBlank(name)) {
                 continue;
             }
-            AiIntentDO intent = AiIntentDO.builder()
+            intents.add(AiIntentDO.builder()
                     .name(StrUtil.sub(name, 0, MAX_NAME_LEN))
                     .description(StrUtil.sub(StrUtil.nullToEmpty(obj.getStr("description")), 0, MAX_DESC_LEN))
-                    .build();
-            intents.add(intent);
+                    .build());
         }
         return intents;
     }
-
 }
