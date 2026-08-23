@@ -2,9 +2,11 @@ package cn.iocoder.yudao.module.chat.controller.admin.conversation;
 
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
+import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.chat.controller.admin.conversation.vo.ConversationHistoryRespVO;
 import cn.iocoder.yudao.module.chat.controller.admin.conversation.vo.ConversationInfoVO;
 import cn.iocoder.yudao.module.chat.controller.admin.conversation.vo.ConversationPageReqVO;
@@ -35,6 +37,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
+import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
 
 @Tag(name = "管理后台 - AI 会话")
 @Slf4j
@@ -69,8 +72,13 @@ public class ConversationController {
     @Operation(summary = "获取会话历史(会话信息 + 消息列表)")
     @PreAuthorize("@ss.hasPermission('chat:conversation:query')")
     public CommonResult<ConversationHistoryRespVO> history(@RequestParam("conversationId") Long conversationId) {
+        Long userId = SecurityFrameworkUtils.getLoginUserId();
+        AiConversationDO conversation = conversationService.getConversationForUser(conversationId, userId);
+        if (conversation == null) {
+            throw new ServiceException(CONVERSATION_NOT_EXISTS);
+        }
         ConversationHistoryRespVO resp = new ConversationHistoryRespVO();
-        resp.setConversation(BeanUtils.toBean(conversationService.getConversation(conversationId), ConversationInfoVO.class));
+        resp.setConversation(BeanUtils.toBean(conversation, ConversationInfoVO.class));
         resp.setMessages(convertMessages(messageService.getMessages(conversationId)));
         return success(resp);
     }

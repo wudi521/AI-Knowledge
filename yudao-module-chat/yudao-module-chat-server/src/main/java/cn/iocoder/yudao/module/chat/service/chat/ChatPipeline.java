@@ -19,6 +19,8 @@ import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceClaimDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO;
+import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
+import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -28,6 +30,7 @@ import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
@@ -59,26 +62,35 @@ public class ChatPipeline {
     private ChatProperties chatProperties;
     @Resource
     private List<ChannelAdapter> channelAdapters;
+    @Resource
+    private KnowledgeApi knowledgeApi;
 
     public ChatSendResult send(Long conversationId, String message, String channel, String customerId) {
-        return send(conversationId, message, channel, customerId, null);
+        return send(conversationId, message, channel, customerId, (Long) null);
     }
 
     /**
-     * 带知识库绑定的发送。
-     * 修复点: 必须先创建/校验会话，再读写会话绑定；新会话不得 bindKbIds(null, ...)。
+     * 发送消息。知识库上下文由新会话请求或既有会话的持久化绑定决定。
      */
     public ChatSendResult send(Long conversationId, String message, String channel, String customerId,
-                               List<Long> kbIds) {
+                               Long kbId) {
         String resolvedChannel = resolveChannel(channel);
+        LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
+        Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
+        Long userId = loginUser != null ? loginUser.getId() : null;
 
         // 1. 先解析/创建会话，确保后续所有会话级操作都有真实 conversationId。
         AiConversationDO conversation;
+        KnowledgeContext knowledgeContext;
+        List<Long> effectiveKbIds;
         if (conversationId == null) {
-            conversation = conversationService.createConversation(resolvedChannel, customerId);
+            knowledgeContext = resolveKnowledgeContext(kbId, userId);
+            conversation = conversationService.createConversation(resolvedChannel, customerId,
+                    knowledgeContext.kbId(), knowledgeContext.domainCode(), userId);
             conversationId = conversation.getId();
+            effectiveKbIds = List.of(knowledgeContext.kbId());
         } else {
-            conversation = conversationService.getConversation(conversationId);
+            conversation = conversationService.getConversationForUser(conversationId, userId);
             if (conversation == null) {
                 throw new ServiceException(CONVERSATION_NOT_EXISTS);
             }
@@ -86,19 +98,18 @@ public class ChatPipeline {
                 log.warn("[send][会话({}) 已关闭, 忽略新消息: {}]", conversationId, message);
                 return buildClosedResult(conversationId);
             }
-        }
-
-        // 2. 再解析知识库范围。请求显式 kbIds 优先；否则复用会话已有绑定。
-        List<Long> effectiveKbIds = kbIds;
-        if (effectiveKbIds == null || effectiveKbIds.isEmpty()) {
-            effectiveKbIds = conversationService.getBoundKbIds(conversationId);
-        }
-        if (effectiveKbIds == null || effectiveKbIds.isEmpty()) {
-            log.info("[send][会话({}) 未绑定知识库, 拒绝默认全库检索: {}]", conversationId, message);
-            return buildKbRequiredResult(conversationId);
-        }
-        if (kbIds != null && !kbIds.isEmpty()) {
-            conversationService.bindKbIds(conversationId, kbIds);
+            Long persistedKbId = conversation.getKbId();
+            if (persistedKbId == null) {
+                persistedKbId = resolveLegacyKbId(conversation.getKbIds());
+                if (persistedKbId == null) {
+                    log.info("[send][会话({}) 未绑定知识库, 拒绝默认全库检索: {}]", conversationId, message);
+                    return buildKbRequiredResult(conversationId);
+                }
+                knowledgeContext = resolveKnowledgeContext(persistedKbId, userId);
+            } else {
+                knowledgeContext = new KnowledgeContext(persistedKbId, conversation.getDomainCode());
+            }
+            effectiveKbIds = List.of(knowledgeContext.kbId());
         }
 
         // 3. USER 落库前读取历史，天然排除当前轮。
@@ -112,22 +123,57 @@ public class ChatPipeline {
         String manualReason = transferHandler.detectTransferReason(message);
         if (manualReason != null) {
             return transferHandler.handleTransfer(conversationId, message,
-                    buildManualTransferResult(conversationId, message, manualReason));
+                    buildManualTransferResult(conversation, knowledgeContext, message, manualReason));
         }
 
         // 6. 证据判定。
-        LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
-        Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
-        Long userId = loginUser != null ? loginUser.getId() : null;
         EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null, history, effectiveKbIds);
 
         if (isClarifyRequired(resp)) {
-            return buildClarifyResult(conversationId, resp);
+            return buildClarifyResult(conversation, knowledgeContext, resp);
         }
         if (isAnswerable(resp)) {
-            return buildAnswerResult(conversationId, resp);
+            return buildAnswerResult(conversation, knowledgeContext, resp);
         }
-        return transferHandler.handleTransfer(conversationId, message, buildTransferResult(conversationId, message, resp));
+        return transferHandler.handleTransfer(conversationId, message,
+                buildTransferResult(conversation, knowledgeContext, message, resp));
+    }
+
+    private KnowledgeContext resolveKnowledgeContext(Long kbId, Long userId) {
+        if (kbId == null || kbId <= 0) {
+            throw new ServiceException(cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_BASE_NOT_EXISTS);
+        }
+        CommonResult<Set<Long>> visibleResult = knowledgeApi.getVisibleKbIds(userId);
+        if (visibleResult == null || !visibleResult.isSuccess() || visibleResult.getData() == null
+                || !visibleResult.getData().contains(kbId)) {
+            throw new ServiceException(cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.KNOWLEDGE_BASE_NOT_EXISTS);
+        }
+        String domainCode = "GENERAL";
+        CommonResult<Map<Long, String>> domainResult = knowledgeApi.getKbDomainCodes(List.of(kbId));
+        if (domainResult != null && domainResult.isSuccess() && domainResult.getData() != null) {
+            domainCode = StrUtil.blankToDefault(domainResult.getData().get(kbId), "GENERAL");
+        }
+        return new KnowledgeContext(kbId, domainCode);
+    }
+
+    private Long resolveLegacyKbId(String kbIds) {
+        if (StrUtil.isBlank(kbIds)) {
+            return null;
+        }
+        for (String value : kbIds.split(",")) {
+            try {
+                long parsed = Long.parseLong(value.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+            } catch (NumberFormatException ignored) {
+                // 跳过迁移期旧数据中的非法绑定值。
+            }
+        }
+        return null;
+    }
+
+    private record KnowledgeContext(Long kbId, String domainCode) {
     }
 
     private String resolveChannel(String channel) {
@@ -146,11 +192,17 @@ public class ChatPipeline {
                 && StrUtil.isNotBlank(resp.getClarifyQuestion());
     }
 
-    private ChatSendResult buildClarifyResult(Long conversationId, EvidenceEvaluateRespDTO resp) {
-        messageService.addMessage(conversationId, "AI", resp.getClarifyQuestion(),
+    private ChatSendResult buildClarifyResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
+                                              EvidenceEvaluateRespDTO resp) {
+        AiMessageDO aiMessage = messageService.addMessage(conversation.getId(), "AI", resp.getClarifyQuestion(),
                 null, null, null, null, resp.getTraceId());
         return ChatSendResult.builder()
-                .conversationId(conversationId)
+                .conversationId(conversation.getId())
+                .messageId(aiMessage != null ? aiMessage.getId() : null)
+                .kbId(knowledgeContext.kbId())
+                .domainCode(knowledgeContext.domainCode())
+                .intent(resolveIntent(resp))
+                .degraded(false)
                 .reply(resp.getClarifyQuestion())
                 .answerable(false)
                 .confidence(resp.getConfidence())
@@ -167,13 +219,19 @@ public class ChatPipeline {
                 && !Boolean.TRUE.equals(resp.getClaimFail());
     }
 
-    private ChatSendResult buildAnswerResult(Long conversationId, EvidenceEvaluateRespDTO resp) {
+    private ChatSendResult buildAnswerResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
+                                             EvidenceEvaluateRespDTO resp) {
         List<Long> citations = buildCitations(resp);
-        messageService.addMessage(conversationId, "AI", resp.getAnswer(),
+        AiMessageDO aiMessage = messageService.addMessage(conversation.getId(), "AI", resp.getAnswer(),
                 JSONUtil.toJsonStr(citations), null, null,
                 toConfidence(resp.getConfidence()), resp.getTraceId());
         return ChatSendResult.builder()
-                .conversationId(conversationId)
+                .conversationId(conversation.getId())
+                .messageId(aiMessage != null ? aiMessage.getId() : null)
+                .kbId(knowledgeContext.kbId())
+                .domainCode(knowledgeContext.domainCode())
+                .intent(resolveIntent(resp))
+                .degraded(false)
                 .reply(resp.getAnswer())
                 .answerable(true)
                 .confidence(resp.getConfidence())
@@ -202,11 +260,15 @@ public class ChatPipeline {
         return list;
     }
 
-    private ChatSendResult buildTransferResult(Long conversationId, String message, EvidenceEvaluateRespDTO resp) {
+    private ChatSendResult buildTransferResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
+                                               String message, EvidenceEvaluateRespDTO resp) {
         String transferReason = deriveTransferReason(resp);
         String summary = buildSummaryDraft(message, transferReason, resp);
         return ChatSendResult.builder()
-                .conversationId(conversationId)
+                .conversationId(conversation.getId())
+                .kbId(knowledgeContext.kbId())
+                .domainCode(knowledgeContext.domainCode())
+                .intent(resolveIntent(resp))
                 .reply(null)
                 .answerable(false)
                 .confidence(resp != null ? resp.getConfidence() : null)
@@ -215,12 +277,16 @@ public class ChatPipeline {
                 .transferRequired(true)
                 .transferReason(transferReason)
                 .summary(summary)
+                .degraded(isDegraded(resp))
                 .build();
     }
 
-    private ChatSendResult buildManualTransferResult(Long conversationId, String message, String reason) {
+    private ChatSendResult buildManualTransferResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
+                                                     String message, String reason) {
         return ChatSendResult.builder()
-                .conversationId(conversationId)
+                .conversationId(conversation.getId())
+                .kbId(knowledgeContext.kbId())
+                .domainCode(knowledgeContext.domainCode())
                 .reply(null)
                 .answerable(false)
                 .confidence(null)
@@ -229,6 +295,7 @@ public class ChatPipeline {
                 .transferRequired(true)
                 .transferReason(reason)
                 .summary(transferHandler.buildSummary(message, reason, null, null))
+                .degraded(false)
                 .build();
     }
 
@@ -238,6 +305,7 @@ public class ChatPipeline {
                 .reply("请先选择要查询的知识库(专利 MVP 一次选择一个), 再发送问题。")
                 .answerable(false)
                 .transferRequired(false)
+                .degraded(false)
                 .build();
     }
 
@@ -252,7 +320,16 @@ public class ChatPipeline {
                 .transferRequired(true)
                 .transferReason(TransferHandler.REASON_CLOSED)
                 .summary(null)
+                .degraded(false)
                 .build();
+    }
+
+    private String resolveIntent(EvidenceEvaluateRespDTO resp) {
+        return resp != null && resp.getAnalysis() != null ? resp.getAnalysis().getIntent() : null;
+    }
+
+    private boolean isDegraded(EvidenceEvaluateRespDTO resp) {
+        return resp == null || Boolean.TRUE.equals(resp.getClaimFail());
     }
 
     private List<ChatTurnDTO> buildHistory(List<AiMessageDO> recent) {

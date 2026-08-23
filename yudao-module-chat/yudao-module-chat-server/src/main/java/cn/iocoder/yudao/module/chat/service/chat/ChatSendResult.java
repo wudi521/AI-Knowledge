@@ -23,6 +23,24 @@ public class ChatSendResult {
     /** 会话编号(新建会话时为新建会话 id) */
     private Long conversationId;
 
+    /** 本次返回的最终消息编号 */
+    private Long messageId;
+
+    /** 本次会话使用的知识库编号 */
+    private Long kbId;
+
+    /** 本次会话使用的知识领域 */
+    private String domainCode;
+
+    /** 路由结果(评估响应未提供时为空) */
+    private String route;
+
+    /** 意图结果(评估响应未提供时为空) */
+    private String intent;
+
+    /** 是否为降级结果 */
+    private Boolean degraded;
+
     /** AI 回复内容(answerable=true 时有值) */
     private String reply;
 

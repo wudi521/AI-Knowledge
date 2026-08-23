@@ -15,6 +15,9 @@ public class ChatSendReqVO {
     @NotBlank(message = "消息不能为空")
     private String message;
 
+    /** 当前发送请求选择的知识库编号(新会话必填; 既有会话以后端持久化绑定为准) */
+    private Long kbId;
+
     /** 知识库编号列表(专利 MVP: 必须选择, 未选禁止发送; 后端再做可见交集) */
     private java.util.List<Long> kbIds;
 

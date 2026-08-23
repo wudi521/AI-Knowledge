@@ -9,6 +9,7 @@ import cn.iocoder.yudao.module.chat.dal.dataobject.conversation.AiConversationDO
 import cn.iocoder.yudao.module.chat.dal.mysql.conversation.AiConversationMapper;
 import cn.iocoder.yudao.module.chat.enums.conversation.ConversationStatusEnum;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -16,6 +17,7 @@ import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
 
+import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_CONTEXT_CONFLICT;
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
 
 /**
@@ -46,10 +48,95 @@ public class ConversationService {
     }
 
     /**
+     * 创建带知识库上下文的会话。
+     *
+     * <p>kbId 是会话的单值绑定；后续只能校验已有绑定，不能通过此方法覆盖。</p>
+     */
+    public AiConversationDO createConversation(String channel, String customerId, Long kbId,
+                                                String domainCode, Long userId) {
+        AiConversationDO conversation = new AiConversationDO();
+        conversation.setChannel(StrUtil.blankToDefault(channel, "WEB"));
+        conversation.setCustomerId(StrUtil.blankToDefault(customerId, "anonymous"));
+        conversation.setStatus(ConversationStatusEnum.ACTIVE.getStatus());
+        conversation.setKbId(kbId);
+        conversation.setDomainCode(StrUtil.blankToDefault(domainCode, "GENERAL"));
+        conversation.setUserId(userId);
+        aiConversationMapper.insert(conversation);
+        return conversation;
+    }
+
+    /**
      * 查询会话, 不存在返回 null
      */
     public AiConversationDO getConversation(Long id) {
         return aiConversationMapper.selectById(id);
+    }
+
+    /**
+     * 按当前用户读取会话。租户范围由 TenantBaseDO 对应的框架拦截器处理。
+     * 迁移期旧记录没有 user_id 时，仅允许纯数字 creator 作为兼容 owner。
+     */
+    public AiConversationDO getConversationForUser(Long id, Long userId) {
+        if (id == null || userId == null) {
+            return null;
+        }
+        AiConversationDO conversation = getConversation(id);
+        if (conversation == null) {
+            return null;
+        }
+        if (userId.equals(conversation.getUserId())) {
+            return conversation;
+        }
+        if (conversation.getUserId() != null || StrUtil.isBlank(conversation.getCreator())
+                || !conversation.getCreator().matches("\\d+")) {
+            return null;
+        }
+        try {
+            return userId.equals(Long.valueOf(conversation.getCreator())) ? conversation : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * 确保会话绑定指定知识库，绑定一旦存在不可覆盖。
+     * 相同绑定、空绑定以及无权访问均不产生写入；无权访问按会话不存在处理。
+     */
+    public void ensureBoundKb(Long conversationId, Long kbId, Long userId) {
+        AiConversationDO conversation = getConversationForUser(conversationId, userId);
+        if (conversation == null) {
+            throw new ServiceException(CONVERSATION_NOT_EXISTS);
+        }
+        if (kbId == null || kbId.equals(conversation.getKbId())) {
+            return;
+        }
+        if (conversation.getKbId() != null) {
+            throw new ServiceException(CONVERSATION_CONTEXT_CONFLICT);
+        }
+        UpdateWrapper<AiConversationDO> updateWrapper = new UpdateWrapper<AiConversationDO>()
+                .eq("id", conversationId)
+                .isNull("kb_id");
+        if (conversation.getUserId() != null) {
+            updateWrapper.eq("user_id", userId);
+        } else {
+            updateWrapper.isNull("user_id").eq("creator", conversation.getCreator());
+        }
+        int rows = aiConversationMapper.update(null, updateWrapper.set("kb_id", kbId));
+        if (rows > 0) {
+            return;
+        }
+
+        AiConversationDO refreshed = getConversationForUser(conversationId, userId);
+        if (refreshed == null) {
+            throw new ServiceException(CONVERSATION_NOT_EXISTS);
+        }
+        if (kbId.equals(refreshed.getKbId())) {
+            return;
+        }
+        if (refreshed.getKbId() != null) {
+            throw new ServiceException(CONVERSATION_CONTEXT_CONFLICT);
+        }
+        throw new ServiceException(CONVERSATION_CONTEXT_CONFLICT);
     }
 
     /**
@@ -188,4 +275,3 @@ public class ConversationService {
         aiConversationMapper.updateById(update);
     }
 }
-

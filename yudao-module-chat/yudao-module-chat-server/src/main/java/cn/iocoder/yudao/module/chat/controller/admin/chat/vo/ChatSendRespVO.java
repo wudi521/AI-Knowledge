@@ -12,6 +12,24 @@ public class ChatSendRespVO {
     @Schema(description = "会话编号(新建会话时为新建会话 id)")
     private Long conversationId;
 
+    @Schema(description = "本次返回的最终消息编号")
+    private Long messageId;
+
+    @Schema(description = "本次会话使用的知识库编号")
+    private Long kbId;
+
+    @Schema(description = "本次会话使用的知识领域")
+    private String domainCode;
+
+    @Schema(description = "路由结果")
+    private String route;
+
+    @Schema(description = "意图结果")
+    private String intent;
+
+    @Schema(description = "是否为降级结果")
+    private Boolean degraded;
+
     @Schema(description = "AI 回复内容(answerable=true 时有值)")
     private String reply;
 

@@ -42,6 +42,15 @@ public class AiConversationDO extends TenantBaseDO {
     /** 绑定知识库编号列表(逗号分隔; 专利 MVP 会话级绑定, 后续轮次复用) */
     private String kbIds;
 
+    /** 固定绑定的知识库编号 */
+    private Long kbId;
+
+    /** 创建时快照的知识领域 */
+    private String domainCode;
+
+    /** 创建会话的用户编号 */
+    private Long userId;
+
     /** 会话摘要(转人工时记录) */
     private String summary;
 

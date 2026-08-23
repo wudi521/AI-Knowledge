@@ -18,6 +18,15 @@ public class ConversationInfoVO {
     @Schema(description = "客户标识(默认 anonymous)")
     private String customerId;
 
+    @Schema(description = "绑定知识库编号")
+    private Long kbId;
+
+    @Schema(description = "知识领域")
+    private String domainCode;
+
+    @Schema(description = "会话所属用户编号")
+    private Long userId;
+
     @Schema(description = "状态: ACTIVE 进行中 / TRANSFERRED 待人工接单 / CLOSED 已关闭")
     private String status;
 
