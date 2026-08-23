@@ -51,6 +51,9 @@ public class AiDocumentRespVO {
     @Schema(description = "上传人")
     private String owner;
 
+    @Schema(description = "当前版本编号")
+    private Long versionId;
+
     @Schema(description = "当前版本号", example = "V3")
     private String versionNo;
 
