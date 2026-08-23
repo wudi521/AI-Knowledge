@@ -31,6 +31,8 @@ public class PatentQueryPreParser {
 
     private static final Pattern APPLICATION_NO = Pattern.compile("(?<!\\d)(20\\d{10}\\.\\d)(?!\\d)");
     private static final Pattern PUBLICATION_NO = Pattern.compile("(?i)\\bCN\\s*\\d{8,12}\\s*[A-Z]\\b");
+    /** 宽松申请号: 显式"申请号 X"文本(即使 X 非标准 20 开头格式), 供 SCOPED/EXACT fail closed 识别 */
+    private static final Pattern GENERIC_APPLICATION_NO = Pattern.compile("申请号\\s*(\\d{4,}(?:\\.\\d+)?)");
     private static final Pattern CLAIM_RANGE = Pattern.compile("权利要求\\s*(\\d+)\\s*(?:至|到|[-~～])\\s*(\\d+)");
     private static final Pattern CLAIM_LIST = Pattern.compile("权利要求\\s*((?:\\d+\\s*[、,，或和及]\\s*)+\\d+)");
     private static final Pattern CLAIM_SINGLE = Pattern.compile("权利要求\\s*(\\d+)");
@@ -46,6 +48,13 @@ public class PatentQueryPreParser {
         if (app.find()) {
             applicationNo = app.group(1);
             builder.applicationNo(applicationNo);
+        } else {
+            // P0-05/P0-07 fail closed: 显式"申请号 X"(即使 X 非标准格式)也视为编号定位, 供后续 lookup 失败时拒答
+            Matcher generic = GENERIC_APPLICATION_NO.matcher(query);
+            if (generic.find()) {
+                applicationNo = generic.group(1);
+                builder.applicationNo(applicationNo);
+            }
         }
 
         String publicationNo = null;

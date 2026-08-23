@@ -110,4 +110,13 @@ class PatentQueryPreParserTest {
         PatentQueryPreParser.PatentQueryHints summary = parser.parse("申请号 202311042981.1 的权利要求1主要限定什么？");
         assertEquals("SUMMARY", summary.getClaimQueryType());
     }
+
+    @Test
+    void invalidApplicationNoStillTreatedAsIdentifierForFailClosed() {
+        // P0-05/P0-07: 显式"申请号 X"(非法格式)也视为编号定位, 供 lookup 失败时 fail closed 拒答
+        PatentQueryPreParser.PatentQueryHints hints = parser.parse("申请号 999999999999.9 的核心技术方案是什么？");
+        assertEquals("999999999999.9", hints.getApplicationNo());
+        assertTrue(hints.hasExactDocumentIdentifier());
+        assertFalse(hints.hasExactClaim());
+    }
 }
