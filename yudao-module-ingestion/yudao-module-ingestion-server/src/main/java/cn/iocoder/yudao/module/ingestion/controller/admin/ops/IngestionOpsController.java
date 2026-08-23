@@ -27,6 +27,7 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 /**
  * 知识运营中心 - 任务中心(Knowledge Ops: 入库任务列表/详情/阶段时间轴)
  */
+@lombok.extern.slf4j.Slf4j
 @Tag(name = "管理后台 - 知识运营(任务中心)")
 @RestController
 @RequestMapping("/ingestion/ops")
@@ -37,6 +38,28 @@ public class IngestionOpsController {
     private AiIngestionJobMapper jobMapper;
     @Resource
     private AiIngestionTaskMapper taskMapper;
+    @Resource
+    private cn.iocoder.yudao.module.ingestion.service.IngestService ingestService;
+
+    /**
+     * 重试入库(任务中心: 失败任务重新执行完整解析/切分/向量化; 绕开 Kafka 直接触发)
+     */
+    @org.springframework.web.bind.annotation.PostMapping("/retry-ingest")
+    @Operation(summary = "重试入库(按文档)")
+    @PreAuthorize("@ss.hasPermission('ai:knowledge:update')")
+    public CommonResult<Boolean> retryIngest(@org.springframework.web.bind.annotation.RequestParam("documentId") Long documentId) {
+        cn.iocoder.yudao.module.ingestion.dal.dataobject.AiIngestionJobDO job = jobMapper.selectByDocument(documentId);
+        Long jobId = job == null ? null : job.getId();
+        // 异步执行(不阻塞 HTTP; 失败由任务状态机记录, 任务中心可见)
+        new Thread(() -> {
+            try {
+                ingestService.ingestDocument(documentId, jobId);
+            } catch (Exception e) {
+                log.warn("[retryIngest][文档 {} 重试入库异常: {}]", documentId, e.getMessage());
+            }
+        }, "retry-ingest-" + documentId).start();
+        return success(true);
+    }
 
     @GetMapping("/jobs")
     @Operation(summary = "入库任务分页(按 id 倒序, 可按状态/阶段筛选)")
