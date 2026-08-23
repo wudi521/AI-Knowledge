@@ -65,7 +65,11 @@ public class SearchService {
 
         List<IntentDTO> intents = resolveIntents(kbIds, userId);
         cn.iocoder.yudao.module.retrieval.service.domain.DomainQueryPolicy domainPolicy = resolveDomainPolicy(kbIds);
+        // P0-07.5: queryAnalysis 阶段耗时(QueryAnalysisService 可能调 LLM)
+        long queryAnalysisStart = System.currentTimeMillis();
         QueryAnalysis analysis = queryAnalysisService.analyze(query, history, intents, domainPolicy);
+        long queryAnalysisMs = System.currentTimeMillis() - queryAnalysisStart;
+        log.info("[search][queryAnalysisMs={} query={}]", queryAnalysisMs, StrUtil.maxLength(query, 60));
 
         if ("OUT_OF_SCOPE".equals(analysis.getIntent())) return blocked(query, analysis,
                 "问题超出该知识库服务范围(未匹配到可服务的意图), 已转人工处理");
@@ -221,15 +225,21 @@ public class SearchService {
         variants = variants.stream().distinct().limit(VARIANT_LIMIT).toList();
 
         List<Map.Entry<Long, Double>> bm25Hits = new ArrayList<>();
+        long stageStart = System.currentTimeMillis();
         for (String variant : variants) {
             bm25Hits.addAll(bm25Searcher.search(variant, tenantId, kbIds, RECALL_TOP_K, scopedDocumentIds));
         }
+        long bm25Ms = System.currentTimeMillis() - stageStart;
         bm25Hits = dedupMax(bm25Hits);
         Set<Long> bm25HitIds = bm25Hits.stream().map(Map.Entry::getKey).collect(Collectors.toSet());
 
+        stageStart = System.currentTimeMillis();
         List<Map.Entry<Long, Double>> vectorHits = dedupMax(vectorSearch(variants, tenantId, kbIds, scopedDocumentIds));
+        long vectorMs = System.currentTimeMillis() - stageStart;
         Set<Long> vectorHitIds = vectorHits.stream().map(Map.Entry::getKey).collect(Collectors.toSet());
+        stageStart = System.currentTimeMillis();
         List<Map.Entry<Long, Double>> fused = rrfMerger.merge(List.of(bm25Hits, vectorHits), RECALL_TOP_K);
+        long rrfMs = System.currentTimeMillis() - stageStart;
         Map<Long, Double> rrfMap = fused.stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
         Set<Long> published = resultFilter.filterPublished(fused.stream().map(Map.Entry::getKey).collect(Collectors.toSet()));
         List<Map.Entry<Long, Double>> candidates = fused.stream().filter(e -> published.contains(e.getKey())).toList();
@@ -253,11 +263,16 @@ public class SearchService {
         }
 
         List<Map.Entry<Integer, Float>> reranked = new ArrayList<>();
+        stageStart = System.currentTimeMillis();
         if (contents.isEmpty() || contents.stream().allMatch(StrUtil::isBlank)) {
             for (int i = 0; i < contents.size(); i++) reranked.add(Map.entry(i, 0F));
         } else {
             reranked = reranker.rerank(query, contents);
         }
+        long rerankMs = System.currentTimeMillis() - stageStart;
+        // P0-07.5: 输出检索阶段耗时(不含生成/验证)
+        log.info("[search][bm25Ms={} vectorMs={} rrfMs={} rerankMs={} query={}]",
+                bm25Ms, vectorMs, rrfMs, rerankMs, StrUtil.maxLength(query, 60));
 
         RetrievalRespVO resp = baseResp(query, analysis);
         resp.getChannels().setBm25(bm25Hits.size());
@@ -428,7 +443,10 @@ public class SearchService {
     private List<Map.Entry<Long, Double>> vectorSearch(List<String> variants, Long tenantId, List<Long> kbIds,
                                                        List<Long> documentIds) {
         try {
+            long embedStart = System.currentTimeMillis();
             List<List<Float>> vectors = modelApi.embedding(variants).getCheckedData();
+            long embeddingMs = System.currentTimeMillis() - embedStart;
+            log.info("[vectorSearch][embeddingMs={} variants={}]", embeddingMs, variants.size());
             if (vectors == null || vectors.isEmpty()) return List.of();
             return vectorSearcher.search(vectors, tenantId, kbIds, RECALL_TOP_K, documentIds);
         } catch (Exception e) {
