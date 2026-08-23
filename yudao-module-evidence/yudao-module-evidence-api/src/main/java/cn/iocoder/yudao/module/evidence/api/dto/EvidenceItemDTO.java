@@ -64,6 +64,18 @@ public class EvidenceItemDTO {
     /** 归一化得分(0~1, 批次内 min-max) */
     private Double score;
 
+    /** 证据类型: CHUNK(默认, 片段证据) / STRUCTURED_AGGREGATE(聚合统计) */
+    private String evidenceType;
+
+    /** 聚合指标(evidenceType=STRUCTURED_AGGREGATE 时: DOCUMENT_COUNT/PATENT_COUNT/KNOWLEDGE_ENTRY_COUNT) */
+    private String metric;
+
+    /** 聚合结果值(evidenceType=STRUCTURED_AGGREGATE 时) */
+    private Integer aggregateValue;
+
+    /** 聚合过滤条件描述(evidenceType=STRUCTURED_AGGREGATE 时, 如 publishedOnly=true,domainCode=PATENT) */
+    private String filters;
+
     /** 命中通道: ["bm25"] / ["vector"] / ["bm25","vector"](内部诊断, 不对外展示) */
     private List<String> channels;
 

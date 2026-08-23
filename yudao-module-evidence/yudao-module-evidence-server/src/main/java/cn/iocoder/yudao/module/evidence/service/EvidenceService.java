@@ -20,6 +20,7 @@ import cn.iocoder.yudao.module.evidence.service.conflict.ConflictDetector;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
 import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
 import cn.iocoder.yudao.module.evidence.service.rule.RuleShortCircuit;
+import cn.iocoder.yudao.module.evidence.service.rule.AggregateHandler;
 import cn.iocoder.yudao.module.evidence.service.slot.SlotDetectionResult;
 import cn.iocoder.yudao.module.evidence.service.slot.SlotDetector;
 import cn.iocoder.yudao.module.evidence.service.sufficiency.SufficiencyJudge;
@@ -69,7 +70,7 @@ public class EvidenceService {
     @Resource
     private RuleShortCircuit ruleShortCircuit;
     @Resource
-    private cn.iocoder.yudao.module.evidence.service.rule.PatentCountShortcut patentCountShortcut;
+    private cn.iocoder.yudao.module.evidence.service.rule.AggregateHandler aggregateHandler;
     @Resource
     private cn.iocoder.yudao.module.knowledge.api.KnowledgeApi knowledgeApi;
     @Resource
@@ -175,14 +176,21 @@ public class EvidenceService {
             return resp;
         }
 
-        // P0-10: 专利计数确定性短路(计数问题不走 top-K RAG, 避免漏数; 0 LLM / 0 向量)
-        String patentCountAnswer = patentCountShortcut.evaluate(query, kbIds);
-        if (patentCountAnswer != null) {
-            judgement = buildJudgement(true, 1.0, null, 0, 0);
+        // AG-02/03/04: 知识库聚合统计(KB_STATISTICS intent) — 计数问题不走 TopK RAG(否则漏数)
+        // AG-06 Completeness Guard: 完整性/聚合深度问题不可用结构化聚合时拒绝作答, 不根据 TopK 猜完整性结论
+        if (AggregateHandler.isCompletenessIntent(query)) {
+            AggregateHandler.AggregateResult aggregate = aggregateHandler.evaluate(query, kbIds);
+            if (aggregate != null) {
+                EvidenceEvaluateRespVO resp = buildAggregateResp(traceId, query, history, aggregate, kbIds.get(0), start);
+                recorder.record(resp, List.of(), List.of());
+                return resp;
+            }
+            judgement = buildJudgement(false, 0.0, "该问题需要基于全部数据统计，当前无法可靠回答。", 0, 0);
             EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
-            resp.setAnswer(patentCountAnswer);
-            resp.setRoute("RULE");
+            resp.setRoute("KB_AGGREGATE");
+            resp.setIntent("KB_STATISTICS");
             resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+            resp.setStages(buildAggregateStages(resp.getElapsedMs(), "REJECTED"));
             recorder.record(resp, List.of(), List.of());
             return resp;
         }
@@ -366,6 +374,46 @@ public class EvidenceService {
         dto.setErrorCode(errorCode);
         dto.setErrorMessage(errorMessage);
         return dto;
+    }
+
+    /** AG-04/09: KB_AGGREGATE 确定性回答 + STRUCTURED_AGGREGATE 证据 */
+    private EvidenceEvaluateRespVO buildAggregateResp(String traceId, String query, List<ChatTurnDTO> history,
+                                                      cn.iocoder.yudao.module.evidence.service.rule.AggregateHandler.AggregateResult agg,
+                                                      Long kbId, long start) {
+        Judgement j = buildJudgement(true, 1.0, null, 0, 0);
+        EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
+        resp.setAnswer(agg.answer());
+        resp.setRoute("KB_AGGREGATE");
+        resp.setIntent("KB_STATISTICS");
+        resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+        EvidenceEvaluateRespVO.EvidenceItemVO ev = new EvidenceEvaluateRespVO.EvidenceItemVO();
+        ev.setEvidenceType("STRUCTURED_AGGREGATE");
+        ev.setKbId(kbId);
+        ev.setDomainCode("PATENT");
+        ev.setMetric(agg.metric().name());
+        ev.setAggregateValue(agg.value());
+        ev.setFilters(agg.filters());
+        ev.setContent(agg.answer());
+        ev.setScore(1.0);
+        resp.setEvidence(List.of(ev));
+        resp.setStages(buildAggregateStages(resp.getElapsedMs(), "SUCCEEDED"));
+        return resp;
+    }
+
+    /** AG-09: KB_AGGREGATE 阶段时间轴(ANALYZE deterministic/ROUTE/AGGREGATE_LOOKUP/ANSWER, 其余 SKIPPED) */
+    private List<QueryStageTimingDTO> buildAggregateStages(int elapsedMs, String outcome) {
+        List<QueryStageTimingDTO> stages = new ArrayList<>();
+        int seq = 0;
+        stages.add(buildStage("ANALYZE", ++seq, 1, "SUCCEEDED", null, null));
+        stages.add(buildStage("ROUTE", ++seq, 0, "SUCCEEDED", null, null));
+        stages.add(buildStage("AGGREGATE_LOOKUP", ++seq, elapsedMs, outcome, null, null));
+        stages.add(buildStage("ANSWER", ++seq, 0, "SUCCEEDED", null, null));
+        stages.add(buildStage("BM25", ++seq, 0, "SKIPPED", null, null));
+        stages.add(buildStage("VECTOR", ++seq, 0, "SKIPPED", null, null));
+        stages.add(buildStage("RERANK", ++seq, 0, "SKIPPED", null, null));
+        stages.add(buildStage("GENERATE", ++seq, 0, "SKIPPED", null, null));
+        stages.add(buildStage("VERIFY", ++seq, 0, "SKIPPED", null, null));
+        return stages;
     }
 
     private EvidenceEvaluateRespVO.EvidenceItemVO toEvidenceItem(Evidence evidence) {

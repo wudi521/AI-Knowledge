@@ -95,6 +95,8 @@ public class ChatPipeline {
         Long userId = loginUser != null ? loginUser.getId() : null;
         // P0-09: 每个用户问题一个主 traceId(q- 前缀), 贯穿检索/证据全链路
         String traceId = queryTraceService.newTraceId();
+        // AG-10: trace 总耗时使用整个 Query 墙钟(queryStart → final result), 不依赖 result.latencyMs(在 send() 才赋值)
+        long traceStartMs = System.currentTimeMillis();
 
         // 1. 先解析/创建会话，确保后续所有会话级操作都有真实 conversationId。
         AiConversationDO conversation;
@@ -181,7 +183,7 @@ public class ChatPipeline {
         }
         if (result != null) {
             queryTraceService.finish(traceId, result.getRoute(),
-                    result.getLatencyMs() != null ? result.getLatencyMs() : 0,
+                    System.currentTimeMillis() - traceStartMs,
                     deriveTraceStatus(resp, result));
         }
         return result;
@@ -346,6 +348,10 @@ public class ChatPipeline {
                     .publicationNo(e.getPublicationNo())
                     .content(e.getContent() == null ? null : StrUtil.sub(e.getContent(), 0, 500))
                     .score(e.getScore())
+                    .evidenceType(e.getEvidenceType())
+                    .metric(e.getMetric())
+                    .aggregateValue(e.getAggregateValue())
+                    .filters(e.getFilters())
                     .build());
         }
         return list;
@@ -477,7 +483,9 @@ public class ChatPipeline {
     }
 
     private String resolveIntent(EvidenceEvaluateRespDTO resp) {
-        return resp != null && resp.getAnalysis() != null ? resp.getAnalysis().getIntent() : null;
+        if (resp == null) return null;
+        if (StrUtil.isNotBlank(resp.getIntent())) return resp.getIntent(); // KB_STATISTICS 等确定性路径
+        return resp.getAnalysis() != null ? resp.getAnalysis().getIntent() : null;
     }
 
     private boolean isDegraded(EvidenceEvaluateRespDTO resp) {

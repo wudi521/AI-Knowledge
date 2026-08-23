@@ -73,6 +73,10 @@ public class EvidenceApiImpl implements EvidenceApi {
                 d.setApplicationNo(item.getApplicationNo());
                 d.setPublicationNo(item.getPublicationNo());
                 d.setScore(item.getScore());
+                d.setEvidenceType(item.getEvidenceType());
+                d.setMetric(item.getMetric());
+                d.setAggregateValue(item.getAggregateValue());
+                d.setFilters(item.getFilters());
                 d.setChannels(item.getChannels() != null ? new ArrayList<>(item.getChannels()) : null);
                 d.setChunkMetadata(item.getChunkMetadata()); // 内部字段, 不对外展示
                 evidence.add(d);
@@ -113,6 +117,8 @@ public class EvidenceApiImpl implements EvidenceApi {
         dto.setChannels(toChannelStatDTO(vo.getChannels()));
         // 检索路由透传(Query Planner 权威产出; 供对话层直接使用, 不自行推断)
         dto.setRoute(vo.getRoute());
+        // 意图透传(如 KB_STATISTICS; 聚合等确定性路径)
+        dto.setIntent(vo.getIntent());
         // 上下文回显(evidence-api ChatTurnDTO, 与 VO 同类型, 直接透传)
         dto.setHistory(vo.getHistory());
         return success(dto);

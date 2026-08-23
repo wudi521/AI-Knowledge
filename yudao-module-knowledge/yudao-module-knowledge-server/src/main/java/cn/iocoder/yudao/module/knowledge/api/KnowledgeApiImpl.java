@@ -48,6 +48,7 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     @Resource private AiDocVersionService aiDocVersionService;
     @Resource private AiKnowledgeBaseMapper aiKnowledgeBaseMapper;
     @Resource private cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiDocumentMapper aiDocumentMapper;
+    @Resource private cn.iocoder.yudao.module.knowledge.dal.mysql.version.AiDocVersionMapper aiDocVersionMapper;
     @Resource private KnowledgePermissionHelper knowledgePermissionHelper;
     @Resource private IntentService intentService;
     @Resource private AiKnowledgeBaseSlotService aiKnowledgeBaseSlotService;
@@ -227,30 +228,98 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         return success(publishedContentCollector.collectPublishedChunks(kbId));
     }
 
+    /**
+     * 知识库聚合统计(AG-03): 按 metric 确定性计数, 禁止统计 chunk/evidence/vector hit/version 行。
+     * <p>
+     * metric:
+     * <ul>
+     *     <li>DOCUMENT_COUNT — 文档数(按 domainCode 可选过滤, 按 publishedOnly 过滤已发布)</li>
+     *     <li>PATENT_COUNT — 去重专利数(按文档 domainMetadata.applicationNo, 默认 domainCode=PATENT)</li>
+     *     <li>KNOWLEDGE_ENTRY_COUNT — 知识条目数(已发布文档的 chunkCount 合计)</li>
+     * </ul>
+     */
     @Override
-    public CommonResult<Integer> countDistinctPatents(Long kbId) {
-        if (kbId == null) {
+    public CommonResult<Integer> aggregateCount(Long kbId, String metric, Boolean publishedOnly, String domainCode) {
+        if (kbId == null || StrUtil.isBlank(metric)) {
             return success(0);
         }
         try {
-            java.util.Set<String> apps = new java.util.HashSet<>();
-            for (AiDocumentDO doc : aiDocumentMapper.selectListByKbId(kbId)) {
-                if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) continue;
-                try {
-                    JSONObject meta = JSONUtil.parseObj(doc.getDomainMetadata());
-                    String app = meta.getStr("applicationNo");
-                    if (StrUtil.isNotBlank(app)) {
-                        apps.add(app);
-                    }
-                } catch (Exception ignore) {
-                    // 单个脏 metadata 不计入
-                }
+            boolean published = !Boolean.FALSE.equals(publishedOnly);
+            List<AiDocumentDO> docs = aiDocumentMapper.selectListByKbId(kbId);
+            if (CollUtil.isEmpty(docs)) {
+                return success(0);
             }
-            return success(apps.size());
+            // 已发布过滤: 仅保留存在已发布版本的文档
+            final Set<Long> publishedDocIds;
+            if (published) {
+                publishedDocIds = aiDocVersionMapper.selectPublishedByDocIds(
+                        docs.stream().map(AiDocumentDO::getId).toList())
+                        .stream().map(AiDocVersionDO::getDocId).collect(Collectors.toSet());
+            } else {
+                publishedDocIds = null;
+            }
+            List<AiDocumentDO> effective = docs.stream().filter(doc -> {
+                if (publishedDocIds != null && !publishedDocIds.contains(doc.getId())) return false;
+                if (StrUtil.isNotBlank(domainCode)) {
+                    String docDomain = docDomainCode(doc);
+                    if (!domainCode.equalsIgnoreCase(docDomain)) return false;
+                }
+                return true;
+            }).toList();
+
+            switch (metric.toUpperCase()) {
+                case "DOCUMENT_COUNT":
+                    return success(effective.size());
+                case "PATENT_COUNT": {
+                    Set<String> apps = new java.util.HashSet<>();
+                    for (AiDocumentDO doc : effective) {
+                        if ("PATENT".equalsIgnoreCase(domainCodeOf(doc, "PATENT"))) {
+                            String app = docApplicationNo(doc);
+                            if (StrUtil.isNotBlank(app)) apps.add(app);
+                        }
+                    }
+                    return success(apps.size());
+                }
+                case "KNOWLEDGE_ENTRY_COUNT": {
+                    int total = 0;
+                    for (AiDocumentDO doc : effective) {
+                        total += doc.getChunkCount() == null ? 0 : doc.getChunkCount();
+                    }
+                    return success(total);
+                }
+                default:
+                    return success(0);
+            }
         } catch (Exception e) {
-            log.warn("[countDistinctPatents][kbId({}) 统计失败, 返回 0: {}]", kbId, e.getMessage());
+            log.warn("[aggregateCount][kbId({}) metric({}) 统计失败, 返回 0: {}]", kbId, metric, e.getMessage());
             return success(0);
         }
+    }
+
+    /** 文档 domainMetadata 中的 domainCode */
+    private String docDomainCode(AiDocumentDO doc) {
+        if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return null;
+        try {
+            return JSONUtil.parseObj(doc.getDomainMetadata()).getStr("domainCode");
+        } catch (Exception ignore) {
+            return null;
+        }
+    }
+
+    /** 文档 domainMetadata 中的 applicationNo */
+    private String docApplicationNo(AiDocumentDO doc) {
+        if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return null;
+        try {
+            return JSONUtil.parseObj(doc.getDomainMetadata()).getStr("applicationNo");
+        } catch (Exception ignore) {
+            return null;
+        }
+    }
+
+    /** 取文档 domainCode(显式传参优先, 否则读 metadata) */
+    private String domainCodeOf(AiDocumentDO doc, String fallback) {
+        String code = docDomainCode(doc);
+        return StrUtil.isNotBlank(code) ? code : fallback;
     }
 
 }

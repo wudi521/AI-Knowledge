@@ -80,8 +80,11 @@ public interface KnowledgeApi {
     @GetMapping(ApiConstants.PREFIX + "/get-published-chunks")
     CommonResult<List<KnowledgePublishedChunkDTO>> getPublishedChunks(@RequestParam("kbId") Long kbId);
 
-    /** P0-10: 统计知识库内去重专利数量(按文档 domainMetadata.applicationNo) */
-    @GetMapping(ApiConstants.PREFIX + "/count-distinct-patents")
-    CommonResult<Integer> countDistinctPatents(@RequestParam("kbId") Long kbId);
+    /** P0-10/AG-03: 知识库聚合统计(确定性计数; metric=DOCUMENT_COUNT/PATENT_COUNT/KNOWLEDGE_ENTRY_COUNT) */
+    @GetMapping(ApiConstants.PREFIX + "/aggregate-count")
+    CommonResult<Integer> aggregateCount(@RequestParam("kbId") Long kbId,
+                                         @RequestParam("metric") String metric,
+                                         @RequestParam(value = "publishedOnly", required = false) Boolean publishedOnly,
+                                         @RequestParam(value = "domainCode", required = false) String domainCode);
 
 }

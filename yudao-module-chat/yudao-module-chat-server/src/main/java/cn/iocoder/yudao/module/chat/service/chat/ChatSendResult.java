@@ -114,6 +114,14 @@ public class ChatSendResult {
         private String content;
         /** 归一化得分(0~1) */
         private Double score;
+        /** 证据类型: CHUNK(默认) / STRUCTURED_AGGREGATE */
+        private String evidenceType;
+        /** 聚合指标(STRUCTURED_AGGREGATE: DOCUMENT_COUNT/PATENT_COUNT/KNOWLEDGE_ENTRY_COUNT) */
+        private String metric;
+        /** 聚合结果值(STRUCTURED_AGGREGATE) */
+        private Integer aggregateValue;
+        /** 聚合过滤条件(STRUCTURED_AGGREGATE) */
+        private String filters;
     }
 
 }

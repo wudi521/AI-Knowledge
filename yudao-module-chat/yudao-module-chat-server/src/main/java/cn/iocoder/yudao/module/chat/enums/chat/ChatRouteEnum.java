@@ -12,6 +12,9 @@ public final class ChatRouteEnum {
     /** 硬规则命中(确定性规则, 如 跨省→3天) */
     public static final String RULE = "RULE";
 
+    /** 知识库整体聚合统计(几个专利/多少文档/总数等; 确定性, 不走检索/LLM) */
+    public static final String KB_AGGREGATE = "KB_AGGREGATE";
+
     /** 结构化元数据精确查询(申请号/公布号/标题/权利要求数量等) */
     public static final String EXACT_METADATA = "EXACT_METADATA";
 

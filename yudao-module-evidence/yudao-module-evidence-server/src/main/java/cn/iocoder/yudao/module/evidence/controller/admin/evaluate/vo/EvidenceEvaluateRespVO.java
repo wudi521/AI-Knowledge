@@ -85,6 +85,9 @@ public class EvidenceEvaluateRespVO {
     /** 检索路由(Query Planner 权威产出: RULE/EXACT_METADATA/EXACT_CLAIM/SCOPED_RAG/HYBRID_RAG/ABSTAIN) */
     private String route;
 
+    /** 意图(如 KB_STATISTICS; 聚合等确定性路径不经过 retrieval analysis) */
+    private String intent;
+
     /** 通道召回统计(BM25/向量/融合; 供前端检索诊断) */
     private RetrievalSearchRespDTO.RetrievalChannelStatDTO channels;
 
@@ -158,6 +161,18 @@ public class EvidenceEvaluateRespVO {
 
         /** 归一化得分(0~1, 批次内 min-max) */
         private Double score;
+
+        /** 证据类型: CHUNK / STRUCTURED_AGGREGATE */
+        private String evidenceType;
+
+        /** 聚合指标(STRUCTURED_AGGREGATE) */
+        private String metric;
+
+        /** 聚合结果值(STRUCTURED_AGGREGATE) */
+        private Integer aggregateValue;
+
+        /** 聚合过滤条件(STRUCTURED_AGGREGATE) */
+        private String filters;
 
         /** 命中通道: ["bm25"] / ["vector"] / ["bm25","vector"] */
         private List<String> channels;
