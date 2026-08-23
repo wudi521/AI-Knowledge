@@ -69,6 +69,8 @@ public class EvidenceService {
     @Resource
     private RuleShortCircuit ruleShortCircuit;
     @Resource
+    private cn.iocoder.yudao.module.evidence.service.rule.PatentCountShortcut patentCountShortcut;
+    @Resource
     private cn.iocoder.yudao.module.knowledge.api.KnowledgeApi knowledgeApi;
     @Resource
     private EvidenceProperties properties;
@@ -168,6 +170,18 @@ public class EvidenceService {
             EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
             resp.setAnswer(ruleConclusion.text());
             resp.setRoute("RULE"); // RF2-05: 硬规则命中路由, 保证非 null
+            resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+            recorder.record(resp, List.of(), List.of());
+            return resp;
+        }
+
+        // P0-10: 专利计数确定性短路(计数问题不走 top-K RAG, 避免漏数; 0 LLM / 0 向量)
+        String patentCountAnswer = patentCountShortcut.evaluate(query, kbIds);
+        if (patentCountAnswer != null) {
+            judgement = buildJudgement(true, 1.0, null, 0, 0);
+            EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
+            resp.setAnswer(patentCountAnswer);
+            resp.setRoute("RULE");
             resp.setElapsedMs((int) (System.currentTimeMillis() - start));
             recorder.record(resp, List.of(), List.of());
             return resp;

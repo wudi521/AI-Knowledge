@@ -25,6 +25,7 @@ import cn.iocoder.yudao.module.knowledge.service.knowledge.AiKnowledgeBaseSlotSe
 import cn.iocoder.yudao.module.knowledge.service.knowledge.KnowledgePermissionHelper;
 import cn.iocoder.yudao.module.knowledge.service.version.AiDocVersionService;
 import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -38,6 +39,7 @@ import java.util.stream.Collectors;
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
 /** 知识平台 对外 RPC 实现 */
+@Slf4j
 @RestController
 @Validated
 public class KnowledgeApiImpl implements KnowledgeApi {
@@ -223,6 +225,32 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     @Override
     public CommonResult<List<KnowledgePublishedChunkDTO>> getPublishedChunks(Long kbId) {
         return success(publishedContentCollector.collectPublishedChunks(kbId));
+    }
+
+    @Override
+    public CommonResult<Integer> countDistinctPatents(Long kbId) {
+        if (kbId == null) {
+            return success(0);
+        }
+        try {
+            java.util.Set<String> apps = new java.util.HashSet<>();
+            for (AiDocumentDO doc : aiDocumentMapper.selectListByKbId(kbId)) {
+                if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) continue;
+                try {
+                    JSONObject meta = JSONUtil.parseObj(doc.getDomainMetadata());
+                    String app = meta.getStr("applicationNo");
+                    if (StrUtil.isNotBlank(app)) {
+                        apps.add(app);
+                    }
+                } catch (Exception ignore) {
+                    // 单个脏 metadata 不计入
+                }
+            }
+            return success(apps.size());
+        } catch (Exception e) {
+            log.warn("[countDistinctPatents][kbId({}) 统计失败, 返回 0: {}]", kbId, e.getMessage());
+            return success(0);
+        }
     }
 
 }

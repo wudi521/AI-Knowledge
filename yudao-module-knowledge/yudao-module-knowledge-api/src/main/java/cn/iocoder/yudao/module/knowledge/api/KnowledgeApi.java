@@ -80,4 +80,8 @@ public interface KnowledgeApi {
     @GetMapping(ApiConstants.PREFIX + "/get-published-chunks")
     CommonResult<List<KnowledgePublishedChunkDTO>> getPublishedChunks(@RequestParam("kbId") Long kbId);
 
+    /** P0-10: 统计知识库内去重专利数量(按文档 domainMetadata.applicationNo) */
+    @GetMapping(ApiConstants.PREFIX + "/count-distinct-patents")
+    CommonResult<Integer> countDistinctPatents(@RequestParam("kbId") Long kbId);
+
 }
