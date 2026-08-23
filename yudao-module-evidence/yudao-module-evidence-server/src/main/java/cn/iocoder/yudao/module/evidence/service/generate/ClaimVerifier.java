@@ -20,112 +20,63 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * 断言验证器: 将回答逐句拆分为断言, 对照证据判定每句是否有支撑(LLM 单次调用 + 结构化 JSON)
- * <p>
- * 索引约定: 回答中的 [C1] 对应证据列表第 0 条(evidenceIndex=0), [C2] 对应第 1 条, 依此类推;
- * 无支撑断言 evidenceIndex = -1。
- * <p>
- * 健壮性: 调用异常/响应空白/JSON 解析失败 → 返回 null(由编排器按一次失败尝试处理), 绝不抛出。
- */
+/** 断言验证器: 回答逐句核对证据。 */
 @Slf4j
 @Component
 public class ClaimVerifier {
 
-    /** 系统提示词: 逐句拆分断言 + 判定支撑 + 只输出固定 JSON */
     private static final String SYSTEM_PROMPT = """
             你是证据支撑核查员。将回答逐句拆分为断言, 并对照证据判定每句是否有证据支撑。
-            只输出 JSON, 不要输出任何其他文字。JSON 格式固定为:
-            {"claims":[{"text":"句子原文","verdict":"SUPPORTED|UNSUPPORTED","evidenceIndex":0}]}
+            只输出 JSON: {"claims":[{"text":"句子原文","verdict":"SUPPORTED|UNSUPPORTED","evidenceIndex":0}]}
             要求:
-            1. 将回答按句子拆分, 每句一条记录, text 填句子原文;
-            2. verdict: 有证据支撑为 SUPPORTED, 无证据支撑为 UNSUPPORTED;
-            3. evidenceIndex: 支撑该句的证据在证据列表中的序号(0起; 无支撑给 -1);
-               回答中的引用 [C1] 对应 evidenceIndex=0, [C2] 对应 evidenceIndex=1, 依此类推;
-               判定 SUPPORTED 的句子必须给出实际支撑它的证据序号, 不得给 -1;
-            4. 衔接/过渡短语(如"您可以选择以下两种方式之一:""具体如下:""综上:"等不陈述事实的引导句)
-               不计入断言列表, 直接忽略, 不要输出;
-            5. 只有携带具体事实的断言(如价格/期限/次数/条款/实体名称/编号/人名/数值/日期)才需要证据支撑;
-               "根据现有资料无法确定"这类如实说明证据不足的结论句, 判为 UNSUPPORTED 且 evidenceIndex=-1;
-            6. 支撑判定采用"信息等价"标准: 断言陈述的事实信息(实体名称/编号/人名/数值/日期/地名等)
-               只要能在证据文本中找到等价表述, 即判 SUPPORTED——允许措辞/语序/格式不同。
-               例如: 证据"(71)申请人 韩信" 与断言 "申请人为韩信" 视为等价; 证据含 "CN 122621758 A"
-               与断言 "公布号 CN 122621758 A" 视为等价; 证据含 "7.调整分辨率…" 与断言
-               "权利要求7涉及调整分辨率" 视为等价(编号+要点均对应)。
-               只有证据中完全不存在该事实信息时才判 UNSUPPORTED;
-            7. 严禁编造: 断言中的事实若在证据中完全找不到对应信息(含等价表述), 一律判 UNSUPPORTED;
-            8. 若提供历史对话, 仅用于理解指代, 断言支撑判定只看证据列表。
+            1. 事实性断言必须由证据支撑；SUPPORTED 必须指向实际 evidenceIndex；
+            2. [C1] 对应 evidenceIndex=0, [C2] 对应 1；
+            3. 信息等价即可支撑，允许措辞/语序/格式不同，但实体名称、编号、人名、数值、日期不得凭空改变；
+            4. 衔接句不计入断言；
+            5. “依据当前资料无法确认/无法确定/不能据此确认”等证据边界或谨慎性表述不是外部事实断言，
+               当它表达的是“现有证据不足以证明某结论”时视为允许的 EPISTEMIC_LIMITATION，不应作为幻觉阻断；
+               可以输出 SUPPORTED，evidenceIndex=-1；
+            6. 专利公开文本中的医疗/科学效果若回答明确表述为“文献记载/声称，不能据此确认真实性/疗效/安全性”，
+               其中谨慎性限制句同样允许 evidenceIndex=-1；
+            7. 真正新增的事实若证据中找不到，一律 UNSUPPORTED。
             """;
 
-    /** 证据内容截断长度(字) */
     private static final int CONTENT_MAX_LEN = 300;
 
-    @Resource
-    private ModelApi modelApi;
-    @Resource
-    private PromptSupport promptSupport;
-
-    /**
-     * 证据业务配置(构造注入; 当前 claim.max-retry 由编排器消费, 此处预留 Claim 相关配置扩展位)
-     */
+    @Resource private ModelApi modelApi;
+    @Resource private PromptSupport promptSupport;
+    @SuppressWarnings("unused")
     private final EvidenceProperties properties;
 
-    public ClaimVerifier(EvidenceProperties properties) {
-        this.properties = properties;
-    }
+    public ClaimVerifier(EvidenceProperties properties) { this.properties = properties; }
 
-    /**
-     * 逐句断言验证(单次 LLM 调用; 无历史上下文)
-     *
-     * @param query     用户问题(供"证据确实无法回答"类判定参考)
-     * @param answer    待核查的回答(LLM 生成, 含 [C1]..[CN] 引用)
-     * @param evidences 证据列表(与生成器入参一致; evidenceIndex 为 0 起位置)
-     * @return 断言列表; 回答空白/调用异常/解析失败 → null
-     */
     public List<ClaimResult> verify(String query, String answer, List<Evidence> evidences) {
         return verify(query, answer, evidences, null);
     }
 
-    /**
-     * 逐句断言验证(单次 LLM 调用; 支持历史上下文: 历史仅用于理解指代, 支撑判定只看证据列表)
-     *
-     * @param query     用户问题(供"证据确实无法回答"类判定参考)
-     * @param answer    待核查的回答(LLM 生成, 含 [C1]..[CN] 引用)
-     * @param evidences 证据列表(与生成器入参一致; evidenceIndex 为 0 起位置)
-     * @param history   上下文轮次(可选, null/空 = 单轮行为)
-     * @return 断言列表; 回答空白/调用异常/解析失败 → null
-     */
     public List<ClaimResult> verify(String query, String answer, List<Evidence> evidences, List<ChatTurnDTO> history) {
         try {
-            if (StrUtil.isBlank(answer)) {
-                log.warn("[verify][回答为空, 无法验证, 返回 null]");
-                return null;
-            }
+            if (StrUtil.isBlank(answer)) return null;
             ModelChatReqDTO req = new ModelChatReqDTO();
             req.setSystem(promptSupport.get("claim-verify", SYSTEM_PROMPT));
             req.setUser(buildUserPrompt(query, answer, evidences, history));
-            String resp = modelApi.chat(req).getCheckedData();
-            List<ClaimResult> claims = parseClaims(resp);
-            if (claims == null) {
-                return null;
-            }
-            // 越界索引钳制: LLM 给出的 evidenceIndex 超出证据列表范围视为模型错误, 置 -1 并告警
+            List<ClaimResult> claims = parseClaims(modelApi.chat(req).getCheckedData());
+            if (claims == null) return null;
             int size = evidences != null ? evidences.size() : 0;
             for (ClaimResult claim : claims) {
-                if (claim != null && claim.getEvidenceIndex() != null
-                        && claim.getEvidenceIndex() >= size && claim.getEvidenceIndex() >= 0) {
-                    log.warn("[verify][断言 evidenceIndex={} 超出证据范围({}), 钳制为 -1: {}]",
-                            claim.getEvidenceIndex(), size, StrUtil.maxLength(claim.getText(), 100));
+                if (claim == null) continue;
+                if (claim.getEvidenceIndex() != null && claim.getEvidenceIndex() >= size && claim.getEvidenceIndex() >= 0) {
                     claim.setEvidenceIndex(-1);
                 }
-                // 交叉校验(防幻觉): SUPPORTED 断言必须指向实际证据。
-                // LLM 输出 verdict=SUPPORTED 但 evidenceIndex=-1(含被钳制的越界索引), 视为"有结论无依据",
-                // 一律降级 UNSUPPORTED——避免"SUPPORTED+-1"形态的无据断言绕过验证闸门。
-                if (claim != null && "SUPPORTED".equals(claim.getVerdict())
-                        && claim.getEvidenceIndex() != null && claim.getEvidenceIndex() == -1) {
-                    log.info("[verify][SUPPORTED 断言无证据指向, 降级 UNSUPPORTED: {}]",
-                            StrUtil.maxLength(claim.getText(), 100));
+                if ("SUPPORTED".equals(claim.getVerdict()) && Integer.valueOf(-1).equals(claim.getEvidenceIndex())
+                        && !isEpistemicLimitation(claim.getText())) {
+                    log.info("[verify][SUPPORTED 断言无证据指向, 降级 UNSUPPORTED: {}]", StrUtil.maxLength(claim.getText(), 100));
                     claim.setVerdict("UNSUPPORTED");
+                }
+                if (isEpistemicLimitation(claim.getText())) {
+                    // 这是系统对证据边界的陈述，不是知识事实；避免“拒答语句本身被判无证据”导致无限重试。
+                    claim.setVerdict("SUPPORTED");
+                    if (claim.getEvidenceIndex() == null) claim.setEvidenceIndex(-1);
                 }
             }
             return claims;
@@ -135,106 +86,82 @@ public class ClaimVerifier {
         }
     }
 
-    /**
-     * 是否全部断言均被支撑: 非空 且 每条 verdict 均为 SUPPORTED
-     */
     public boolean allSupported(List<ClaimResult> claims) {
-        if (claims == null || claims.isEmpty()) {
-            return false;
-        }
+        if (claims == null || claims.isEmpty()) return false;
         for (ClaimResult claim : claims) {
-            if (claim == null || !"SUPPORTED".equals(claim.getVerdict())) {
-                return false;
-            }
+            if (claim == null) return false;
+            if (isEpistemicLimitation(claim.getText())) continue;
+            if (!"SUPPORTED".equals(claim.getVerdict())) return false;
         }
         return true;
     }
 
-    /** 组装用户提示词: (可选历史对话块) + 问题 + 待核查回答 + 证据列表(格式与生成器完全一致, 保证 [Ci] 编号对应) */
+    private boolean isEpistemicLimitation(String text) {
+        if (StrUtil.isBlank(text)) return false;
+        String t = text.replace(" ", "");
+        return t.contains("无法确认") || t.contains("无法确定") || t.contains("不能确认")
+                || t.contains("不能据此") || t.contains("不足以确认") || t.contains("不足以证明")
+                || t.contains("不能证明") || t.contains("无法据此") || t.contains("未提供足够证据")
+                || t.contains("仅凭") && (t.contains("不能") || t.contains("无法"));
+    }
+
     private String buildUserPrompt(String query, String answer, List<Evidence> evidences, List<ChatTurnDTO> history) {
         StringBuilder sb = new StringBuilder();
         String historyText = ContextFormatter.formatHistory(history);
-        if (StrUtil.isNotBlank(historyText)) {
-            sb.append(historyText).append("\n\n");
-        }
+        if (StrUtil.isNotBlank(historyText)) sb.append(historyText).append("\n\n");
         sb.append("问题: ").append(query).append("\n\n待核查回答:\n").append(answer).append("\n\n证据列表:\n");
         if (evidences != null) {
             for (int i = 0; i < evidences.size(); i++) {
                 Evidence evidence = evidences.get(i);
                 sb.append("[C").append(i + 1).append("] 来源:")
                         .append(StrUtil.nullToEmpty(evidence != null ? evidence.getDocumentName() : null)).append(' ')
-                        .append(StrUtil.nullToEmpty(evidence != null ? evidence.getVersionNo() : null))
-                        .append("; 内容:").append(truncate(evidence != null ? evidence.getContent() : null)).append('\n');
+                        .append(StrUtil.nullToEmpty(evidence != null ? evidence.getVersionNo() : null));
+                if (evidence != null && StrUtil.isNotBlank(evidence.getChunkMetadata())) {
+                    sb.append("; 元数据:").append(StrUtil.maxLength(evidence.getChunkMetadata(), 500));
+                }
+                sb.append("; 内容:").append(truncate(evidence != null ? evidence.getContent() : null)).append('\n');
             }
         }
         return sb.toString();
     }
 
-    /** 解析 LLM 输出: 提取 JSON(容忍围栏/前后缀) → 逐条解析; 任何失败 → null */
     private List<ClaimResult> parseClaims(String resp) {
         try {
-            if (StrUtil.isBlank(resp)) {
-                log.warn("[verify][LLM 响应为空, 返回 null]");
-                return null;
-            }
+            if (StrUtil.isBlank(resp)) return null;
             String jsonText = JsonExtract.extractObject(resp);
-            if (jsonText == null) {
-                log.warn("[verify][LLM 响应未包含 JSON 对象, 返回 null: {}]", StrUtil.maxLength(resp, 200));
-                return null;
-            }
-            JSONObject root = JSONUtil.parseObj(jsonText);
-            JSONArray claims = root.getJSONArray("claims");
-            if (claims == null || claims.isEmpty()) {
-                log.warn("[verify][LLM 响应缺少 claims 数组, 返回 null]");
-                return null;
-            }
+            if (jsonText == null) return null;
+            JSONArray claims = JSONUtil.parseObj(jsonText).getJSONArray("claims");
+            if (claims == null || claims.isEmpty()) return null;
             List<ClaimResult> result = new ArrayList<>();
             for (int i = 0; i < claims.size(); i++) {
                 ClaimResult claim = parseEntry(claims.getJSONObject(i));
-                if (claim != null) {
-                    result.add(claim);
-                }
+                if (claim != null) result.add(claim);
             }
-            if (result.isEmpty()) {
-                log.warn("[verify][claims 数组无有效条目, 返回 null]");
-                return null;
-            }
-            return result;
+            return result.isEmpty() ? null : result;
         } catch (Exception e) {
             log.warn("[verify][断言结果解析失败, 返回 null: {}]", e.getMessage());
             return null;
         }
     }
 
-    /** 解析单条断言: 字段缺省兜底 + verdict 归一化; 单条失败跳过 */
     private ClaimResult parseEntry(JSONObject entry) {
-        if (entry == null) {
-            return null;
-        }
+        if (entry == null) return null;
         try {
-            String text = entry.getStr("text", "");
-            String verdict = normalizeVerdict(entry.getStr("verdict", ""));
-            int evidenceIndex = parseIndex(entry);
             return ClaimResult.builder()
-                    .text(text)
-                    .verdict(verdict)
-                    .evidenceIndex(evidenceIndex)
+                    .text(entry.getStr("text", ""))
+                    .verdict(normalizeVerdict(entry.getStr("verdict", "")))
+                    .evidenceIndex(parseIndex(entry))
                     .build();
         } catch (Exception e) {
-            log.warn("[verify][单条断言解析失败, 跳过: {}]", e.getMessage());
             return null;
         }
     }
 
-    /** verdict 归一化: 大小写不敏感, 仅 "SUPPORTED" 视为有支撑, 其余(含缺省/非法)一律 UNSUPPORTED */
     private String normalizeVerdict(String raw) {
-        if (StrUtil.isBlank(raw)) {
-            return "UNSUPPORTED";
-        }
+        if (StrUtil.isBlank(raw)) return "UNSUPPORTED";
         return "SUPPORTED".equals(raw.trim().toUpperCase(Locale.ROOT)) ? "SUPPORTED" : "UNSUPPORTED";
     }
 
-    /** evidenceIndex 解析: 缺省/非法 → -1 */
     private int parseIndex(JSONObject entry) {
         try {
             Integer index = entry.getInt("evidenceIndex", -1);
@@ -244,15 +171,8 @@ public class ClaimVerifier {
         }
     }
 
-    /** 截断内容至 300 字(超出加省略号) */
     private String truncate(String content) {
-        if (content == null) {
-            return "";
-        }
-        if (content.length() <= CONTENT_MAX_LEN) {
-            return content;
-        }
-        return content.substring(0, CONTENT_MAX_LEN) + "…";
+        if (content == null) return "";
+        return content.length() <= CONTENT_MAX_LEN ? content : content.substring(0, CONTENT_MAX_LEN) + "…";
     }
-
 }
