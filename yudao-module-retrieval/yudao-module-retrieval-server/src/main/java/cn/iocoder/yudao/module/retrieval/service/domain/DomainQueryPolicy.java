@@ -1,5 +1,7 @@
 package cn.iocoder.yudao.module.retrieval.service.domain;
 
+import java.util.List;
+
 /**
  * 领域查询策略(轻量领域扩展点): 按知识库 domainCode 路由检索行为。
  * 领域实现通过 Spring Bean 注册, Registry 索引; 未找到回退 GENERAL。
@@ -17,4 +19,19 @@ public interface DomainQueryPolicy {
 
     /** 是否启用通用槽位检测(GENERAL=true, PATENT=false) */
     boolean enableSlotDetection();
+
+    /**
+     * 是否允许知识库动态意图覆盖领域意图。
+     * GENERAL 保持历史行为; PATENT 等专业领域应返回 false, 防止客服类自动意图污染领域路由。
+     */
+    default boolean useKnowledgeBaseIntents() {
+        return true;
+    }
+
+    /**
+     * 领域固定意图白名单。为空表示不做领域级钳制, 继续使用知识库动态意图或默认枚举。
+     */
+    default List<String> supportedIntents() {
+        return List.of();
+    }
 }
