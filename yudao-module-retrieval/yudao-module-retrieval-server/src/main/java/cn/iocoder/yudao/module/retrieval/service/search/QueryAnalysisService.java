@@ -56,17 +56,21 @@ public class QueryAnalysisService {
         result.setSuccess(false);
         PatentQueryPreParser.PatentQueryHints patentHints = preParsePatent(query, policy);
 
-        // 专利强结构著录查询不需要 LLM：编号 + 查询字段都已由规则确定，直接进入 EXACT_METADATA。
+        // PATENT 强结构查询：字段/claim 都已由规则确定，不需要先让 LLM 再分类一次。
         if (patentHints != null && patentHints.hasDeterministicExactMetadata()) {
             applyPatentHints(result, patentHints, policy);
             result.setIntent("BIBLIOGRAPHIC_LOOKUP");
-            result.setRoute("EXACT_METADATA");
-            result.setRewrites(List.of());
-            result.setSubQuestions(List.of());
-            result.setProducts(List.of());
-            result.setSuccess(true);
+            prepareDeterministic(result, "EXACT_METADATA");
             log.info("[analyze][PATENT EXACT_METADATA 规则短路 LLM, applicationNo={}, publicationNo={}, fields={}]",
                     result.getApplicationNo(), result.getPublicationNo(), result.getMetadataFields());
+            return result;
+        }
+        if (patentHints != null && patentHints.hasExactClaim()) {
+            applyPatentHints(result, patentHints, policy);
+            result.setIntent(patentHints.isClaimDependencyIntent() ? "CLAIM_DEPENDENCY" : "CLAIM_LOOKUP");
+            prepareDeterministic(result, "EXACT_CLAIM");
+            log.info("[analyze][PATENT EXACT_CLAIM 规则短路 LLM, applicationNo={}, publicationNo={}, claimNo={}, intent={}]",
+                    result.getApplicationNo(), result.getPublicationNo(), result.getClaimNo(), result.getIntent());
             return result;
         }
 
@@ -101,16 +105,19 @@ public class QueryAnalysisService {
         }
     }
 
+    private void prepareDeterministic(QueryAnalysis result, String route) {
+        result.setRoute(route);
+        result.setRewrites(List.of());
+        result.setSubQuestions(List.of());
+        result.setProducts(List.of());
+        result.setSuccess(true);
+    }
+
     private PatentQueryPreParser.PatentQueryHints preParsePatent(String query, DomainQueryPolicy policy) {
         if (policy == null || !"PATENT".equalsIgnoreCase(policy.domainCode())) return null;
         return patentQueryPreParser.parse(query);
     }
 
-    /**
-     * 确定性规则覆盖专利强结构字段。
-     * PATENT 不直接信任 LLM 的 OUT_OF_SCOPE：用户已经显式选择专利知识库时，类似“某装置真的能治疗癌症吗”
-     * 仍应进入证据检索，由领域回答策略以“文献记载/声称”安全作答；真正无关问题会因检索无证据自然拒答。
-     */
     private void applyPatentHints(QueryAnalysis result, PatentQueryPreParser.PatentQueryHints hints, DomainQueryPolicy policy) {
         if (hints == null || policy == null || !"PATENT".equalsIgnoreCase(policy.domainCode())) return;
         result.setApplicationNo(hints.getApplicationNo());
@@ -144,10 +151,7 @@ public class QueryAnalysisService {
     }
 
     private List<IntentDTO> effectiveIntents(List<IntentDTO> intents, DomainQueryPolicy policy) {
-        if (policy != null && !policy.useKnowledgeBaseIntents()) {
-            if (intents != null && !intents.isEmpty()) log.debug("[effectiveIntents][domain={} 忽略 {} 个知识库动态意图]", policy.domainCode(), intents.size());
-            return List.of();
-        }
+        if (policy != null && !policy.useKnowledgeBaseIntents()) return List.of();
         return intents == null ? List.of() : intents;
     }
 
@@ -174,7 +178,6 @@ public class QueryAnalysisService {
         String trimmed = StrUtil.blankToDefault(StrUtil.trim(rawIntent), "OTHER");
         if (policy != null && policy.supportedIntents() != null && !policy.supportedIntents().isEmpty()) {
             for (String supported : policy.supportedIntents()) if (supported.equalsIgnoreCase(trimmed)) return supported;
-            log.warn("[clampIntent][domain={} 模型返回非法领域意图 {}, 钳制 OTHER]", policy.domainCode(), trimmed);
             return policy.supportedIntents().contains("OTHER") ? "OTHER" : "OUT_OF_SCOPE";
         }
         if (intents == null || intents.isEmpty()) return trimmed;
