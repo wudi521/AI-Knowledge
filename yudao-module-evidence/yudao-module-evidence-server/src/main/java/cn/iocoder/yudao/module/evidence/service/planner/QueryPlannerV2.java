@@ -24,9 +24,8 @@ import java.util.stream.Collectors;
 /**
  * Query Planner V2：检索前先生成类型安全的执行计划。
  * <p>
- * Level-1 确定性规划：完整统计、显式比较、精确原文、已有结果集逐实体问题均 0 LLM。
- * Level-2 语义规划：仅对仍有歧义的问题调用 1 次 LLM；LLM 只能从允许的 QueryClass/ExecutionMode/
- * Domain Registry 中选择，随后必须经过 {@link QueryPlanValidator}。
+ * 优先级：明确比较/原文/逐实体/主观歧义 → Structured Complete → 语义 Planner LLM。
+ * 这样“哪些专利比较相似”不会因为“哪些”被误抢成普通 LIST/Structured。
  */
 @Slf4j
 @Component
@@ -78,14 +77,12 @@ public class QueryPlannerV2 {
     public QueryPlan plan(String query, String domainCode, List<ChatTurnDTO> history, String contextResolutionJson) {
         List<Long> contextIds = parseContextEntityIds(contextResolutionJson);
         QueryPlan deterministic = deterministic(query, domainCode, contextIds);
-        if (deterministic != null) {
-            return deterministic;
-        }
+        if (deterministic != null) return deterministic;
+
         QueryPlan llm = semanticPlan(query, domainCode, history, contextIds);
         QueryPlanValidator.Validation validation = validator.validate(llm);
-        if (validation.valid()) {
-            return llm;
-        }
+        if (validation.valid()) return llm;
+
         log.warn("[plan][LLM QueryPlan 非法, reason={}, query={}]", validation.reasonCode(), StrUtil.maxLength(query, 80));
         return fallback(query, domainCode, contextIds, validation.reasonCode());
     }
@@ -93,18 +90,14 @@ public class QueryPlannerV2 {
     private QueryPlan deterministic(String query, String domainCode, List<Long> contextIds) {
         if (StrUtil.isBlank(query)) return clarify(domainCode, "请描述你想查询的问题。", "EMPTY_QUERY");
 
-        if (completenessGuard.isStructuredCandidate(query) || completenessGuard.requiresCompleteDataset(query)) {
-            return QueryPlan.builder()
-                    .queryClass(QueryClass.STRUCTURED_QUERY)
-                    .executionMode(ExecutionMode.STRUCTURED)
-                    .domainCode(domainCode)
-                    .scopeType(contextIds.isEmpty() ? "CURRENT_KB" : "PREVIOUS_RESULT_SET")
-                    .entityIds(contextIds)
-                    .completenessPolicy(CompletenessPolicy.COMPLETE_REQUIRED)
-                    .plannerSource("DETERMINISTIC")
-                    .build();
+        // 1. 主观比较没有评价标准时必须先反问，禁止模型自行发明“好/先进/价值”的标准。
+        if (isSubjectiveComparison(query) && !hasExplicitCriterion(query)) {
+            return clarify(domainCode,
+                    "请说明你希望按什么标准比较，例如技术相似度、权利要求数量、申请时间或其他明确指标。",
+                    "MISSING_COMPARISON_CRITERION");
         }
 
+        // 2. 强比较语义优先于“哪些/分别”等泛结构化词。
         ComparisonType comparison = detectComparison(query);
         if (comparison != ComparisonType.NONE) {
             return QueryPlan.builder()
@@ -122,6 +115,7 @@ public class QueryPlannerV2 {
                     .build();
         }
 
+        // 3. 精确原文搜索不是普通语义召回，也不能被“哪些”抢成 Structured LIST。
         if (isExactText(query)) {
             return QueryPlan.builder()
                     .queryClass(QueryClass.SEMANTIC_QUERY)
@@ -134,6 +128,7 @@ public class QueryPlannerV2 {
                     .build();
         }
 
+        // 4. 上一轮已有明确实体集，且当前问“分别的核心技术”等语义属性 → 逐实体 hard-scope。
         if (!contextIds.isEmpty() && isPerEntitySemantic(query)) {
             return QueryPlan.builder()
                     .queryClass(QueryClass.SEMANTIC_QUERY)
@@ -144,6 +139,19 @@ public class QueryPlannerV2 {
                     .perEntityTopK(4)
                     .coveragePolicy("ALL")
                     .completenessPolicy(CompletenessPolicy.BEST_EFFORT)
+                    .plannerSource("DETERMINISTIC")
+                    .build();
+        }
+
+        // 5. 最后才进入完整数据集 Structured。TopK 永远不能证明全集。
+        if (completenessGuard.isStructuredCandidate(query) || completenessGuard.requiresCompleteDataset(query)) {
+            return QueryPlan.builder()
+                    .queryClass(QueryClass.STRUCTURED_QUERY)
+                    .executionMode(ExecutionMode.STRUCTURED)
+                    .domainCode(domainCode)
+                    .scopeType(contextIds.isEmpty() ? "CURRENT_KB" : "PREVIOUS_RESULT_SET")
+                    .entityIds(contextIds)
+                    .completenessPolicy(CompletenessPolicy.COMPLETE_REQUIRED)
                     .plannerSource("DETERMINISTIC")
                     .build();
         }
@@ -178,9 +186,7 @@ public class QueryPlannerV2 {
                     .clarificationQuestion(json.getStr("clarificationQuestion"))
                     .plannerSource("LLM")
                     .build();
-            if (plan.isRequiresClarification()) {
-                plan.setQueryClass(QueryClass.CLARIFY);
-            }
+            if (plan.isRequiresClarification()) plan.setQueryClass(QueryClass.CLARIFY);
             return plan;
         } catch (Exception e) {
             log.warn("[plan][Semantic Planner 失败, 回退 HYBRID: {}]", e.getMessage());
@@ -237,6 +243,16 @@ public class QueryPlannerV2 {
         if (StrUtil.containsAny(query, "区别", "差异", "不同点")) return ComparisonType.DIFFERENCE;
         if (StrUtil.containsAny(query, "相似", "比较", "对比")) return ComparisonType.PAIR_COMPARE;
         return ComparisonType.NONE;
+    }
+
+    private boolean isSubjectiveComparison(String query) {
+        return StrUtil.containsAny(query, "哪个好", "哪个更好", "更先进", "最先进", "更有价值", "最有价值",
+                "更优秀", "最好", "最优", "更强", "最强");
+    }
+
+    private boolean hasExplicitCriterion(String query) {
+        return StrUtil.containsAny(query, "按", "根据", "以", "从", "相似度", "权利要求", "申请时间", "申请日",
+                "公布时间", "公开日", "数量", "成本", "价格", "性能", "准确率", "效率");
     }
 
     private boolean isPerEntitySemantic(String query) {
