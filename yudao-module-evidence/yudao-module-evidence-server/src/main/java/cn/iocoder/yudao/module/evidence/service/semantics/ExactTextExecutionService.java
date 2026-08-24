@@ -32,11 +32,13 @@ public class ExactTextExecutionService {
     public record Result(String answer, List<Evidence> evidences, boolean answerable,
                          String reasonCode, long totalHits, boolean truncated) {}
 
-    /** 兼容旧调用：默认按 BEST_EFFORT，不将 TopK 返回数冒充真实总数。 */
+    /**
+     * 兼容当前 Composite 调用；执行层对完整性再做一次确定性兜底，避免上游策略字段丢失后退化。
+     */
     public Result execute(String query, String exactText, Long kbId, List<Long> documentIds,
                           Long tenantId, Long userId, String traceId) {
         return execute(query, exactText, kbId, documentIds, tenantId, userId, traceId,
-                CompletenessPolicy.BEST_EFFORT);
+                requiresCompleteResult(query) ? CompletenessPolicy.COMPLETE_REQUIRED : CompletenessPolicy.TOP_K_ALLOWED);
     }
 
     public Result execute(String query, String exactText, Long kbId, List<Long> documentIds,
@@ -75,6 +77,15 @@ public class ExactTextExecutionService {
             log.warn("[execute][EXACT_TEXT_SEARCH 失败, phrase={}, error={}]", exactText, e.getMessage());
             return new Result(null, List.of(), false, "EXACT_TEXT_RETRIEVAL_FAILED", 0L, false);
         }
+    }
+
+    private boolean requiresCompleteResult(String query) {
+        if (StrUtil.isBlank(query)) return false;
+        if (StrUtil.containsAny(query, "全部", "所有", "哪些", "哪里", "哪些地方", "哪些文档", "哪些专利",
+                "列出", "列举", "分别", "多少", "几处", "几条", "出现在哪", "出现于哪些")) {
+            return true;
+        }
+        return !StrUtil.containsAny(query, "有没有", "是否", "有吗", "存在吗", "出现过吗", "包含吗");
     }
 
     private Evidence toEvidence(RetrievalResultDTO r) {
