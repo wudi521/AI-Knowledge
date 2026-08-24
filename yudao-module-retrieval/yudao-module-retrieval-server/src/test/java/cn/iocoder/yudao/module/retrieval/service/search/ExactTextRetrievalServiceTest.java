@@ -35,8 +35,8 @@ class ExactTextRetrievalServiceTest {
     @Test
     void phraseOnlyPathHydratesPublishedResultsAndSkipsOtherChannels() {
         when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
-        when(bm25Searcher.searchExactPhrase(eq("粒子化磁涌"), eq(1L), eq(List.of(6L)), eq(20), any()))
-                .thenReturn(List.of(Map.entry(101L, 7.2D)));
+        when(bm25Searcher.searchExactPhraseWithTotal(eq("粒子化磁涌"), eq(1L), eq(List.of(6L)), eq(20), any()))
+                .thenReturn(new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 7.2D)), 1L));
         when(resultFilter.filterPublished(Set.of(101L))).thenReturn(Set.of(101L));
         when(resultFilter.getChunkContents(List.of(101L))).thenReturn(Map.of(101L, "本发明涉及一种粒子化磁涌装置。"));
         when(resultFilter.getChunkMetadatas(List.of(101L))).thenReturn(Map.of(101L, "{}"));
@@ -55,15 +55,42 @@ class ExactTextRetrievalServiceTest {
         req.setKbIds(List.of(6L));
         req.setTenantId(1L);
         req.setUserId(9L);
+        req.setTopK(20);
 
         RetrievalSearchRespDTO resp = service.search(req);
 
         assertThat(resp.getResults()).hasSize(1);
+        assertThat(resp.getTotalHits()).isEqualTo(1L);
         assertThat(resp.getResults().get(0).getChannels()).containsExactly("exact_text");
         assertThat(resp.getChannels().getBm25()).isEqualTo(1);
         assertThat(resp.getChannels().getVector()).isZero();
         assertThat(resp.getChannels().getFused()).isZero();
         assertThat(resp.getAnalysis().getRoute()).isEqualTo("HYBRID_RAG");
-        verify(bm25Searcher).searchExactPhrase(eq("粒子化磁涌"), eq(1L), eq(List.of(6L)), eq(20), any());
+        verify(bm25Searcher).searchExactPhraseWithTotal(eq("粒子化磁涌"), eq(1L), eq(List.of(6L)), eq(20), any());
+    }
+
+    @Test
+    void totalHitsCanExceedReturnedTopKWithoutBeingLost() {
+        when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
+        when(bm25Searcher.searchExactPhraseWithTotal(eq("测试短语"), eq(1L), eq(List.of(6L)), eq(20), any()))
+                .thenReturn(new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 1D)), 21L));
+        when(resultFilter.filterPublished(Set.of(101L))).thenReturn(Set.of(101L));
+        when(resultFilter.getChunkContents(List.of(101L))).thenReturn(Map.of(101L, "测试短语"));
+        when(resultFilter.getChunkMetadatas(List.of(101L))).thenReturn(Map.of());
+        when(resultFilter.getChunkDocInfo(List.of(101L))).thenReturn(Map.of());
+
+        RetrievalSearchReqDTO req = new RetrievalSearchReqDTO();
+        req.setQuery("哪些地方出现“测试短语”？");
+        req.setExactText("测试短语");
+        req.setSearchMode("EXACT_TEXT_SEARCH");
+        req.setKbIds(List.of(6L));
+        req.setTenantId(1L);
+        req.setUserId(9L);
+        req.setTopK(20);
+
+        RetrievalSearchRespDTO resp = service.search(req);
+
+        assertThat(resp.getResults()).hasSize(1);
+        assertThat(resp.getTotalHits()).isEqualTo(21L);
     }
 }
