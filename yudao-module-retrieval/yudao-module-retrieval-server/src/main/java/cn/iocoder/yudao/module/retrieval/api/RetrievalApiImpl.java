@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
 import cn.iocoder.yudao.module.retrieval.controller.admin.search.vo.RetrievalRespVO;
 import cn.iocoder.yudao.module.retrieval.service.search.ExactTextRetrievalService;
+import cn.iocoder.yudao.module.retrieval.service.search.PlannedSearchService;
 import cn.iocoder.yudao.module.retrieval.service.search.SearchService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -25,14 +26,20 @@ public class RetrievalApiImpl implements RetrievalApi {
 
     @Resource private SearchService searchService;
     @Resource private ExactTextRetrievalService exactTextRetrievalService;
+    @Resource private PlannedSearchService plannedSearchService;
 
     @Override
     public CommonResult<RetrievalSearchRespDTO> search(RetrievalSearchReqDTO req) {
-        // Query Planner V2 显式快路径：精确原文只跑 ES match_phrase，禁止进入 QueryAnalysis/Vector/RRF/Rerank。
+        // Query Engine 显式快路径：精确原文只跑 ES match_phrase，禁止进入 QueryAnalysis/Vector/RRF/rerank。
         if (req != null && "EXACT_TEXT_SEARCH".equals(req.getSearchMode())) {
             return success(exactTextRetrievalService.search(req));
         }
+        // V3 规划检索：自然语言已在 Evidence Query Engine 理解完毕，Retrieval 仅执行，不得二次 QueryAnalysis。
+        if (req != null && "PLANNED_HYBRID".equals(req.getSearchMode())) {
+            return success(plannedSearchService.search(req));
+        }
 
+        // 兼容旧入口；V3 稳定后再删除 SearchService 内部 QueryAnalysis。
         RetrievalRespVO vo = searchService.search(req.getQuery(), req.getKbIds(), req.getTopK(),
                 req.getTenantId(), req.getUserId(), req.getHistory(), req.getTraceId(), req.getDocumentIds());
         RetrievalSearchRespDTO dto = new RetrievalSearchRespDTO();
