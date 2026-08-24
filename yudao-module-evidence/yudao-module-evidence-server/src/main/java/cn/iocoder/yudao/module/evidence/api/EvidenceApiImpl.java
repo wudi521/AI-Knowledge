@@ -10,9 +10,8 @@ import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceSlotValueDTO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
+import cn.iocoder.yudao.module.evidence.service.EvidenceQueryEngineV3Facade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryScopeResolver;
-import cn.iocoder.yudao.module.evidence.service.EvidenceService;
-import cn.iocoder.yudao.module.evidence.service.trace.EvidenceTraceInspector;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -24,31 +23,29 @@ import java.util.List;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
-/** 证据平台 对外 RPC 实现。Chat 与管理端 evaluate 共用同一查询范围解析和 EvidenceService 执行内核。 */
+/** 证据平台 RPC。Chat / Eval Runner 与管理端 evaluate 共用 Query Engine V3。 */
 @Slf4j
 @RestController
 @Validated
 public class EvidenceApiImpl implements EvidenceApi {
 
     @Resource
-    private EvidenceService evidenceService;
+    private EvidenceQueryEngineV3Facade queryEngineV3;
     @Resource
     private EvidenceQueryScopeResolver queryScopeResolver;
-    @Resource
-    private EvidenceTraceInspector traceInspector;
 
     @Override
     public CommonResult<EvidenceEvaluateRespDTO> evaluate(EvidenceEvaluateReqDTO req) {
+        if (req == null) return success(denied(null, "INVALID_REQUEST", "请求不能为空"));
         EvidenceQueryScopeResolver.Resolution scope = queryScopeResolver.resolve(
                 req.getKbIds(), req.getUserId(), req.getDomainCode());
         if (!scope.allowed()) {
             return success(denied(req, scope.reasonCode(), scope.message()));
         }
 
-        EvidenceEvaluateRespVO vo = evidenceService.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
+        EvidenceEvaluateRespVO vo = queryEngineV3.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
                 req.getTenantId(), req.getUserId(), req.getHistory(), req.getSkipSlotDetection(), req.getTraceId(),
                 scope.domainCode(), req.getContextResolutionJson(), req.getPlanBudget());
-        vo = traceInspector.enrich(vo, scope.kbIds(), scope.domainCode());
         return success(toDto(vo));
     }
 
@@ -192,5 +189,4 @@ public class EvidenceApiImpl implements EvidenceApi {
         dto.setFused(vo.getFused());
         return dto;
     }
-
 }
