@@ -6,12 +6,16 @@ import cn.iocoder.yudao.module.evidence.service.structured.core.ExecutionMode;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-/**
- * Planner 优先级门面：先处理会被“哪些/分别”误伤的强语义，再委托 QueryPlannerV2。
- */
+/** Planner 优先级门面：强语义先于“哪些/分别”等宽泛结构化信号。 */
 @Component
 public class QueryPlannerFacade {
+
+    private static final Pattern QUOTED = Pattern.compile("[\"“‘']([^\"”’']{1,200})[\"”’']");
+    private static final Pattern EXACT_SENTENCE = Pattern.compile(
+            "(?:原文(?:中)?(?:是否)?(?:包含|出现|有)|精确搜索|精确匹配|查找原文)(?:短语|词语|文字)?[：:]?\\s*([^？?，,。；;]{1,120})");
 
     private final QueryPlannerV2 delegate;
 
@@ -22,6 +26,35 @@ public class QueryPlannerFacade {
     public QueryPlan plan(String query, String domainCode, List<ChatTurnDTO> history,
                           List<Long> explicitEntityIds, String contextResolutionJson) {
         List<Long> ids = explicitEntityIds == null ? List.of() : explicitEntityIds.stream().distinct().toList();
+
+        // Exact Text 必须先于“哪些/出现”等宽泛候选，且必须有明确 phrase；否则反问，不降级向量搜索。
+        if (isExactTextIntent(query)) {
+            String phrase = extractExactText(query);
+            if (StrUtil.isBlank(phrase)) {
+                return QueryPlan.builder()
+                        .queryClass(QueryClass.CLARIFY)
+                        .executionMode(ExecutionMode.EXACT_TEXT_SEARCH)
+                        .domainCode(domainCode)
+                        .scopeType(ids.isEmpty() ? "CURRENT_KB" : "PREVIOUS_RESULT_SET")
+                        .entityIds(ids)
+                        .requiresClarification(true)
+                        .clarificationQuestion("请明确要在原文中精确查找的词或短语，建议用引号括起来。")
+                        .reasonCode("MISSING_EXACT_TEXT")
+                        .plannerSource("DETERMINISTIC")
+                        .build();
+            }
+            return QueryPlan.builder()
+                    .queryClass(QueryClass.SEMANTIC_QUERY)
+                    .executionMode(ExecutionMode.EXACT_TEXT_SEARCH)
+                    .domainCode(domainCode)
+                    .scopeType(ids.isEmpty() ? "CURRENT_KB" : "PREVIOUS_RESULT_SET")
+                    .entityIds(ids)
+                    .exactText(phrase)
+                    .completenessPolicy(CompletenessPolicy.COMPLETE_REQUIRED)
+                    .plannerSource("DETERMINISTIC")
+                    .build();
+        }
+
         ComparisonType comparison = comparison(query);
         if (comparison != ComparisonType.NONE) {
             return QueryPlan.builder()
@@ -52,6 +85,29 @@ public class QueryPlannerFacade {
                     .build();
         }
         return delegate.plan(query, domainCode, history, contextResolutionJson);
+    }
+
+    private boolean isExactTextIntent(String query) {
+        return StrUtil.isNotBlank(query) && StrUtil.containsAny(query,
+                "原文出现", "原文中出现", "原文包含", "原文中包含", "精确搜索", "精确匹配", "查找原文");
+    }
+
+    private String extractExactText(String query) {
+        if (StrUtil.isBlank(query)) return null;
+        Matcher quoted = QUOTED.matcher(query);
+        if (quoted.find()) return normalizePhrase(quoted.group(1));
+        Matcher sentence = EXACT_SENTENCE.matcher(query);
+        if (sentence.find()) return normalizePhrase(sentence.group(1));
+        return null;
+    }
+
+    private String normalizePhrase(String value) {
+        if (value == null) return null;
+        String phrase = value.trim()
+                .replaceAll("^(是否|有没有|有无|过|了|这个|这个词|这个短语)\\s*", "")
+                .replaceAll("\\s*(吗|么|呢|？|\\?)$", "")
+                .trim();
+        return StrUtil.isBlank(phrase) ? null : StrUtil.maxLength(phrase, 200);
     }
 
     private ComparisonType comparison(String query) {
