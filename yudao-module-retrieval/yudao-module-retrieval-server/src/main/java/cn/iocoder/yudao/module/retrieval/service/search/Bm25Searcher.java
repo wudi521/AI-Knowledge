@@ -34,6 +34,11 @@ public class Bm25Searcher {
 
     private RestClient client;
 
+    /** 带 ES 真实总命中数的检索结果，避免将 TopK 返回条数误当全集数量。 */
+    public record SearchHits(List<Map.Entry<Long, Double>> hits, long totalHits) {
+        public static SearchHits empty() { return new SearchHits(List.of(), 0L); }
+    }
+
     @PostConstruct
     public void init() {
         try {
@@ -69,7 +74,6 @@ public class Bm25Searcher {
         return search(query, tenantId, kbIds, topK, null);
     }
 
-    /** BM25 检索(支持显式 documentId 硬过滤; P0-07: SCOPED_RAG 必须限定目标文档) */
     public List<Map.Entry<Long, Double>> search(String query, Long tenantId, List<Long> kbIds, int topK,
                                                 List<Long> documentIds) {
         if (client == null) return List.of();
@@ -87,24 +91,29 @@ public class Bm25Searcher {
                     filter.add(Map.of("terms", Map.of("document_id", patentDocumentIds)));
                 }
             }
-
             Map<String, Object> bool = new HashMap<>();
             bool.put("must", List.of(Map.of("match", Map.of("content", Map.of("query", query, "analyzer", "ik_smart")))));
             bool.put("filter", filter);
-            return execute(Map.of("query", Map.of("bool", bool), "size", topK, "track_scores", true));
+            return execute(Map.of("query", Map.of("bool", bool), "size", topK, "track_scores", true)).hits();
         } catch (Exception e) {
             log.error("[bm25][检索失败, query={}]", query, e);
             return List.of();
         }
     }
 
-    /**
-     * EXACT_TEXT_SEARCH：只使用 ES match_phrase，不做向量/RRF/Rerank。
-     * phrase 必须是 Planner 已抽取出的目标原文短语，禁止把“原文包含/是否出现”等指令词拼进查询。
-     */
+    /** 兼容旧调用：仅返回 TopK hits。需要完整性判断时应调用 searchExactPhraseWithTotal。 */
     public List<Map.Entry<Long, Double>> searchExactPhrase(String phrase, Long tenantId, List<Long> kbIds,
                                                            int topK, List<Long> documentIds) {
-        if (client == null || phrase == null || phrase.isBlank()) return List.of();
+        return searchExactPhraseWithTotal(phrase, tenantId, kbIds, topK, documentIds).hits();
+    }
+
+    /**
+     * EXACT_TEXT_SEARCH：只使用 ES match_phrase，并返回真实 totalHits。
+     * track_total_hits=true，禁止用 hits.size() 推断全集数量。
+     */
+    public SearchHits searchExactPhraseWithTotal(String phrase, Long tenantId, List<Long> kbIds,
+                                                 int topK, List<Long> documentIds) {
+        if (client == null || phrase == null || phrase.isBlank()) return SearchHits.empty();
         try {
             List<Map<String, Object>> filter = baseFilters(tenantId, kbIds);
             if (documentIds != null && !documentIds.isEmpty()) {
@@ -113,17 +122,17 @@ public class Bm25Searcher {
             Map<String, Object> bool = new HashMap<>();
             bool.put("must", List.of(Map.of("match_phrase", Map.of("content", Map.of("query", phrase, "slop", 0)))));
             bool.put("filter", filter);
-            return execute(Map.of("query", Map.of("bool", bool), "size", topK, "track_scores", true));
+            return execute(Map.of(
+                    "query", Map.of("bool", bool),
+                    "size", topK,
+                    "track_scores", true,
+                    "track_total_hits", true));
         } catch (Exception e) {
-            log.error("[searchExactPhrase][精确短语检索失败, phrase={}]", phrase, e);
-            return List.of();
+            log.error("[searchExactPhraseWithTotal][精确短语检索失败, phrase={}]", phrase, e);
+            return SearchHits.empty();
         }
     }
 
-    /**
-     * EXACT_METADATA 快路径：已知专利编号时，不再要求 query 文本命中，直接在精确 documentId 内取已发布 chunk。
-     * chunk metadata 已携带整份专利的结构化著录字段，可作为 [C1] 来源锚点。
-     */
     public List<Map.Entry<Long, Double>> searchExactDocument(String query, Long tenantId, List<Long> kbIds, int topK) {
         if (client == null) return List.of();
         try {
@@ -136,7 +145,7 @@ public class Bm25Searcher {
             filter.add(Map.of("terms", Map.of("document_id", documentIds)));
             Map<String, Object> bool = new HashMap<>();
             bool.put("filter", filter);
-            return execute(Map.of("query", Map.of("bool", bool), "size", topK, "track_scores", false));
+            return execute(Map.of("query", Map.of("bool", bool), "size", topK, "track_scores", false)).hits();
         } catch (Exception e) {
             log.error("[searchExactDocument][精确专利文档检索失败, query={}]", query, e);
             return List.of();
@@ -151,23 +160,40 @@ public class Bm25Searcher {
         return filter;
     }
 
-    private List<Map.Entry<Long, Double>> execute(Map<String, Object> body) throws Exception {
+    private SearchHits execute(Map<String, Object> body) throws Exception {
         Request request = new Request("POST", "/" + index + "/_search");
         request.setJsonEntity(JSONUtil.toJsonStr(body));
         Response response = client.performRequest(request);
         JSONObject resp = JSONUtil.parseObj(new String(response.getEntity().getContent().readAllBytes()));
-        JSONArray hits = resp.getJSONObject("hits").getJSONArray("hits");
+        JSONObject hitsObject = resp.getJSONObject("hits");
+        JSONArray hits = hitsObject.getJSONArray("hits");
+        long total = extractTotalHits(hitsObject, hits == null ? 0 : hits.size());
         List<Map.Entry<Long, Double>> result = new ArrayList<>();
-        for (Object o : hits) {
-            JSONObject hit = (JSONObject) o;
-            result.add(Map.entry(hit.getJSONObject("_source").getLong("chunk_id"), hit.getDouble("_score", 1D)));
+        if (hits != null) {
+            for (Object o : hits) {
+                JSONObject hit = (JSONObject) o;
+                result.add(Map.entry(hit.getJSONObject("_source").getLong("chunk_id"), hit.getDouble("_score", 1D)));
+            }
         }
-        return result;
+        return new SearchHits(result, total);
     }
 
-    /**
-     * 返回 null 表示不是带精确专利标识的查询；返回空集合表示是精确查询但当前 KB 内没有对应文档。
-     */
+    /** ES7/8 hits.total 是对象(value/relation)，兼容极少数旧形态数值。 */
+    private long extractTotalHits(JSONObject hitsObject, int fallback) {
+        if (hitsObject == null) return fallback;
+        Object total = hitsObject.get("total");
+        if (total instanceof Number number) return number.longValue();
+        if (total instanceof JSONObject object) {
+            Long value = object.getLong("value");
+            return value != null ? value : fallback;
+        }
+        if (total instanceof Map<?, ?> map) {
+            Object value = map.get("value");
+            if (value instanceof Number number) return number.longValue();
+        }
+        return fallback;
+    }
+
     private List<Long> resolvePatentDocumentIds(String query, List<Long> kbIds) {
         if (kbIds == null || kbIds.isEmpty()) return null;
         PatentQueryPreParser.PatentQueryHints hints = patentQueryPreParser.parse(query);
