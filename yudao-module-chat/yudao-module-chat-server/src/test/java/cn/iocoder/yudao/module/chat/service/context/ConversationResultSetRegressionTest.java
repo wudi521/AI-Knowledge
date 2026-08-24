@@ -15,11 +15,12 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * P0 回归：上一轮结构化查询产生 4 个实体后，下一轮“4个...”必须绑定该 ResultSet，
- * 不能重新从自然语言 answer 中反推实体，更不能退化为 CURRENT_KB。
+ * P0 回归：ResultSet 只服务真正的多轮引用，不得污染后续独立问题。
  */
 @ExtendWith(MockitoExtension.class)
 class ConversationResultSetRegressionTest {
@@ -33,8 +34,8 @@ class ConversationResultSetRegressionTest {
     void setUp() {
         resolver = new ReferenceResolver();
         ReflectionTestUtils.setField(resolver, "resultSetService", resultSetService);
-        when(resultSetService.revalidate(any(), any(), any(), any())).thenReturn(RevalidationResult.valid());
-        when(resultSetService.materialize(any(ResultSetSnapshot.class)))
+        lenient().when(resultSetService.revalidate(any(), any(), any(), any())).thenReturn(RevalidationResult.valid());
+        lenient().when(resultSetService.materialize(any(ResultSetSnapshot.class)))
                 .thenAnswer(inv -> inv.<ResultSetSnapshot>getArgument(0).getOrderedEntityIds());
     }
 
@@ -79,5 +80,34 @@ class ConversationResultSetRegressionTest {
                 .isEqualTo(QueryContextResolution.SCOPE_PREVIOUS_RESULT_SET);
         assertThat(resolution.getResultSetId()).isEqualTo("rs-four-patents");
         assertThat(resolution.getExplicitEntityIds()).containsExactlyElementsOf(ids);
+        assertThat(resolution.getMetricCode()).isEqualTo("DOCUMENT_COUNT");
+        assertThat(resolution.getOperation()).isEqualTo("COUNT");
+    }
+
+    @Test
+    void unrelatedFollowUpDoesNotTouchPreviousResultSet() {
+        ContextFrame frame = ContextFrame.builder()
+                .conversationId(199L)
+                .seq(1)
+                .queryId("q-previous")
+                .entityType("PATENT_DOCUMENT")
+                .resultSetId("rs-previous")
+                .metricCode("DOCUMENT_COUNT")
+                .operation("COUNT")
+                .queryType("AGGREGATE")
+                .build();
+
+        QueryContextResolution resolution = resolver.resolve(
+                "你谁啊",
+                List.of(frame),
+                "PATENT_DOCUMENT",
+                1L,
+                6L,
+                "PATENT");
+
+        assertThat(resolution.isClarifyRequired()).isFalse();
+        assertThat(resolution.getScopeType()).isEqualTo(QueryContextResolution.SCOPE_CURRENT_KB);
+        assertThat(resolution.getResultSetId()).isNull();
+        verifyNoInteractions(resultSetService);
     }
 }
