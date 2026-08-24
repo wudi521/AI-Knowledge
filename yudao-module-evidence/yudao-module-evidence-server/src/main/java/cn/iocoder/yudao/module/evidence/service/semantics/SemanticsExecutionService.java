@@ -16,24 +16,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * PER_ENTITY_SEMANTIC 语义执行(CQ-38): 对明确实体集逐实体 SCOPED_RAG。
- * <p>
- * 场景: 多轮中引用了上一轮结果集, 但属性("核心技术分别是什么"/"技术方案")无法结构化消解
- * (无注册 metric/field) → 对每个实体限定文档检索(hard scope), 聚合证据后一次生成"每实体一值"回答。
- * <p>
- * CROSS_ENTITY_SEMANTIC: 无历史实体集时, 从知识库枚举已发布文档作为候选实体集, 再做逐实体语义执行。
- * <p>
- * 约束:
- * - 实体数受 {@code yudao.evidence.semantics.max-semantic-entities} 限制, 超限 → CLARIFY(禁止静默截断);
- * - 逐实体检索必须限定目标文档(SCOPED_RAG), 禁止全库检索后过滤;
- * - 无任何证据 → answerable=false(不猜); 生成失败/claimFail → 透传。
+ * 语义执行服务：单实体/逐实体/跨实体比较都必须先 hard-scope 到目标文档，禁止全局 TopK 垄断。
  */
 @Slf4j
 @Service
 public class SemanticsExecutionService {
 
-    /** 逐实体 topK(每实体少量证据即可支撑逐项回答, 避免吞没其他实体) */
     private static final int PER_ENTITY_TOP_K = 4;
+    private static final int COMPARE_PER_ENTITY_TOP_K = 2;
 
     private final EvidenceAssembler assembler;
     private final AnswerPipeline answerPipeline;
@@ -48,17 +38,16 @@ public class SemanticsExecutionService {
         this.knowledgeApi = knowledgeApi;
     }
 
-    /** 语义执行结果 */
     public record Result(List<Evidence> evidences, GenerationResult generation,
                          List<Long> entityIds, boolean overLimit, int limit) {
     }
 
-    /**
-     * 对每个实体执行限定文档检索, 聚合证据后生成逐实体回答。
-     *
-     * @param entityIds 明确实体集(已消解, 非空)
-     * @return overLimit=true 表示超限需 CLARIFY; evidences 为空表示无证据; 否则含生成结果
-     */
+    /** 跨实体比较结果：coveredEntityIds 用于 Coverage Guard，compare 不允许“4个对象只召回1个”。 */
+    public record CompareResult(List<Evidence> evidences, GenerationResult generation,
+                                List<Long> entityIds, List<Long> coveredEntityIds,
+                                boolean overLimit, int limit, boolean coverageInsufficient) {
+    }
+
     public Result execute(String query, Long kbId, List<Long> entityIds, Long tenantId, Long userId,
                           List<ChatTurnDTO> history, String traceId) {
         if (kbId == null || entityIds == null || entityIds.isEmpty()) {
@@ -67,50 +56,74 @@ public class SemanticsExecutionService {
         int limit = properties.getSemantics().getMaxSemanticEntities();
         List<Long> ids = entityIds.stream().distinct().toList();
         if (ids.size() > limit) {
-            // 超限: 不静默截断, 由调用方要求缩小范围
-            log.info("[execute][entityCount({}) > maxSemanticEntities({}), 要求缩小范围: query={}]",
-                    ids.size(), limit, query);
+            log.info("[execute][entityCount({}) > maxSemanticEntities({}), 要求缩小范围: query={}]", ids.size(), limit, query);
             return new Result(null, null, ids, true, limit);
         }
         List<Evidence> all = new ArrayList<>();
         for (Long entityId : ids) {
-            // 逐实体 SCOPED_RAG: 检索侧 hard scope 到单文档
             AssembledEvidence assembled = assembler.assemble(query, List.of(kbId), PER_ENTITY_TOP_K,
                     tenantId, userId, history, traceId, List.of(entityId));
-            if (assembled != null && assembled.getEvidences() != null) {
-                all.addAll(assembled.getEvidences());
-            }
+            if (assembled != null && assembled.getEvidences() != null) all.addAll(assembled.getEvidences());
         }
-        if (all.isEmpty()) {
-            return new Result(List.of(), null, ids, false, limit);
-        }
+        if (all.isEmpty()) return new Result(List.of(), null, ids, false, limit);
         GenerationResult generation = answerPipeline.generateWithClaims(query, all, history);
         return new Result(all, generation, ids, false, limit);
     }
 
-    /**
-     * CROSS_ENTITY_SEMANTIC(CQ-38): 无历史实体集时, 从知识库枚举已发布文档作为候选实体集,
-     * 再做逐实体语义执行。实体数受 maxSemanticEntities 限制, 超限 → overLimit(要求缩小范围)。
-     */
     public Result executeCrossEntity(String query, Long kbId, Long tenantId, Long userId,
                                      List<ChatTurnDTO> history, String traceId) {
-        if (kbId == null) {
-            return new Result(List.of(), null, List.of(), false, 0);
-        }
-        List<Long> ids = collectPublishedDocumentIds(kbId);
-        return execute(query, kbId, ids, tenantId, userId, history, traceId);
+        if (kbId == null) return new Result(List.of(), null, List.of(), false, 0);
+        return execute(query, kbId, collectPublishedDocumentIds(kbId), tenantId, userId, history, traceId);
     }
 
-    /** 枚举知识库下已发布文档 id(领域无关; RPC 失败返回空集) */
+    /**
+     * CROSS_ENTITY_COMPARE：对每个候选实体独立检索，再一次综合。
+     * requireAllCoverage=true 时，任一实体无证据都禁止进入生成阶段。
+     */
+    public CompareResult executeCompare(String query, Long kbId, List<Long> entityIds,
+                                        Long tenantId, Long userId, List<ChatTurnDTO> history,
+                                        String traceId, boolean requireAllCoverage) {
+        List<Long> ids = entityIds == null || entityIds.isEmpty()
+                ? collectPublishedDocumentIds(kbId)
+                : entityIds.stream().distinct().toList();
+        int limit = properties.getSemantics().getMaxSemanticEntities();
+        if (kbId == null || ids.isEmpty()) {
+            return new CompareResult(List.of(), null, ids, List.of(), false, limit, true);
+        }
+        if (ids.size() > limit) {
+            return new CompareResult(null, null, ids, List.of(), true, limit, false);
+        }
+        List<Evidence> all = new ArrayList<>();
+        List<Long> covered = new ArrayList<>();
+        for (Long entityId : ids) {
+            AssembledEvidence assembled = assembler.assemble(query, List.of(kbId), COMPARE_PER_ENTITY_TOP_K,
+                    tenantId, userId, history, traceId, List.of(entityId));
+            List<Evidence> one = assembled != null && assembled.getEvidences() != null
+                    ? assembled.getEvidences() : List.of();
+            if (!one.isEmpty()) {
+                covered.add(entityId);
+                all.addAll(one);
+            }
+        }
+        boolean insufficient = covered.stream().distinct().count() < 2
+                || (requireAllCoverage && covered.stream().distinct().count() < ids.size());
+        if (insufficient || all.isEmpty()) {
+            log.info("[executeCompare][跨实体证据覆盖不足: expected={}, covered={}, query={}]", ids.size(), covered.size(), query);
+            return new CompareResult(all, null, ids, covered, false, limit, true);
+        }
+        GenerationResult generation = answerPipeline.generateWithClaims(query, all, history);
+        return new CompareResult(all, generation, ids, covered, false, limit, false);
+    }
+
     private List<Long> collectPublishedDocumentIds(Long kbId) {
+        if (kbId == null) return List.of();
         try {
             CommonResult<List<Long>> resp = knowledgeApi.getPublishedDocumentIds(kbId);
             return resp != null && resp.isSuccess() && resp.getData() != null
-                    ? resp.getData() : List.of();
+                    ? resp.getData().stream().distinct().toList() : List.of();
         } catch (Exception e) {
             log.warn("[collectPublishedDocumentIds][kb({}) 枚举已发布文档失败: {}]", kbId, e.getMessage());
             return List.of();
         }
     }
-
 }
