@@ -31,7 +31,18 @@ public class RetrievalSearchReqDTO {
     /** P0-09: 统一主 traceId(q- 前缀, 对话层下发; 贯穿检索/证据全链路) */
     private String traceId;
 
-    /** CQ-38: 外部显式限定文档集(逐实体语义执行 PER_ENTITY_SEMANTIC); 非空时作为 hard scope, 禁止全库检索后过滤 */
+    /** CQ-38: 外部显式限定文档集; 非空时作为 hard scope */
     private List<Long> documentIds;
+
+    /**
+     * Planner 显式执行模式。当前仅允许受限值 EXACT_TEXT_SEARCH；空表示走既有 QueryAnalysis 路由。
+     * 这是内部可信提示，不接受任意 ES DSL/SQL。
+     */
+    private String searchMode;
+
+    /**
+     * EXACT_TEXT_SEARCH 的目标原文短语。与 query 分离，避免把“原文包含/是否出现”等指令词送入 match_phrase。
+     */
+    private String exactText;
 
 }
