@@ -76,7 +76,6 @@ public class Bm25Searcher {
         try {
             List<Map<String, Object>> filter = baseFilters(tenantId, kbIds);
             if (documentIds != null && !documentIds.isEmpty()) {
-                // 显式 scope: 只检索目标文档, 不依赖 query 文本重新解析
                 filter.add(Map.of("terms", Map.of("document_id", documentIds)));
             } else {
                 List<Long> patentDocumentIds = resolvePatentDocumentIds(query, kbIds);
@@ -95,6 +94,28 @@ public class Bm25Searcher {
             return execute(Map.of("query", Map.of("bool", bool), "size", topK, "track_scores", true));
         } catch (Exception e) {
             log.error("[bm25][检索失败, query={}]", query, e);
+            return List.of();
+        }
+    }
+
+    /**
+     * EXACT_TEXT_SEARCH：只使用 ES match_phrase，不做向量/RRF/Rerank。
+     * phrase 必须是 Planner 已抽取出的目标原文短语，禁止把“原文包含/是否出现”等指令词拼进查询。
+     */
+    public List<Map.Entry<Long, Double>> searchExactPhrase(String phrase, Long tenantId, List<Long> kbIds,
+                                                           int topK, List<Long> documentIds) {
+        if (client == null || phrase == null || phrase.isBlank()) return List.of();
+        try {
+            List<Map<String, Object>> filter = baseFilters(tenantId, kbIds);
+            if (documentIds != null && !documentIds.isEmpty()) {
+                filter.add(Map.of("terms", Map.of("document_id", documentIds)));
+            }
+            Map<String, Object> bool = new HashMap<>();
+            bool.put("must", List.of(Map.of("match_phrase", Map.of("content", Map.of("query", phrase, "slop", 0)))));
+            bool.put("filter", filter);
+            return execute(Map.of("query", Map.of("bool", bool), "size", topK, "track_scores", true));
+        } catch (Exception e) {
+            log.error("[searchExactPhrase][精确短语检索失败, phrase={}]", phrase, e);
             return List.of();
         }
     }
@@ -124,7 +145,7 @@ public class Bm25Searcher {
 
     private List<Map<String, Object>> baseFilters(Long tenantId, List<Long> kbIds) {
         List<Map<String, Object>> filter = new ArrayList<>();
-        filter.add(Map.of("term", Map.of("tenant_id", tenantId)));
+        if (tenantId != null) filter.add(Map.of("term", Map.of("tenant_id", tenantId)));
         filter.add(Map.of("term", Map.of("status", "PUBLISHED")));
         if (kbIds != null && !kbIds.isEmpty()) filter.add(Map.of("terms", Map.of("kb_id", kbIds)));
         return filter;
@@ -159,7 +180,6 @@ public class Bm25Searcher {
             List<Long> ids = knowledgeApi.lookupPatentDocuments(req).getCheckedData();
             return ids == null ? List.of() : ids;
         } catch (Exception e) {
-            // 精确查询的定位 RPC 失败时不应退化为全库搜索，避免跨专利污染。
             log.warn("[resolvePatentDocumentIds][专利文档定位失败, fail-closed: {}]", e.getMessage());
             return List.of();
         }
