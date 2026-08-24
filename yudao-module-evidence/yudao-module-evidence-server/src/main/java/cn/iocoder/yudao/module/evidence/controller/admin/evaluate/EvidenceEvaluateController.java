@@ -5,9 +5,8 @@ import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateReqVO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
+import cn.iocoder.yudao.module.evidence.service.EvidenceQueryEngineV3Facade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryScopeResolver;
-import cn.iocoder.yudao.module.evidence.service.EvidenceService;
-import cn.iocoder.yudao.module.evidence.service.trace.EvidenceTraceInspector;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
@@ -30,14 +29,12 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 public class EvidenceEvaluateController {
 
     @Resource
-    private EvidenceService evidenceService;
+    private EvidenceQueryEngineV3Facade queryEngineV3;
     @Resource
     private EvidenceQueryScopeResolver queryScopeResolver;
-    @Resource
-    private EvidenceTraceInspector traceInspector;
 
     @PostMapping("/evaluate")
-    @Operation(summary = "统一知识搜索/证据评估(Query Planner→Structured/Exact/RAG/Compare→Evidence)")
+    @Operation(summary = "Query Engine V3 单轮评估(Selection→bounded retrieval→EntitySet→Action→Evidence)")
     @PreAuthorize("@ss.hasPermission('evidence:evaluate')")
     public CommonResult<EvidenceEvaluateRespVO> evaluate(@Valid @RequestBody EvidenceEvaluateReqVO req) {
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
@@ -46,15 +43,13 @@ public class EvidenceEvaluateController {
 
         EvidenceQueryScopeResolver.Resolution scope = queryScopeResolver.resolve(req.getKbIds(), userId, null);
         if (!scope.allowed()) {
-            EvidenceEvaluateRespVO resp = denied(req.getQuery(), scope.reasonCode(), scope.message());
-            return success(traceInspector.enrich(resp, req.getKbIds(), null));
+            return success(denied(req.getQuery(), scope.reasonCode(), scope.message()));
         }
 
-        // 管理端搜索明确为单轮：history/contextResolution 均为空，但执行内核与 Chat 完全相同。
-        EvidenceEvaluateRespVO resp = evidenceService.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
+        // 管理端明确为单轮；与 Chat 共用同一个 V3 Query Engine，只是不携带 history/context。
+        return success(queryEngineV3.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
                 tenantId, userId, List.of(), req.getSkipSlotDetection(), null,
-                scope.domainCode(), null, null);
-        return success(traceInspector.enrich(resp, scope.kbIds(), scope.domainCode()));
+                scope.domainCode(), null, null));
     }
 
     private EvidenceEvaluateRespVO denied(String query, String reasonCode, String message) {
@@ -74,5 +69,4 @@ public class EvidenceEvaluateController {
         resp.setStages(List.of());
         return resp;
     }
-
 }
