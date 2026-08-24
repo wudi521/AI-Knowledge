@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.assemble.AssembledEvidence;
 import cn.iocoder.yudao.module.evidence.service.assemble.EvidenceAssembler;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
+import cn.iocoder.yudao.module.evidence.service.structured.patent.PatentEntityIdentityProvider;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,7 +36,8 @@ class SemanticsExecutionServiceCompareTest {
     void setUp() {
         EvidenceProperties properties = new EvidenceProperties();
         properties.getSemantics().setMaxSemanticEntities(10);
-        service = new SemanticsExecutionService(assembler, answerPipeline, properties, knowledgeApi);
+        service = new SemanticsExecutionService(assembler, answerPipeline, properties, knowledgeApi,
+                List.of(new PatentEntityIdentityProvider()));
     }
 
     @Test
@@ -57,7 +59,8 @@ class SemanticsExecutionServiceCompareTest {
                 .thenReturn(GenerationResult.builder().answer("ok").claimFail(false).build());
 
         SemanticsExecutionService.CompareResult result = service.executeCompare(
-                "哪些专利比较相似？", 6L, List.of(65L, 66L, 67L, 68L), 1L, 1L, List.of(), "q-test", true);
+                "哪些专利比较相似？", 6L, "PATENT", List.of(65L, 66L, 67L, 68L),
+                1L, 1L, List.of(), "q-test", true);
 
         assertThat(result.coverageInsufficient()).isFalse();
         assertThat(result.entityIds()).containsExactly(65L, 66L, 67L);
@@ -83,7 +86,8 @@ class SemanticsExecutionServiceCompareTest {
                 });
 
         SemanticsExecutionService.CompareResult result = service.executeCompare(
-                "这三个专利有什么共同点？", 6L, List.of(65L, 66L, 67L), 1L, 1L, List.of(), "q-test", true);
+                "这三个专利有什么共同点？", 6L, "PATENT", List.of(65L, 66L, 67L),
+                1L, 1L, List.of(), "q-test", true);
 
         assertThat(result.coverageInsufficient()).isTrue();
         assertThat(result.entityIds()).containsExactly(65L, 66L, 67L);
