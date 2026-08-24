@@ -28,6 +28,20 @@ public class EvidenceProperties {
     /** 生成管线配置 */
     private Pipeline pipeline = new Pipeline();
 
+    /** 语义执行配置(CQ-38) */
+    private Semantics semantics = new Semantics();
+
+    /**
+     * 语义执行配置(PER_ENTITY_SEMANTIC/CROSS_ENTITY_SEMANTIC)
+     */
+    @Data
+    public static class Semantics {
+
+        /** PER_ENTITY_SEMANTIC 单轮最多实体数(超限 CLARIFY 要求缩小, 默认 10) */
+        private int maxSemanticEntities = 10;
+
+    }
+
     /**
      * 生成管线配置(P0-11: 整体查询 Deadline, 禁止单个请求无限拖 2~3 分钟)
      */

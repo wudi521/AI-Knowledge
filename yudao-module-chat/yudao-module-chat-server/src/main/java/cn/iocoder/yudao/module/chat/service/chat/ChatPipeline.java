@@ -802,7 +802,7 @@ public class ChatPipeline {
                     .operation(sr.getOperation())
                     .scopeType(sr.getScopeType())
                     .queryType(sr.getQueryType())
-                    .executionMode("STRUCTURED")
+                    .executionMode(resp.getExecutionMode() != null ? resp.getExecutionMode() : "STRUCTURED")
                     .queryText(StrUtil.maxLength(resp.getQuery(), 200))
                     .build());
         } catch (Exception e) {

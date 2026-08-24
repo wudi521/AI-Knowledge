@@ -66,13 +66,16 @@ public class StructuredQueryService {
         /** 非结构化查询(交还 RAG 路径) */
         NOT_STRUCTURED,
         /** 结构化但不可作答(数据源不支持/指标未注册/数据集不完整) */
-        UNANSWERABLE
+        UNANSWERABLE,
+        /** 无法结构化但已有明确实体集 → 逐实体语义执行(PER_ENTITY_SEMANTIC; CQ-38) */
+        SEMANTIC
     }
 
     /** 处理结果 */
     public record HandleResult(State state, StructuredQueryPlan plan,
                                MetricDefinition metric, StructuredQueryResult result,
-                               String answer, String clarificationQuestion) {
+                               String answer, String clarificationQuestion,
+                               String reasonCode, List<Long> semanticEntityIds) {
     }
 
     /**
@@ -94,16 +97,17 @@ public class StructuredQueryService {
     public HandleResult handle(String query, Long kbId, String domainCode, List<ChatTurnDTO> history,
                                List<Long> explicitEntityIds, String fieldCodeHint) {
         if (StrUtil.isBlank(query) || kbId == null) {
-            return new HandleResult(State.UNANSWERABLE, null, null, null, null, null);
+            return new HandleResult(State.UNANSWERABLE, null, null, null, null, null,
+                    StructuredFailureReason.AMBIGUOUS_SCOPE, null);
         }
         // Level-1: 确定性候选信号
         StructuredQueryPreParser.PreParsedQuery pre = preParser.parse(query);
         if (!completenessGuard.isStructuredCandidate(query)) {
-            return new HandleResult(State.NOT_STRUCTURED, null, null, null, null, null);
+            return new HandleResult(State.NOT_STRUCTURED, null, null, null, null, null, null, null);
         }
         // 领域未注册(非结构化领域且无 Domain Pack) → 交还 RAG 或拒答
         if (domainCode == null || metricRegistry.all(domainCode).isEmpty()) {
-            return new HandleResult(State.NOT_STRUCTURED, null, null, null, null, null);
+            return new HandleResult(State.NOT_STRUCTURED, null, null, null, null, null, null, null);
         }
 
         // Level-2: metric 解析(Registry 同义词, 禁止硬编码业务词)
@@ -111,14 +115,29 @@ public class StructuredQueryService {
         // CQ-12/15: metric 未命中但命中 Field(公布号/申请号等维度字段) → 字段 LIST(每实体一值), 非聚合
         FieldDefinition field = null;
         if (metric == null) {
-            field = fieldCodeHint != null
-                    ? fieldRegistry.byCode(domainCode, fieldCodeHint).orElse(null)
-                    : fieldRegistry.findByAlias(query, domainCode).orElse(null);
+            if (StrUtil.isNotBlank(fieldCodeHint)) {
+                // 显式继承/解析的字段编码(chat 侧已消解) → 未注册即 UNSUPPORTED_FIELD
+                field = fieldRegistry.byCode(domainCode, fieldCodeHint).orElse(null);
+                if (field == null) {
+                    if (explicitEntityIds != null && !explicitEntityIds.isEmpty()) {
+                        return semanticResult(kbId, domainCode, explicitEntityIds);
+                    }
+                    return clarifyResult(domainCode, "该字段暂不支持结构化查询。",
+                            StructuredFailureReason.UNSUPPORTED_FIELD);
+                }
+            } else {
+                field = fieldRegistry.findByAlias(query, domainCode).orElse(null);
+            }
             if (field != null) {
                 metric = fieldToMetric(field, domainCode);
                 metricRegistry.register(metric); // 供 Executor 按 metricCode 查找字段适配器
+            } else if (explicitEntityIds != null && !explicitEntityIds.isEmpty()) {
+                // CQ-38: 已引用上一轮结果集但指标/字段无法结构化消解("核心技术分别是什么")
+                // → 逐实体语义执行(每实体 SCOPED_RAG), 禁止 CLARIFY 防猜导致多轮卡死
+                return semanticResult(kbId, domainCode, explicitEntityIds);
             } else {
-                return clarifyResult(domainCode, buildMetricClarify(domainCode));
+                return clarifyResult(domainCode, buildMetricClarify(domainCode),
+                        StructuredFailureReason.MISSING_METRIC);
             }
         }
 
@@ -130,7 +149,8 @@ public class StructuredQueryService {
             queryType = QueryType.LIST;
         }
         if (op != Operation.NONE && !metric.getSupportedOperations().contains(op)) {
-            return clarifyResult(domainCode, "该指标不支持“" + op + "”运算，请换一种问法。");
+            return clarifyResult(domainCode, "该指标不支持“" + op + "”运算，请换一种问法。",
+                    StructuredFailureReason.UNSUPPORTED_OPERATION);
         }
 
         // 范围解析(TOP_N 的数量词是 limit, 不是范围对象)
@@ -144,7 +164,8 @@ public class StructuredQueryService {
             StructuredQueryContextResolver.ScopeResolution sr =
                     contextResolver.resolve(pre, domainCode, kbId, history);
             if (sr.clarified()) {
-                return clarifyResult(domainCode, sr.clarificationQuestion());
+                return clarifyResult(domainCode, sr.clarificationQuestion(),
+                        StructuredFailureReason.AMBIGUOUS_SCOPE);
             }
             scope = sr.scope();
         }
@@ -170,15 +191,51 @@ public class StructuredQueryService {
         if (result == null || result.isUnsupported()) {
             log.warn("[handle][query({}) 结构化执行不支持: {}]", query,
                     result == null ? "null" : result.getUnsupportedReason());
-            return new HandleResult(State.UNANSWERABLE, plan, metric, result, null, null);
+            return new HandleResult(State.UNANSWERABLE, plan, metric, result, null, null,
+                    reasonForUnsupported(result), null);
         }
 
         EntityDefinition entity = entityRegistry.lookup(domainCode, metric.getEntityType()).orElse(null);
         String answer = renderer.render(plan, metric, entity, result);
         if (StrUtil.isBlank(answer)) {
-            return new HandleResult(State.UNANSWERABLE, plan, metric, result, null, null);
+            return new HandleResult(State.UNANSWERABLE, plan, metric, result, null, null,
+                    StructuredFailureReason.EMPTY_RESULT_SET, null);
         }
-        return new HandleResult(State.ANSWER, plan, metric, result, answer, null);
+        return new HandleResult(State.ANSWER, plan, metric, result, answer, null, null, null);
+    }
+
+    /** CQ-38: 无法结构化但已有明确实体集 → 逐实体语义执行(PER_ENTITY_SEMANTIC) */
+    private HandleResult semanticResult(Long kbId, String domainCode, List<Long> entityIds) {
+        QueryScope scope = QueryScope.documentSet(kbId, entityIds);
+        StructuredQueryPlan plan = StructuredQueryPlan.builder()
+                .route("PER_ENTITY_SEMANTIC")
+                .domainCode(domainCode)
+                .scope(scope)
+                .resolvedEntities(entityIds)
+                .build();
+        return new HandleResult(State.SEMANTIC, plan, null, null, null, null,
+                StructuredFailureReason.MISSING_METRIC, entityIds);
+    }
+
+    /** CQ-38: 由 unsupportedReason 文本映射结构化失败原因码(仅用于执行期数据源/字段/运算不可用) */
+    private String reasonForUnsupported(StructuredQueryResult result) {
+        if (result == null || result.getUnsupportedReason() == null) {
+            return StructuredFailureReason.EMPTY_RESULT_SET;
+        }
+        String reason = result.getUnsupportedReason();
+        if (reason.contains("运算不支持")) {
+            return StructuredFailureReason.UNSUPPORTED_OPERATION;
+        }
+        if (reason.contains("指标未注册") || reason.contains("指标未解析")) {
+            return StructuredFailureReason.MISSING_METRIC;
+        }
+        if (reason.contains("字段暂无可结构化") || reason.contains("字段") && reason.contains("不支持")) {
+            return StructuredFailureReason.UNSUPPORTED_FIELD;
+        }
+        if (reason.contains("scope 未确定")) {
+            return StructuredFailureReason.AMBIGUOUS_SCOPE;
+        }
+        return StructuredFailureReason.EMPTY_RESULT_SET;
     }
 
     /** 字段解析回退: Field → 合成 MetricDefinition(承载 fieldCode, 无聚合运算), CQ-11/12 */
@@ -312,14 +369,14 @@ public class StructuredQueryService {
         return 3;
     }
 
-    private HandleResult clarifyResult(String domainCode, String question) {
+    private HandleResult clarifyResult(String domainCode, String question, String reasonCode) {
         StructuredQueryPlan plan = StructuredQueryPlan.builder()
                 .route("CLARIFY")
                 .domainCode(domainCode)
                 .requiresClarification(true)
                 .clarificationQuestion(question)
                 .build();
-        return new HandleResult(State.CLARIFY, plan, null, null, null, question);
+        return new HandleResult(State.CLARIFY, plan, null, null, null, question, reasonCode, null);
     }
 
     private String buildMetricClarify(String domainCode) {

@@ -123,6 +123,8 @@ public class EvidenceApiImpl implements EvidenceApi {
         // 上下文回显(evidence-api ChatTurnDTO, 与 VO 同类型, 直接透传)
         dto.setHistory(vo.getHistory());
         dto.setStructuredResult(vo.getStructuredResult()); // CQ-02/03 结构化结果回流
+        dto.setExecutionMode(vo.getExecutionMode());       // CQ-38 执行模式
+        dto.setReasonCode(vo.getReasonCode());             // CQ-38 失败/澄清原因码
         return success(dto);
     }
 

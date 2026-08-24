@@ -94,6 +94,12 @@ public class EvidenceEvaluateRespVO {
     /** 结构化查询结果回流(CQ-02/03; 结构化路径携带保序实体 id, 供 chat 侧形成 ResultSetSnapshot) */
     private cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO structuredResult;
 
+    /** CQ-38: 执行模式(STRUCTURED / PER_ENTITY_SEMANTIC / CROSS_ENTITY_SEMANTIC; 语义执行路径) */
+    private String executionMode;
+
+    /** CQ-38: 结构化失败/澄清原因码(AMBIGUOUS_SCOPE/UNSUPPORTED_FIELD/MISSING_METRIC/...; 供上层可解释/可引导) */
+    private String reasonCode;
+
     @Data
     public static class SlotValueVO {
 

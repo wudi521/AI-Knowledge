@@ -31,4 +31,7 @@ public class RetrievalSearchReqDTO {
     /** P0-09: 统一主 traceId(q- 前缀, 对话层下发; 贯穿检索/证据全链路) */
     private String traceId;
 
+    /** CQ-38: 外部显式限定文档集(逐实体语义执行 PER_ENTITY_SEMANTIC); 非空时作为 hard scope, 禁止全库检索后过滤 */
+    private List<Long> documentIds;
+
 }

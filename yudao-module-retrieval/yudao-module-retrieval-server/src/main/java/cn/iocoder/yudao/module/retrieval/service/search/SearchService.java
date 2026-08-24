@@ -59,6 +59,12 @@ public class SearchService {
 
     public RetrievalRespVO search(String query, List<Long> reqKbIds, Integer topK, Long tenantId, Long userId,
                                   List<ChatTurnDTO> history, String traceId) {
+        return search(query, reqKbIds, topK, tenantId, userId, history, traceId, null);
+    }
+
+    /** CQ-38: 支持外部显式限定文档集(逐实体语义执行 PER_ENTITY_SEMANTIC); documentIds 非空时作为 hard scope */
+    public RetrievalRespVO search(String query, List<Long> reqKbIds, Integer topK, Long tenantId, Long userId,
+                                  List<ChatTurnDTO> history, String traceId, List<Long> documentIds) {
         long startMs = System.currentTimeMillis();
         int topKFinal = topK == null || topK <= 0 ? 5 : Math.min(topK, RECALL_TOP_K);
 
@@ -104,7 +110,10 @@ public class SearchService {
         }
 
         // P0-07: SCOPED_RAG 必须在 BM25/ANN 前限定目标文档(hard scope), 禁止全库检索后过滤
-        List<Long> scopedDocumentIds = "SCOPED_RAG".equals(route) ? resolvePatentDocumentIds(analysis, kbIds) : null;
+        // CQ-38: 外部显式 documentIds(逐实体语义执行)优先于 query 解析; 非空即 hard scope(即使 route 为 HYBRID)
+        List<Long> scopedDocumentIds = (documentIds != null && !documentIds.isEmpty())
+                ? documentIds
+                : ("SCOPED_RAG".equals(route) ? resolvePatentDocumentIds(analysis, kbIds) : null);
         if ("SCOPED_RAG".equals(route) && (scopedDocumentIds == null || scopedDocumentIds.isEmpty())) {
             // P0-07 fail closed: 明确申请号/公布号但未定位到文档 → 拒答, 不得全库 Hybrid fallback
             log.info("[search][SCOPED_RAG 文档定位失败, fail-closed, 不走全库 Hybrid: query={}]", query);

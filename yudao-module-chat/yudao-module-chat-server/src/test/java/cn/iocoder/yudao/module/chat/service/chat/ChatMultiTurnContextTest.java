@@ -147,4 +147,53 @@ class ChatMultiTurnContextTest {
         assertThat(fCap.getValue().getExecutionMode()).isEqualTo("STRUCTURED");
     }
 
+    @Test
+    void semanticExecutionPersistsResultSetWithExecutionMode() {
+        AiConversationDO conversation = new AiConversationDO();
+        conversation.setId(100L);
+        conversation.setKbId(6L);
+        conversation.setUserId(42L);
+        conversation.setStatus("ACTIVE");
+        conversation.setDomainCode("PATENT");
+        when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
+
+        // CQ-38: 语义执行(逐实体 SCOPED_RAG)返回 PER_ENTITY_SEMANTIC + 实体集回流
+        EvidenceEvaluateRespDTO resp = new EvidenceEvaluateRespDTO();
+        resp.setAnswerable(true);
+        resp.setAnswer("专利A：核心技术X；专利B：核心技术Y");
+        resp.setRoute("PER_ENTITY_SEMANTIC");
+        resp.setExecutionMode("PER_ENTITY_SEMANTIC");
+        resp.setQuery("它们的技术方案分别是什么？");
+        StructuredResultDTO sr = new StructuredResultDTO();
+        sr.setEntityIds(List.of(101L, 102L));
+        sr.setEntityType("PATENT_DOCUMENT");
+        sr.setQueryType("LIST");
+        sr.setScopeType("DOCUMENT_SET");
+        resp.setStructuredResult(sr);
+        when(evidenceRpcAdapter.evaluate(any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(resp);
+        when(referenceResolver.resolve(any(), any(), any()))
+                .thenReturn(cn.iocoder.yudao.module.chat.service.context.model.QueryContextResolution.builder()
+                        .scopeType("PREVIOUS_RESULT_SET")
+                        .explicitEntityIds(List.of(101L, 102L))
+                        .build());
+        when(resultSetService.getRecentFrames(100L)).thenReturn(List.of());
+        when(resultSetService.createResultSet(any())).thenAnswer(inv -> inv.getArgument(0));
+        AiMessageDO userMessage = new AiMessageDO();
+        userMessage.setId(3030L);
+        AiMessageDO aiMessage = new AiMessageDO();
+        aiMessage.setId(3031L);
+        when(messageService.addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(userMessage, aiMessage);
+
+        pipeline.send(100L, "它们的技术方案分别是什么？", "web", null, 6L);
+
+        ArgumentCaptor<cn.iocoder.yudao.module.chat.service.context.model.ContextFrame> fCap =
+                ArgumentCaptor.forClass(cn.iocoder.yudao.module.chat.service.context.model.ContextFrame.class);
+        verify(resultSetService).pushFrame(fCap.capture());
+        assertThat(fCap.getValue().getQueryId()).isEqualTo("q-test123456");
+        assertThat(fCap.getValue().getExecutionMode()).isEqualTo("PER_ENTITY_SEMANTIC");
+        assertThat(fCap.getValue().getResultSetId()).isNotBlank();
+    }
+
 }

@@ -20,7 +20,9 @@ import cn.iocoder.yudao.module.evidence.service.conflict.ConflictDetector;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
 import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
 import cn.iocoder.yudao.module.evidence.service.rule.RuleShortCircuit;
+import cn.iocoder.yudao.module.evidence.service.semantics.SemanticsExecutionService;
 import cn.iocoder.yudao.module.evidence.service.structured.core.CompletenessGuard;
+import cn.iocoder.yudao.module.evidence.service.structured.core.ExecutionMode;
 import cn.iocoder.yudao.module.evidence.service.structured.core.QueryType;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredContextHint;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
@@ -78,6 +80,8 @@ public class EvidenceService {
     private cn.iocoder.yudao.module.evidence.service.structured.core.CompletenessGuard completenessGuard;
     @Resource
     private cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryService structuredQueryService;
+    @Resource
+    private cn.iocoder.yudao.module.evidence.service.semantics.SemanticsExecutionService semanticsExecutionService;
     @Resource
     private cn.iocoder.yudao.module.knowledge.api.KnowledgeApi knowledgeApi;
     @Resource
@@ -231,6 +235,13 @@ public class EvidenceService {
                 recorder.record(resp, List.of(), List.of());
                 return resp;
             }
+            if (structured != null && structured.state() == StructuredQueryService.State.SEMANTIC) {
+                // CQ-38: 无法结构化但已有明确实体集 → 逐实体语义执行(每实体 SCOPED_RAG)
+                EvidenceEvaluateRespVO resp = buildSemanticsResp(traceId, query, history, structured,
+                        singleKbId, tenantId, userId, start);
+                recorder.record(resp, List.of(), List.of());
+                return resp;
+            }
             // 完整数据集语义(或结构化候选不可作答: 指标/运算不支持/非单库/数据集不完整) → 明确拒绝, 不猜
             if (structured == null || structured.state() == StructuredQueryService.State.UNANSWERABLE
                     || completenessSemantics) {
@@ -238,6 +249,8 @@ public class EvidenceService {
                 EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
                 resp.setRoute("STRUCTURED_QUERY");
                 resp.setIntent("STRUCTURED_QUERY_REJECTED");
+                resp.setExecutionMode(ExecutionMode.CODE_STRUCTURED);
+                resp.setReasonCode(structured != null ? structured.reasonCode() : "AMBIGUOUS_SCOPE"); // CQ-38
                 resp.setElapsedMs((int) (System.currentTimeMillis() - start));
                 resp.setStages(buildStructuredStages(resp.getElapsedMs(), "REJECTED"));
                 recorder.record(resp, List.of(), List.of());
@@ -485,6 +498,7 @@ public class EvidenceService {
         resp.setAnswer(structured.answer());
         resp.setRoute("STRUCTURED_QUERY");
         resp.setIntent(subTypeIntent(structured.plan()));
+        resp.setExecutionMode(ExecutionMode.CODE_STRUCTURED);
         resp.setElapsedMs((int) (System.currentTimeMillis() - start));
         resp.setStructuredResult(buildStructuredResult(structured));
         EvidenceEvaluateRespVO.EvidenceItemVO ev = new EvidenceEvaluateRespVO.EvidenceItemVO();
@@ -515,9 +529,107 @@ public class EvidenceService {
         resp.setRoute("CLARIFY");
         resp.setIntent("STRUCTURED_CLARIFY");
         resp.setClarifyQuestion(structured.clarificationQuestion());
+        resp.setReasonCode(structured.reasonCode()); // CQ-38 失败/澄清原因码
+        resp.setExecutionMode(ExecutionMode.CODE_STRUCTURED);
         resp.setElapsedMs((int) (System.currentTimeMillis() - start));
         resp.setStages(buildStructuredStages(resp.getElapsedMs(), "CLARIFY"));
         return resp;
+    }
+
+    /** CQ-38: 逐实体语义执行响应(PER_ENTITY_SEMANTIC: 每实体 SCOPED_RAG + 聚合生成) */
+    private EvidenceEvaluateRespVO buildSemanticsResp(String traceId, String query, List<ChatTurnDTO> history,
+                                                      StructuredQueryService.HandleResult structured,
+                                                      Long kbId, Long tenantId, Long userId, long start) {
+        Long effectiveKbId = structured.plan() != null && structured.plan().getScope() != null
+                ? structured.plan().getScope().getCurrentKbId() : kbId;
+        SemanticsExecutionService.Result sr = semanticsExecutionService.execute(query, effectiveKbId,
+                structured.semanticEntityIds(), tenantId, userId, history, traceId);
+        if (sr.overLimit()) {
+            // 超限: 不静默截断, 反问要求缩小范围
+            String question = "共 " + sr.entityIds().size() + " 个对象, 一次最多可逐项说明 "
+                    + sr.limit() + " 个, 请缩小范围后再问。";
+            Judgement j = buildJudgement(false, 0.0, question, 0, 0);
+            EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
+            resp.setRoute("CLARIFY");
+            resp.setIntent("SEMANTIC_CLARIFY");
+            resp.setClarifyQuestion(question);
+            resp.setReasonCode("AMBIGUOUS_SCOPE");
+            resp.setExecutionMode(ExecutionMode.CODE_PER_ENTITY_SEMANTIC);
+            resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+            resp.setStages(buildSemanticStages(resp.getElapsedMs(), "CLARIFY"));
+            return resp;
+        }
+        if (sr.evidences().isEmpty()) {
+            Judgement j = buildJudgement(false, 0.0, NO_EVIDENCE_REASON, 0, 0);
+            EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
+            resp.setRoute("PER_ENTITY_SEMANTIC");
+            resp.setIntent("SEMANTIC");
+            resp.setReasonCode("EMPTY_RESULT_SET");
+            resp.setExecutionMode(ExecutionMode.CODE_PER_ENTITY_SEMANTIC);
+            resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+            resp.setStages(buildSemanticStages(resp.getElapsedMs(), "EMPTY"));
+            return resp;
+        }
+        if (sr.generation() != null && StrUtil.isNotBlank(sr.generation().getAnswer())) {
+            Judgement j = buildJudgement(true, 1.0, null, sr.evidences().size(), 0);
+            EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, sr.evidences(), List.of(),
+                    sr.generation(), history);
+            resp.setRoute("PER_ENTITY_SEMANTIC");
+            resp.setIntent("SEMANTIC");
+            resp.setExecutionMode(ExecutionMode.CODE_PER_ENTITY_SEMANTIC);
+            // 实体回流: 本轮引用的实体集即结果集(供 chat 侧 ResultSetSnapshot 后续继承)
+            resp.setStructuredResult(buildSemanticsResultDTO(structured.semanticEntityIds()));
+            resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+            resp.setStages(buildSemanticStages(resp.getElapsedMs(), "SUCCEEDED"));
+            return resp;
+        }
+        // 生成失败/claimFail(证据已检索但未能生成可靠逐项回答)
+        Judgement j = buildJudgement(false, 0.0, "已检索到证据但未能生成可靠的逐项回答。",
+                sr.evidences().size(), 0);
+        EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, sr.evidences(), List.of(),
+                sr.generation(), history);
+        resp.setRoute("PER_ENTITY_SEMANTIC");
+        resp.setIntent("SEMANTIC");
+        resp.setExecutionMode(ExecutionMode.CODE_PER_ENTITY_SEMANTIC);
+        resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+        resp.setStages(buildSemanticStages(resp.getElapsedMs(), "FAILED"));
+        return resp;
+    }
+
+    /** 语义执行结果集回流(实体 id 即本轮引用的对象) */
+    private cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO buildSemanticsResultDTO(
+            List<Long> entityIds) {
+        if (entityIds == null || entityIds.isEmpty()) {
+            return null;
+        }
+        cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO dto =
+                new cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO();
+        dto.setEntityIds(entityIds);
+        dto.setEntityType("PATENT_DOCUMENT");
+        dto.setQueryType("LIST");
+        dto.setScopeType("DOCUMENT_SET");
+        dto.setEntityCount(entityIds.size());
+        dto.setTruncated(false);
+        return dto;
+    }
+
+    /** 语义执行阶段时间轴(PER_ENTITY_RETRIEVE/GENERATE/VERIFY; 结构化阶段 SKIPPED) */
+    private List<QueryStageTimingDTO> buildSemanticStages(int elapsedMs, String outcome) {
+        List<QueryStageTimingDTO> stages = new ArrayList<>();
+        int seq = 0;
+        stages.add(buildStage("ANALYZE", ++seq, 1, "SUCCEEDED", null, null));
+        stages.add(buildStage("CONTEXT_RESOLVE", ++seq, 1, "SUCCEEDED", null, null));
+        stages.add(buildStage("PLAN", ++seq, 1, "SUCCEEDED", null, null));
+        stages.add(buildStage("SCOPE_RESOLVE", ++seq, 1, "SUCCEEDED", null, null));
+        stages.add(buildStage("METRIC_RESOLVE", ++seq, 1, "SUCCEEDED", null, null));
+        stages.add(buildStage("STRUCTURED_EXECUTE", ++seq, 0, "SKIPPED", null, null));
+        stages.add(buildStage("PER_ENTITY_RETRIEVE", ++seq, Math.max(0, elapsedMs - 8),
+                "EMPTY".equals(outcome) ? "FAILED" : "SUCCEEDED", null, null));
+        stages.add(buildStage("GENERATE", ++seq, 4,
+                "SUCCEEDED".equals(outcome) ? "SUCCEEDED" : "FAILED", null, null));
+        stages.add(buildStage("VERIFY", ++seq, 2,
+                "SUCCEEDED".equals(outcome) ? "SUCCEEDED" : "FAILED", null, null));
+        return stages;
     }
 
     private String subTypeIntent(StructuredQueryPlan plan) {

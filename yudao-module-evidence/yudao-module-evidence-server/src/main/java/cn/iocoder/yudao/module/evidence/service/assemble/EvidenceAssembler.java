@@ -75,6 +75,16 @@ public class EvidenceAssembler {
      */
     public AssembledEvidence assemble(String query, List<Long> kbIds, Integer topK, Long tenantId, Long userId,
                                       List<ChatTurnDTO> history, String traceId) {
+        return assemble(query, kbIds, topK, tenantId, userId, history, traceId, null);
+    }
+
+    /**
+     * 组装证据(支持多轮上下文 + 统一 traceId + 外部文档限定)。
+     *
+     * @param documentIds 外部显式限定文档集(CQ-38 逐实体语义执行 PER_ENTITY_SEMANTIC); 非空时检索侧 hard scope
+     */
+    public AssembledEvidence assemble(String query, List<Long> kbIds, Integer topK, Long tenantId, Long userId,
+                                      List<ChatTurnDTO> history, String traceId, List<Long> documentIds) {
         // 1. 调用检索 RPC(topK 为空时默认 8)
         RetrievalSearchReqDTO req = new RetrievalSearchReqDTO();
         req.setQuery(query);
@@ -83,6 +93,7 @@ public class EvidenceAssembler {
         req.setTenantId(tenantId);
         req.setUserId(userId);
         req.setTraceId(traceId);
+        req.setDocumentIds(documentIds);
         // 跨模块 DTO 独立(按 spec): 同构字段手动映射到 retrieval-api ChatTurnDTO
         req.setHistory(toRetrievalHistory(history));
         CommonResult<RetrievalSearchRespDTO> resp;

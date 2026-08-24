@@ -160,11 +160,31 @@ class PatentRegressionMatrixTest {
     }
 
     @Test
-    void caseH_semanticMetricClarifies() {
-        // "技术方案" 无 metric 也无 field → CLARIFY(禁止猜)
+    void caseH_semanticMetricExecutesPerEntity() {
+        // CQ-38: "技术方案" 无 metric 也无 field, 但已引用上一轮结果集(101/102/103) → PER_ENTITY_SEMANTIC(不再 CLARIFY 防猜)
         StructuredQueryService.HandleResult r = service.handle("它们的技术方案分别是什么？", 6L, DOMAIN, List.of(),
                 List.of(101L, 102L, 103L), null);
+        assertEquals(State.SEMANTIC, r.state());
+        assertNotNull(r.semanticEntityIds());
+        assertEquals(List.of(101L, 102L, 103L), r.semanticEntityIds());
+        assertEquals("MISSING_METRIC", r.reasonCode());
+    }
+
+    @Test
+    void caseH2_semanticWithoutEntitySetStillClarifies() {
+        // CQ-38: 无实体集(无历史引用)时, 语义型查询无法消解范围 → 仍 CLARIFY(禁止猜)
+        StructuredQueryService.HandleResult r = service.handle("技术方案分别是什么？", 6L, DOMAIN, List.of(), null, null);
         assertEquals(State.CLARIFY, r.state());
+        assertEquals("MISSING_METRIC", r.reasonCode());
+    }
+
+    @Test
+    void caseI_unsupportedFieldReasonCode() {
+        // CQ-38: 显式 fieldCodeHint 未注册(且无实体集) → UNSUPPORTED_FIELD CLARIFY
+        StructuredQueryService.HandleResult r = service.handle("它们公开日分别是什么？", 6L, DOMAIN, List.of(),
+                null, "UNKNOWN_FIELD");
+        assertEquals(State.CLARIFY, r.state());
+        assertEquals("UNSUPPORTED_FIELD", r.reasonCode());
     }
 
 }
