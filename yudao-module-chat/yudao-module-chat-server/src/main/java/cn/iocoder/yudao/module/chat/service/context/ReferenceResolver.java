@@ -79,12 +79,18 @@ public class ReferenceResolver {
                             + " 个" + label(rs.getEntityType())
                             + "，请明确是哪 " + count + " 个？", "AMBIGUOUS_SCOPE");
         }
+        // CQ-09: 结果集引用不仅继承实体范围，也继承最近一次机器可消费的 metric/field/operation。
+        // 当前 query 若显式给出新字段/指标，Evidence Planner 会以当前 query 解析结果覆盖这些 hint；
+        // 对“平均呢/总共呢/哪个最多/申请号呢”这类省略问法，则可安全沿用上下文 Frame。
         return QueryContextResolution.builder()
                 .scopeType(QueryContextResolution.SCOPE_PREVIOUS_RESULT_SET)
                 .resultSetId(rs.getResultSetId())
                 .entityType(rs.getEntityType())
                 .subset(subset)
                 .explicitEntityIds(applied)
+                .metricCode(refFrame.getMetricCode())
+                .fieldCode(refFrame.getFieldCode())
+                .operation(refFrame.getOperation())
                 .contextChanged(!reval.isValid())
                 .build();
     }
