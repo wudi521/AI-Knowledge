@@ -1,7 +1,6 @@
 package cn.iocoder.yudao.module.evidence.service.semantics;
 
 import cn.hutool.core.util.StrUtil;
-import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
@@ -12,6 +11,7 @@ import cn.iocoder.yudao.module.evidence.service.assemble.EvidenceAssembler;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -21,6 +21,7 @@ import java.util.Set;
 
 /**
  * 语义执行服务：单实体/逐实体/跨实体比较都必须先 hard-scope 到目标文档，禁止全局 TopK 垄断。
+ * 业务实体身份由 DomainEntityIdentityProvider 提供，Core 不感知 applicationNo/planCode/deviceCode 等领域字段。
  */
 @Slf4j
 @Service
@@ -33,13 +34,23 @@ public class SemanticsExecutionService {
     private final AnswerPipeline answerPipeline;
     private final EvidenceProperties properties;
     private final KnowledgeApi knowledgeApi;
+    private final List<DomainEntityIdentityProvider> identityProviders;
 
+    @Autowired
     public SemanticsExecutionService(EvidenceAssembler assembler, AnswerPipeline answerPipeline,
-                                     EvidenceProperties properties, KnowledgeApi knowledgeApi) {
+                                     EvidenceProperties properties, KnowledgeApi knowledgeApi,
+                                     List<DomainEntityIdentityProvider> identityProviders) {
         this.assembler = assembler;
         this.answerPipeline = answerPipeline;
         this.properties = properties;
         this.knowledgeApi = knowledgeApi;
+        this.identityProviders = identityProviders == null ? List.of() : List.copyOf(identityProviders);
+    }
+
+    /** 源码兼容构造器：无 Domain Provider 时按 documentId 作为业务身份。 */
+    public SemanticsExecutionService(EvidenceAssembler assembler, AnswerPipeline answerPipeline,
+                                     EvidenceProperties properties, KnowledgeApi knowledgeApi) {
+        this(assembler, answerPipeline, properties, knowledgeApi, List.of());
     }
 
     public record Result(List<Evidence> evidences, GenerationResult generation,
@@ -79,11 +90,18 @@ public class SemanticsExecutionService {
         return execute(query, kbId, collectPublishedDocumentIds(kbId), tenantId, userId, history, traceId);
     }
 
+    /** 旧调用兼容；未给 domainCode 时按 documentId 去重。 */
+    public CompareResult executeCompare(String query, Long kbId, List<Long> entityIds,
+                                        Long tenantId, Long userId, List<ChatTurnDTO> history,
+                                        String traceId, boolean requireAllCoverage) {
+        return executeCompare(query, kbId, null, entityIds, tenantId, userId, history, traceId, requireAllCoverage);
+    }
+
     /**
-     * CROSS_ENTITY_COMPARE：每个候选文档独立召回，再按业务身份(applicationNo/publicationNo/documentId)去重。
+     * CROSS_ENTITY_COMPARE：每个候选文档独立召回，再由 Domain Pack 身份策略去重。
      * requireAllCoverage=true 时，任一逻辑实体无证据都禁止进入生成阶段。
      */
-    public CompareResult executeCompare(String query, Long kbId, List<Long> entityIds,
+    public CompareResult executeCompare(String query, Long kbId, String domainCode, List<Long> entityIds,
                                         Long tenantId, Long userId, List<ChatTurnDTO> history,
                                         String traceId, boolean requireAllCoverage) {
         List<Long> rawIds = entityIds == null || entityIds.isEmpty()
@@ -108,10 +126,10 @@ public class SemanticsExecutionService {
             List<Evidence> one = assembled != null && assembled.getEvidences() != null
                     ? assembled.getEvidences() : List.of();
 
-            // 有证据时优先按 Domain metadata 去重；无证据时只能保留 documentId，Coverage Guard 会阻断。
-            String identity = one.isEmpty() ? "DOC:" + entityId : resolveIdentity(one.get(0), entityId);
+            String identity = resolveIdentity(domainCode, one.isEmpty() ? null : one.get(0), entityId);
             if (!seenIdentity.add(identity)) {
-                log.info("[executeCompare][跳过重复业务实体: identity={}, documentId={}]", identity, entityId);
+                log.info("[executeCompare][跳过重复业务实体: domain={}, identity={}, documentId={}]",
+                        domainCode, identity, entityId);
                 continue;
             }
             logicalIds.add(entityId);
@@ -133,24 +151,16 @@ public class SemanticsExecutionService {
         return new CompareResult(all, generation, logicalIds, covered, false, limit, false);
     }
 
-    /** P0: 先消费通用 metadata；后续正式抽为 DomainEntityIdentityProvider SPI。 */
-    private String resolveIdentity(Evidence evidence, Long fallbackDocumentId) {
-        if (evidence != null && StrUtil.isNotBlank(evidence.getChunkMetadata())) {
-            try {
-                var meta = JSONUtil.parseObj(evidence.getChunkMetadata());
-                String app = normalize(meta.getStr("applicationNo"));
-                if (StrUtil.isNotBlank(app)) return "APP:" + app;
-                String pub = normalize(meta.getStr("publicationNo"));
-                if (StrUtil.isNotBlank(pub)) return "PUB:" + pub;
-            } catch (Exception ignored) {
-                // metadata 不可解析则回退 documentId，不允许因此中断比较。
+    private String resolveIdentity(String domainCode, Evidence evidence, Long fallbackDocumentId) {
+        if (StrUtil.isNotBlank(domainCode)) {
+            for (DomainEntityIdentityProvider provider : identityProviders) {
+                if (provider != null && domainCode.equalsIgnoreCase(provider.domainCode())) {
+                    String key = provider.identityKey(evidence, fallbackDocumentId);
+                    if (StrUtil.isNotBlank(key)) return key;
+                }
             }
         }
         return "DOC:" + fallbackDocumentId;
-    }
-
-    private String normalize(String value) {
-        return value == null ? null : value.replaceAll("\\s+", "").toUpperCase();
     }
 
     private List<Long> collectPublishedDocumentIds(Long kbId) {
