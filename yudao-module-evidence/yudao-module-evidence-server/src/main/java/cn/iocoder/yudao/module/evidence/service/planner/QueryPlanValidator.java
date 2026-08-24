@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.evidence.service.planner;
 
+import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainFieldRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainMetricRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.ExecutionMode;
@@ -26,6 +27,9 @@ public class QueryPlanValidator {
         }
         if (plan.getExecutionMode() == null) {
             return Validation.invalid("MISSING_EXECUTION_MODE");
+        }
+        if (plan.getExecutionMode() == ExecutionMode.EXACT_TEXT_SEARCH && StrUtil.isBlank(plan.getExactText())) {
+            return Validation.invalid("MISSING_EXACT_TEXT");
         }
         String domain = plan.getDomainCode();
         if (domain != null) {
