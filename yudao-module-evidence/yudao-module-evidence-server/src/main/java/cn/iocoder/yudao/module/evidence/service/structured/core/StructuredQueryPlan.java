@@ -18,20 +18,20 @@ public class StructuredQueryPlan {
     private String entityType;
     private QueryScope scope;
     private String metricCode;
-
-    /** 单字段兼容入口。 */
     private String fieldCode;
 
-    /**
-     * 多字段投影。非空时表示一次返回多个注册字段；fieldCode 保留第一个字段作为执行适配器锚点。
-     * Executor/Adapter 只能消费 DomainFieldRegistry 已注册字段，禁止任意字段名。
-     */
     @Builder.Default
     private List<String> projections = new ArrayList<>();
 
     private Operation operation;
     private String groupBy;
+
+    /** 旧等值过滤兼容字段；新代码优先使用 filterExpression。 */
     private Map<String, String> filters;
+
+    /** 类型化 AND/OR Filter Tree；只允许白名单字段与 FilterOperator。 */
+    private FilterExpression filterExpression;
+
     private SortDirection sort;
     private Integer limit;
     private List<Long> resolvedEntities;
