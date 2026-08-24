@@ -2,6 +2,8 @@ package cn.iocoder.yudao.module.chat.service.context;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONObject;
+import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.chat.dal.dataobject.context.AiChatContextFrameDO;
 import cn.iocoder.yudao.module.chat.dal.dataobject.context.AiChatResultSetDO;
@@ -14,6 +16,9 @@ import cn.iocoder.yudao.module.chat.service.context.model.ResultSetSnapshot;
 import cn.iocoder.yudao.module.chat.service.context.model.RevalidationResult;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import cn.iocoder.yudao.module.knowledge.api.dto.DocumentVisibilityReqDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryReqDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRespDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRowDTO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -199,15 +204,51 @@ public class ResultSetService {
         return frame;
     }
 
-    /** 物化结果集实体 id: INLINE 直接返回; REF 暂返回空(需按 scope 描述重建, 见 CQ-26/步骤8) */
+    /** 物化结果集实体 id: INLINE 直接返回; REF 按 scope_descriptor 重建(CQ-26/阶段4) */
     public List<Long> materialize(ResultSetSnapshot snapshot) {
         if (snapshot == null) {
             return Collections.emptyList();
         }
-        if (ResultSetSnapshot.STORAGE_REF.equals(snapshot.getStorageMode()) || snapshot.getOrderedEntityIds() == null) {
+        if (ResultSetSnapshot.STORAGE_INLINE.equals(snapshot.getStorageMode()) && snapshot.getOrderedEntityIds() != null) {
+            return snapshot.getOrderedEntityIds();
+        }
+        // REF 大结果集: 按范围描述重建实体 id(基于当前已发布数据, 天然反映最新版本)
+        return materializeRef(snapshot);
+    }
+
+    /** REF 结果集按 scope_descriptor 重建保序实体 id(白名单结构化查询, 非任意 SQL) */
+    private List<Long> materializeRef(ResultSetSnapshot snapshot) {
+        if (snapshot == null || StrUtil.isBlank(snapshot.getScopeDescriptor())) {
             return Collections.emptyList();
         }
-        return snapshot.getOrderedEntityIds();
+        try {
+            JSONObject scope = JSONUtil.parseObj(snapshot.getScopeDescriptor());
+            Long kbId = scope.getLong("kbId");
+            String metricCode = scope.getStr("metricCode");
+            String fieldCode = scope.getStr("fieldCode");
+            if (kbId == null || (StrUtil.isBlank(metricCode) && StrUtil.isBlank(fieldCode))) {
+                return Collections.emptyList();
+            }
+            StructuredQueryReqDTO req = new StructuredQueryReqDTO();
+            req.setKbId(kbId);
+            req.setMetricCode(metricCode);
+            req.setFieldCode(fieldCode);
+            req.setPublishedOnly(true);
+            CommonResult<StructuredQueryRespDTO> resp = knowledgeApi.structuredQuery(req);
+            if (resp == null || !resp.isSuccess() || resp.getData() == null || resp.getData().getRows() == null) {
+                return Collections.emptyList();
+            }
+            List<Long> ids = new ArrayList<>();
+            for (StructuredQueryRowDTO row : resp.getData().getRows()) {
+                if (row != null && row.getDocumentId() != null) {
+                    ids.add(row.getDocumentId());
+                }
+            }
+            return ids;
+        } catch (Exception e) {
+            log.warn("[materializeRef][结果集({}) REF 重建失败: {}]", snapshot.getResultSetId(), e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
 }

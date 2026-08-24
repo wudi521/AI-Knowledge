@@ -10,6 +10,9 @@ import cn.iocoder.yudao.module.chat.service.context.model.RevalidationResult;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import cn.iocoder.yudao.module.knowledge.api.dto.DocumentVisibilityReqDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryReqDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRespDTO;
+import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRowDTO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,6 +31,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -133,6 +137,37 @@ class ResultSetServiceTest {
                 .build();
 
         assertThat(service.materialize(snapshot)).containsExactly(7L, 8L);
+    }
+
+    @Test
+    void materializeRefRebuildsIdsFromScopeDescriptor() {
+        // CQ-26: REF 大结果集按 scope_descriptor(metric/field/kb)白名单重建保序实体 id
+        ResultSetSnapshot snapshot = ResultSetSnapshot.builder()
+                .resultSetId("rs-ref")
+                .storageMode(ResultSetSnapshot.STORAGE_REF)
+                .scopeDescriptor("{\"kbId\":6,\"domainCode\":\"PATENT\",\"scopeType\":\"CURRENT_KB\","
+                        + "\"metricCode\":\"DOCUMENT_COUNT\",\"fieldCode\":null}")
+                .build();
+        StructuredQueryRespDTO data = new StructuredQueryRespDTO();
+        StructuredQueryRowDTO r1 = new StructuredQueryRowDTO();
+        r1.setDocumentId(101L);
+        StructuredQueryRowDTO r2 = new StructuredQueryRowDTO();
+        r2.setDocumentId(102L);
+        data.setRows(List.of(r1, r2));
+        when(knowledgeApi.structuredQuery(any(StructuredQueryReqDTO.class)))
+                .thenReturn(CommonResult.success(data));
+
+        assertThat(service.materialize(snapshot)).containsExactly(101L, 102L);
+    }
+
+    @Test
+    void materializeRefWithoutScopeDescriptor_returnsEmpty() {
+        ResultSetSnapshot snapshot = ResultSetSnapshot.builder()
+                .resultSetId("rs-ref")
+                .storageMode(ResultSetSnapshot.STORAGE_REF)
+                .build();
+        assertThat(service.materialize(snapshot)).isEmpty();
+        verifyNoInteractions(knowledgeApi);
     }
 
     @Test

@@ -791,6 +791,7 @@ public class ChatPipeline {
                     .entityCount(sr.getEntityCount())
                     .orderedEntityIds(sr.getEntityIds())
                     .truncated(sr.getTruncated())
+                    .scopeDescriptor(buildScopeDescriptor(kc, sr))
                     .build();
             ResultSetSnapshot saved = resultSetService.createResultSet(snapshot);
             resultSetService.pushFrame(ContextFrame.builder()
@@ -809,6 +810,20 @@ public class ChatPipeline {
         } catch (Exception e) {
             log.warn("[persistResultSet][会话({}) 结果集落库失败: {}]", conversationId, e.getMessage());
         }
+    }
+
+    /** CQ-26: 结果集范围描述(REF 大结果集 materialize 用; 含重建所需 kb/domain/scopeType/metric/field/operation) */
+    private String buildScopeDescriptor(KnowledgeContext kc,
+                                        cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO sr) {
+        cn.hutool.json.JSONObject obj = new cn.hutool.json.JSONObject();
+        obj.set("kbId", kc.kbId());
+        obj.set("domainCode", kc.domainCode());
+        obj.set("scopeType", sr.getScopeType());
+        obj.set("metricCode", sr.getMetricCode());
+        obj.set("fieldCode", sr.getFieldCode());
+        obj.set("operation", sr.getOperation());
+        obj.set("filters", java.util.Map.of("publishedOnly", "true"));
+        return obj.toString();
     }
 
     private ChatSendResult emitDoneAndReturn(ChatSendResult result, String traceId, ChatStreamSink sink, long traceStartMs) {
