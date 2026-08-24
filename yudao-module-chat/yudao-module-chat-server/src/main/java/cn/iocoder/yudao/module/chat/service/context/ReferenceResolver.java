@@ -16,8 +16,8 @@ import java.util.regex.Pattern;
 /**
  * ReferenceResolver(CQ-04~08): 解析当前查询对历史上下文的引用(指代/序号/子集/数量)。
  * <p>
- * 规则: ①明确实体(申请号/公布号)优先覆盖(EXPLICIT_ENTITY); ②否则从上下文帧栈最近→远按
- * entityType 匹配找可引用结果集; ③应用子集表达式; ④数量与引用集合不一致 → CLARIFY(禁止随便取前 N)。
+ * 规则: ①明确实体(申请号/公布号)优先覆盖(EXPLICIT_ENTITY); ②仅当当前问题确实存在上下文引用语义时，
+ * 才从上下文帧栈最近→远匹配 ResultSet; ③应用子集表达式; ④数量与引用集合不一致 → CLARIFY。
  */
 @Slf4j
 @Component
@@ -25,6 +25,14 @@ public class ReferenceResolver {
 
     private static final Pattern APPLICATION_NO = Pattern.compile("20\\d{10}\\.\\d");
     private static final Pattern PUBLICATION_NO = Pattern.compile("CN\\s?\\d{8,12}\\s?[A-Z]");
+
+    /**
+     * 领域无关的省略/比较型上下文信号。
+     * SubsetParser 已负责“这4个/它们/前两个/第二个”等显式子集；这里补“平均呢/总共呢/哪个最多”等省略问法。
+     */
+    private static final Pattern ELLIPSIS_REFERENCE = Pattern.compile(
+            "(?:呢[？?。！!]*$|总共|合计|汇总|平均|均值|最多|最少|最高|最低|分别|各自|逐个|逐一|前者|后者|上述|前述|这些|那些|它们|他们|她们|其中|其余)"
+    );
 
     @Resource
     private ResultSetService resultSetService;
@@ -51,11 +59,18 @@ public class ReferenceResolver {
         if (hasExplicitEntity(query)) {
             return QueryContextResolution.explicitEntity();
         }
+
+        // 当前问题若没有任何指代/子集/省略比较语义，就必须作为一个新的查询处理。
+        // 不能因为会话里“碰巧存在”上轮 ResultSet，就强行引用并触发 STALE/PERMISSION_CHANGED。
+        SubsetExpression subset = SubsetParser.parse(query);
+        if (subset == null && !hasContextReferenceSignal(query)) {
+            return QueryContextResolution.noReference();
+        }
+
         ContextFrame refFrame = findRefFrame(frames, entityTypeHint);
         if (refFrame == null || refFrame.getResultSetId() == null) {
             return QueryContextResolution.noReference();
         }
-        SubsetExpression subset = SubsetParser.parse(query);
         if (subset == null) {
             subset = SubsetExpression.builder().type(Type.ALL).build();
         }
@@ -93,6 +108,10 @@ public class ReferenceResolver {
                 .operation(refFrame.getOperation())
                 .contextChanged(!reval.isValid())
                 .build();
+    }
+
+    private boolean hasContextReferenceSignal(String query) {
+        return query != null && !query.isBlank() && ELLIPSIS_REFERENCE.matcher(query).find();
     }
 
     /** CQ-38: 失效原因 → 用户可理解的反问文案 */
