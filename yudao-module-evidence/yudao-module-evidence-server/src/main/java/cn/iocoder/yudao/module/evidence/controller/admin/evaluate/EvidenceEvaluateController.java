@@ -7,6 +7,7 @@ import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEva
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryScopeResolver;
 import cn.iocoder.yudao.module.evidence.service.EvidenceService;
+import cn.iocoder.yudao.module.evidence.service.trace.EvidenceTraceInspector;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
@@ -32,6 +33,8 @@ public class EvidenceEvaluateController {
     private EvidenceService evidenceService;
     @Resource
     private EvidenceQueryScopeResolver queryScopeResolver;
+    @Resource
+    private EvidenceTraceInspector traceInspector;
 
     @PostMapping("/evaluate")
     @Operation(summary = "统一知识搜索/证据评估(Query Planner→Structured/Exact/RAG/Compare→Evidence)")
@@ -43,13 +46,15 @@ public class EvidenceEvaluateController {
 
         EvidenceQueryScopeResolver.Resolution scope = queryScopeResolver.resolve(req.getKbIds(), userId, null);
         if (!scope.allowed()) {
-            return success(denied(req.getQuery(), scope.reasonCode(), scope.message()));
+            EvidenceEvaluateRespVO resp = denied(req.getQuery(), scope.reasonCode(), scope.message());
+            return success(traceInspector.enrich(resp, req.getKbIds(), null));
         }
 
         // 管理端搜索明确为单轮：history/contextResolution 均为空，但执行内核与 Chat 完全相同。
-        return success(evidenceService.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
+        EvidenceEvaluateRespVO resp = evidenceService.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
                 tenantId, userId, List.of(), req.getSkipSlotDetection(), null,
-                scope.domainCode(), null, null));
+                scope.domainCode(), null, null);
+        return success(traceInspector.enrich(resp, scope.kbIds(), scope.domainCode()));
     }
 
     private EvidenceEvaluateRespVO denied(String query, String reasonCode, String message) {
@@ -66,6 +71,7 @@ public class EvidenceEvaluateController {
         resp.setConflicts(List.of());
         resp.setClaimFail(false);
         resp.setElapsedMs(0);
+        resp.setStages(List.of());
         return resp;
     }
 
