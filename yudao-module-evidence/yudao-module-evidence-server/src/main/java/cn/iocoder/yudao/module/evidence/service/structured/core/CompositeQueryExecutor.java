@@ -106,6 +106,11 @@ public class CompositeQueryExecutor {
                                    CompositeQueryPlan.Budget budget, long deadlineAt,
                                    int modelCalls, int steps) {
         List<Long> ids = structured.semanticEntityIds() != null ? structured.semanticEntityIds() : List.of();
+        boolean crossEntity = ids.isEmpty() && structured.plan() != null
+                && ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC.equals(structured.plan().getRoute());
+        if (crossEntity) {
+            return executeCrossEntitySemantic(req, structured, budget, deadlineAt, modelCalls, steps);
+        }
         if (ids.size() > budget.maxEntities()) {
             // 超限: 不静默截断, 反问要求缩小范围
             return new Result(StructuredQueryService.State.CLARIFY, null,
@@ -142,6 +147,42 @@ public class CompositeQueryExecutor {
         return new Result(StructuredQueryService.State.UNANSWERABLE, null, null,
                 StructuredFailureReason.EMPTY_RESULT_SET, ExecutionMode.CODE_PER_ENTITY_SEMANTIC,
                 structured.plan(), ids, sr.evidences(), sr.generation(), false, null);
+    }
+
+    /** CROSS_ENTITY_SEMANTIC: 枚举 KB 已发布文档作为候选实体集, 再逐实体语义执行(受 budget 约束) */
+    private Result executeCrossEntitySemantic(Request req, StructuredQueryService.HandleResult structured,
+                                              CompositeQueryPlan.Budget budget, long deadlineAt,
+                                              int modelCalls, int steps) {
+        modelCalls++; // 语义生成 1 次(枚举为 RPC, 不计模型调用)
+        if (modelCalls > budget.maxModelCalls() || System.currentTimeMillis() > deadlineAt) {
+            return timedOut(structured.plan());
+        }
+        steps++;
+        if (steps > budget.maxSteps() || System.currentTimeMillis() > deadlineAt) {
+            return timedOut(structured.plan());
+        }
+        SemanticsExecutionService.Result sr = semanticsExecutionService.executeCrossEntity(
+                req.query(), req.kbId(), req.tenantId(), req.userId(), req.history(), req.traceId());
+        if (sr.overLimit()) {
+            return new Result(StructuredQueryService.State.CLARIFY, null,
+                    "知识库共 " + sr.entityIds().size() + " 个对象, 一次最多可逐项说明 "
+                            + sr.limit() + " 个, 请缩小范围后再问。",
+                    StructuredFailureReason.AMBIGUOUS_SCOPE, ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC,
+                    structured.plan(), null, null, null, false, null);
+        }
+        if (sr.evidences() == null || sr.evidences().isEmpty()) {
+            return new Result(StructuredQueryService.State.UNANSWERABLE, null, null,
+                    StructuredFailureReason.EMPTY_RESULT_SET, ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC,
+                    structured.plan(), sr.entityIds(), List.of(), null, false, null);
+        }
+        if (sr.generation() != null && StrUtil.isNotBlank(sr.generation().getAnswer())) {
+            return new Result(StructuredQueryService.State.ANSWER, sr.generation().getAnswer(), null, null,
+                    ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC, structured.plan(),
+                    sr.entityIds(), sr.evidences(), sr.generation(), false, null);
+        }
+        return new Result(StructuredQueryService.State.UNANSWERABLE, null, null,
+                StructuredFailureReason.EMPTY_RESULT_SET, ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC,
+                structured.plan(), sr.entityIds(), sr.evidences(), sr.generation(), false, null);
     }
 
     private Result timedOut(StructuredQueryPlan plan) {

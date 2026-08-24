@@ -113,4 +113,15 @@ class ProductStructuredQueryTest {
         assertEquals(State.CLARIFY, r.state());
         assertEquals("MISSING_METRIC", r.reasonCode());
     }
+
+    @Test
+    void crossEntitySemanticCandidate_enumeratesKb() {
+        // CQ-38: 无历史实体集但显式"知识库范围内语义列举" → CROSS_ENTITY_SEMANTIC(枚举 KB 后逐实体)
+        StructuredQueryService.HandleResult r = service.handle("知识库有哪些产品支持无线充电？", 6L, DOMAIN,
+                List.of(), null, null);
+        assertEquals(State.SEMANTIC, r.state());
+        assertNotNull(r.plan());
+        assertEquals("CROSS_ENTITY_SEMANTIC", r.plan().getRoute());
+        assertEquals(null, r.semanticEntityIds()); // 候选实体集由 KB 枚举
+    }
 }

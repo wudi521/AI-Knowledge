@@ -1,11 +1,13 @@
 package cn.iocoder.yudao.module.evidence.service.semantics;
 
+import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
 import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.assemble.AssembledEvidence;
 import cn.iocoder.yudao.module.evidence.service.assemble.EvidenceAssembler;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
+import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -28,6 +30,7 @@ class SemanticsExecutionServiceTest {
     private EvidenceAssembler assembler;
     private AnswerPipeline answerPipeline;
     private EvidenceProperties properties;
+    private KnowledgeApi knowledgeApi;
     private SemanticsExecutionService service;
 
     @BeforeEach
@@ -35,7 +38,8 @@ class SemanticsExecutionServiceTest {
         assembler = mock(EvidenceAssembler.class);
         answerPipeline = mock(AnswerPipeline.class);
         properties = new EvidenceProperties();
-        service = new SemanticsExecutionService(assembler, answerPipeline, properties);
+        knowledgeApi = mock(KnowledgeApi.class);
+        service = new SemanticsExecutionService(assembler, answerPipeline, properties, knowledgeApi);
     }
 
     private Evidence ev(Long chunkId, String docId, String content) {
@@ -97,6 +101,38 @@ class SemanticsExecutionServiceTest {
     void nullOrEmptyEntityIds_returnsEmpty() {
         SemanticsExecutionService.Result r = service.execute("它们分别是什么", 6L,
                 List.of(), 7L, 42L, List.of(), "q-test4");
+        assertThat(r.evidences()).isEmpty();
+        verifyNoInteractions(assembler, answerPipeline);
+    }
+
+    @Test
+    void executeCrossEntity_enumeratesPublishedDocsAndExecutesPerEntity() {
+        // CQ-38 CROSS_ENTITY_SEMANTIC: 枚举 KB 已发布文档 → 逐实体 SCOPED_RAG
+        properties.getSemantics().setMaxSemanticEntities(10);
+        when(knowledgeApi.getPublishedDocumentIds(6L)).thenReturn(CommonResult.success(List.of(101L, 102L)));
+        when(assembler.assemble(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new AssembledEvidence(List.of(ev(1L, "101", "支持无线充电")),
+                        List.of(), false, null, null, null));
+        when(answerPipeline.generateWithClaims(any(), any(), any()))
+                .thenReturn(GenerationResult.builder()
+                        .answer("手机A支持无线充电；手机B支持无线充电").claims(List.of()).build());
+
+        SemanticsExecutionService.Result r = service.executeCrossEntity(
+                "知识库有哪些产品支持无线充电？", 6L, 7L, 42L, List.of(), "q-test5");
+
+        assertThat(r.overLimit()).isFalse();
+        assertThat(r.entityIds()).containsExactly(101L, 102L);
+        assertThat(r.generation().getAnswer()).contains("无线充电");
+        verify(assembler, org.mockito.Mockito.times(2))
+                .assemble(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void executeCrossEntity_enumerateRpcFailure_returnsEmpty() {
+        properties.getSemantics().setMaxSemanticEntities(10);
+        when(knowledgeApi.getPublishedDocumentIds(6L)).thenReturn(CommonResult.error(500, "err"));
+        SemanticsExecutionService.Result r = service.executeCrossEntity(
+                "知识库有哪些产品支持无线充电？", 6L, 7L, 42L, List.of(), "q-test6");
         assertThat(r.evidences()).isEmpty();
         verifyNoInteractions(assembler, answerPipeline);
     }

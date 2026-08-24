@@ -194,6 +194,20 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     }
 
     @Override
+    public CommonResult<List<Long>> getPublishedDocumentIds(Long kbId) {
+        if (kbId == null) {
+            return success(List.of());
+        }
+        List<AiDocumentDO> docs = aiDocumentMapper.selectListByKbId(kbId);
+        if (docs.isEmpty()) {
+            return success(List.of());
+        }
+        List<Long> docIds = docs.stream().map(AiDocumentDO::getId).toList();
+        List<AiDocVersionDO> published = aiDocVersionMapper.selectPublishedByDocIds(docIds);
+        return success(published.stream().map(AiDocVersionDO::getDocId).distinct().toList());
+    }
+
+    @Override
     public CommonResult<List<IntentDTO>> getKbIntents(Long kbId) {
         List<AiIntentDO> intents = intentService.listEnabledByKb(kbId);
         return success(BeanUtils.toBean(intents, IntentDTO.class));

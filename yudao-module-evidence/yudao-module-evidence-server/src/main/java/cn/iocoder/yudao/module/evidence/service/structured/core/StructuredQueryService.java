@@ -141,6 +141,12 @@ public class StructuredQueryService {
             }
         }
 
+        // CQ-38: 语义条件列举("知识库有哪些产品支持X", 非结构化字段可过滤) → CROSS_ENTITY_SEMANTIC
+        // 优先于结构化计数/聚合(用户意图是按内容检索列举, 而非统计数量)
+        if (field == null && isCrossEntitySemanticCandidate(query)) {
+            return crossEntityResult(kbId, domainCode);
+        }
+
         // 运算/查询类型解析
         Operation op = resolveOperation(query, metric);
         QueryType queryType = resolveQueryType(query, pre, op);
@@ -215,6 +221,30 @@ public class StructuredQueryService {
                 .build();
         return new HandleResult(State.SEMANTIC, plan, null, null, null, null,
                 StructuredFailureReason.MISSING_METRIC, entityIds);
+    }
+
+    /** CQ-38: 无历史实体集但显式"知识库范围内语义列举/条件" → CROSS_ENTITY_SEMANTIC(候选实体集由 KB 枚举) */
+    private HandleResult crossEntityResult(Long kbId, String domainCode) {
+        QueryScope scope = QueryScope.currentKb(kbId);
+        StructuredQueryPlan plan = StructuredQueryPlan.builder()
+                .route("CROSS_ENTITY_SEMANTIC")
+                .domainCode(domainCode)
+                .scope(scope)
+                .build();
+        return new HandleResult(State.SEMANTIC, plan, null, null, null, null,
+                StructuredFailureReason.MISSING_METRIC, null);
+    }
+
+    /** CQ-38: CROSS_ENTITY_SEMANTIC 候选判定: 语义列举意图 + 显式知识库范围 + 语义条件词(需按内容检索) */
+    private boolean isCrossEntitySemanticCandidate(String query) {
+        if (StrUtil.isBlank(query)) {
+            return false;
+        }
+        boolean listIntent = StrUtil.containsAny(query, "有哪些", "哪些", "列举", "列出");
+        boolean kbScope = StrUtil.containsAny(query, "知识库", "当前库", "库中", "库里面", "里面", "当中");
+        boolean semanticCondition = StrUtil.containsAny(query, "支持", "提到", "涉及", "采用", "关于", "具备",
+                "包含", "具有", "适用于", "能不能", "是否", "有什么");
+        return listIntent && kbScope && semanticCondition;
     }
 
     /** CQ-38: 由 unsupportedReason 文本映射结构化失败原因码(仅用于执行期数据源/字段/运算不可用) */

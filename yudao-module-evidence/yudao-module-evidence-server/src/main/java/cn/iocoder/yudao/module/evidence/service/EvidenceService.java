@@ -511,14 +511,16 @@ public class EvidenceService {
     private EvidenceEvaluateRespVO buildCompositeAnswerResp(String traceId, String query, List<ChatTurnDTO> history,
                                                             CompositeQueryExecutor.Result composite, long start) {
         Judgement j = buildJudgement(true, 1.0, null, 0, 0);
-        if (ExecutionMode.CODE_PER_ENTITY_SEMANTIC.equals(composite.executionMode())) {
+        boolean semanticExec = ExecutionMode.CODE_PER_ENTITY_SEMANTIC.equals(composite.executionMode())
+                || ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC.equals(composite.executionMode());
+        if (semanticExec) {
             // 语义执行: 证据来自逐实体检索, 生成结果含逐项回答
             EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, composite.evidences(), List.of(),
                     composite.generation(), history);
             resp.setAnswer(composite.answer());
-            resp.setRoute("PER_ENTITY_SEMANTIC");
+            resp.setRoute(composite.executionMode());
             resp.setIntent("SEMANTIC");
-            resp.setExecutionMode(ExecutionMode.CODE_PER_ENTITY_SEMANTIC);
+            resp.setExecutionMode(composite.executionMode());
             resp.setStructuredResult(buildSemanticsResultDTO(composite.entityIds()));
             resp.setElapsedMs((int) (System.currentTimeMillis() - start));
             resp.setStages(buildSemanticStages(resp.getElapsedMs(), "SUCCEEDED"));
@@ -558,7 +560,8 @@ public class EvidenceService {
                                                              CompositeQueryExecutor.Result composite, long start) {
         Judgement j = buildJudgement(false, 0.0, composite.clarificationQuestion(), 0, 0);
         EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
-        boolean semantic = ExecutionMode.CODE_PER_ENTITY_SEMANTIC.equals(composite.executionMode());
+        boolean semantic = ExecutionMode.CODE_PER_ENTITY_SEMANTIC.equals(composite.executionMode())
+                || ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC.equals(composite.executionMode());
         resp.setRoute("CLARIFY");
         resp.setIntent(semantic ? "SEMANTIC_CLARIFY" : "STRUCTURED_CLARIFY");
         resp.setClarifyQuestion(composite.clarificationQuestion());

@@ -66,6 +66,13 @@ public interface KnowledgeApi {
     @PostMapping(ApiConstants.PREFIX + "/get-document-visibility")
     CommonResult<Map<Long, String>> getDocumentVisibility(@RequestBody DocumentVisibilityReqDTO req);
 
+    /**
+     * CQ-38: 枚举知识库下已发布文档 id(CROSS_ENTITY_SEMANTIC 语义执行候选实体集)。
+     * 仅返回文档编号(存在 PUBLISHED 版本), 不返回内容; 领域无关。
+     */
+    @GetMapping(ApiConstants.PREFIX + "/get-published-document-ids")
+    CommonResult<List<Long>> getPublishedDocumentIds(@RequestParam("kbId") Long kbId);
+
     @PostMapping(ApiConstants.PREFIX + "/update-document-domain-metadata")
     CommonResult<Boolean> updateDocumentDomainMetadata(@RequestBody Map<String, Object> body);
 

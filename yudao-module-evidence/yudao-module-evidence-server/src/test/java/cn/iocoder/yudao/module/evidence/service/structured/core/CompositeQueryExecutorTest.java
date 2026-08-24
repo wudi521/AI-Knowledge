@@ -160,6 +160,45 @@ class CompositeQueryExecutorTest {
     }
 
     @Test
+    void crossEntitySemantic_executesCrossEntity() {
+        // CQ-38 CROSS_ENTITY_SEMANTIC: 无 explicitEntityIds 但 plan.route=CROSS_ENTITY_SEMANTIC
+        StructuredQueryService.HandleResult semantic = new StructuredQueryService.HandleResult(
+                StructuredQueryService.State.SEMANTIC,
+                StructuredQueryPlan.builder().route("CROSS_ENTITY_SEMANTIC").domainCode("PATENT").build(),
+                null, null, null, null, StructuredFailureReason.MISSING_METRIC, null);
+        when(structuredQueryService.handle(any(), any(), any(), any(), any(), any())).thenReturn(semantic);
+        when(semanticsExecutionService.executeCrossEntity(any(), any(), any(), any(), any(), any()))
+                .thenReturn(new SemanticsExecutionService.Result(
+                        List.of(Evidence.builder().chunkId(1L).documentId("101").build()),
+                        GenerationResult.builder().answer("知识库共找到 1 个匹配专利。").claims(List.of()).build(),
+                        List.of(101L), false, 100));
+
+        CompositeQueryExecutor.Result r = executor.execute(request(budget(5, 100, 12, 60_000)));
+
+        assertThat(r.state()).isEqualTo(StructuredQueryService.State.ANSWER);
+        assertThat(r.executionMode()).isEqualTo(ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC);
+        assertThat(r.answer()).contains("匹配");
+        assertThat(r.entityIds()).containsExactly(101L);
+    }
+
+    @Test
+    void crossEntitySemantic_overLimit_clarifies() {
+        StructuredQueryService.HandleResult semantic = new StructuredQueryService.HandleResult(
+                StructuredQueryService.State.SEMANTIC,
+                StructuredQueryPlan.builder().route("CROSS_ENTITY_SEMANTIC").domainCode("PATENT").build(),
+                null, null, null, null, StructuredFailureReason.MISSING_METRIC, null);
+        when(structuredQueryService.handle(any(), any(), any(), any(), any(), any())).thenReturn(semantic);
+        when(semanticsExecutionService.executeCrossEntity(any(), any(), any(), any(), any(), any()))
+                .thenReturn(new SemanticsExecutionService.Result(null, null, List.of(1L, 2L, 3L), true, 2));
+
+        CompositeQueryExecutor.Result r = executor.execute(request(budget(5, 100, 12, 60_000)));
+
+        assertThat(r.state()).isEqualTo(StructuredQueryService.State.CLARIFY);
+        assertThat(r.reasonCode()).isEqualTo(StructuredFailureReason.AMBIGUOUS_SCOPE);
+        assertThat(r.executionMode()).isEqualTo(ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC);
+    }
+
+    @Test
     void notStructured_returnsNotStructured() {
         StructuredQueryService.HandleResult ns = new StructuredQueryService.HandleResult(
                 StructuredQueryService.State.NOT_STRUCTURED, null, null, null, null, null, null, null);

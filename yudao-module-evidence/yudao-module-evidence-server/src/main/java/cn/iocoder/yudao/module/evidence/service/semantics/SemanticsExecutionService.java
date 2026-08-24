@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.evidence.service.semantics;
 
+import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
@@ -7,6 +8,7 @@ import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.assemble.AssembledEvidence;
 import cn.iocoder.yudao.module.evidence.service.assemble.EvidenceAssembler;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
+import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -18,6 +20,8 @@ import java.util.List;
  * <p>
  * 场景: 多轮中引用了上一轮结果集, 但属性("核心技术分别是什么"/"技术方案")无法结构化消解
  * (无注册 metric/field) → 对每个实体限定文档检索(hard scope), 聚合证据后一次生成"每实体一值"回答。
+ * <p>
+ * CROSS_ENTITY_SEMANTIC: 无历史实体集时, 从知识库枚举已发布文档作为候选实体集, 再做逐实体语义执行。
  * <p>
  * 约束:
  * - 实体数受 {@code yudao.evidence.semantics.max-semantic-entities} 限制, 超限 → CLARIFY(禁止静默截断);
@@ -34,12 +38,14 @@ public class SemanticsExecutionService {
     private final EvidenceAssembler assembler;
     private final AnswerPipeline answerPipeline;
     private final EvidenceProperties properties;
+    private final KnowledgeApi knowledgeApi;
 
     public SemanticsExecutionService(EvidenceAssembler assembler, AnswerPipeline answerPipeline,
-                                     EvidenceProperties properties) {
+                                     EvidenceProperties properties, KnowledgeApi knowledgeApi) {
         this.assembler = assembler;
         this.answerPipeline = answerPipeline;
         this.properties = properties;
+        this.knowledgeApi = knowledgeApi;
     }
 
     /** 语义执行结果 */
@@ -80,6 +86,31 @@ public class SemanticsExecutionService {
         }
         GenerationResult generation = answerPipeline.generateWithClaims(query, all, history);
         return new Result(all, generation, ids, false, limit);
+    }
+
+    /**
+     * CROSS_ENTITY_SEMANTIC(CQ-38): 无历史实体集时, 从知识库枚举已发布文档作为候选实体集,
+     * 再做逐实体语义执行。实体数受 maxSemanticEntities 限制, 超限 → overLimit(要求缩小范围)。
+     */
+    public Result executeCrossEntity(String query, Long kbId, Long tenantId, Long userId,
+                                     List<ChatTurnDTO> history, String traceId) {
+        if (kbId == null) {
+            return new Result(List.of(), null, List.of(), false, 0);
+        }
+        List<Long> ids = collectPublishedDocumentIds(kbId);
+        return execute(query, kbId, ids, tenantId, userId, history, traceId);
+    }
+
+    /** 枚举知识库下已发布文档 id(领域无关; RPC 失败返回空集) */
+    private List<Long> collectPublishedDocumentIds(Long kbId) {
+        try {
+            CommonResult<List<Long>> resp = knowledgeApi.getPublishedDocumentIds(kbId);
+            return resp != null && resp.isSuccess() && resp.getData() != null
+                    ? resp.getData() : List.of();
+        } catch (Exception e) {
+            log.warn("[collectPublishedDocumentIds][kb({}) 枚举已发布文档失败: {}]", kbId, e.getMessage());
+            return List.of();
+        }
     }
 
 }
