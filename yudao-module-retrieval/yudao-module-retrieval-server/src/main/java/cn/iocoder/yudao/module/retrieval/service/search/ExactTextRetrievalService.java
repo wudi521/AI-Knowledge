@@ -17,8 +17,7 @@ import java.util.Set;
 
 /**
  * EXACT_TEXT_SEARCH 快路径。
- * <p>
- * 只执行：ACL/Kb scope -> ES match_phrase -> PUBLISHED guard -> hydrate result。
+ * 只执行 ACL/Kb scope -> ES match_phrase -> PUBLISHED guard -> hydrate result。
  * 明确禁止 QueryAnalysis LLM / Embedding / Vector / RRF / Rerank。
  */
 @Slf4j
@@ -42,6 +41,7 @@ public class ExactTextRetrievalService {
             resp.setAnswerBlocked(true);
             resp.setAnswerReason("精确原文检索缺少目标短语");
             resp.setResults(List.of());
+            resp.setTotalHits(0L);
             attachStages(resp, System.currentTimeMillis() - start, 0, false);
             return resp;
         }
@@ -52,16 +52,19 @@ public class ExactTextRetrievalService {
                 : new ArrayList<>(visible);
         if (kbIds.isEmpty()) {
             resp.setResults(List.of());
+            resp.setTotalHits(0L);
             attachStages(resp, System.currentTimeMillis() - start, 0, false);
             return resp;
         }
 
         int topK = req.getTopK() == null || req.getTopK() <= 0 ? 10 : Math.min(req.getTopK(), MAX_TOP_K);
         long bm25Start = System.currentTimeMillis();
-        List<Map.Entry<Long, Double>> hits = bm25Searcher.searchExactPhrase(
+        Bm25Searcher.SearchHits searchHits = bm25Searcher.searchExactPhraseWithTotal(
                 req.getExactText(), req.getTenantId(), kbIds, topK, req.getDocumentIds());
         long bm25Ms = System.currentTimeMillis() - bm25Start;
+        resp.setTotalHits(searchHits.totalHits());
 
+        List<Map.Entry<Long, Double>> hits = searchHits.hits();
         List<Long> orderedIds = hits.stream().map(Map.Entry::getKey).distinct().toList();
         if (orderedIds.isEmpty()) {
             resp.setResults(List.of());
@@ -70,6 +73,7 @@ public class ExactTextRetrievalService {
             return resp;
         }
 
+        // ES 已过滤 PUBLISHED，但仍以 MySQL/ingestion 当前状态做第二道 fail-closed 校验。
         Set<Long> published = resultFilter.filterPublished(new HashSet<>(orderedIds));
         List<Long> ids = orderedIds.stream().filter(published::contains).toList();
         Map<Long, String> contents = resultFilter.getChunkContents(ids);
@@ -102,8 +106,9 @@ public class ExactTextRetrievalService {
         resp.getChannels().setVector(0);
         resp.getChannels().setFused(0);
         attachStages(resp, System.currentTimeMillis() - start, bm25Ms, true);
-        log.info("[search][EXACT_TEXT_SEARCH phrase={}, hits={}, elapsedMs={}]",
-                StrUtil.maxLength(req.getExactText(), 80), results.size(), System.currentTimeMillis() - start);
+        log.info("[search][EXACT_TEXT_SEARCH phrase={}, returnedHits={}, totalHits={}, elapsedMs={}]",
+                StrUtil.maxLength(req.getExactText(), 80), results.size(), searchHits.totalHits(),
+                System.currentTimeMillis() - start);
         return resp;
     }
 
@@ -118,7 +123,6 @@ public class ExactTextRetrievalService {
         analysis.setRewrites(List.of());
         analysis.setSubQuestions(List.of());
         analysis.setSuccess(true);
-        // 对外主路由保持现有兼容集合；真实执行模式由 Evidence/Chat 的 executionMode 透出。
         analysis.setRoute("HYBRID_RAG");
         resp.setAnalysis(analysis);
         RetrievalSearchRespDTO.RetrievalChannelStatDTO channels = new RetrievalSearchRespDTO.RetrievalChannelStatDTO();
