@@ -4,12 +4,15 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.evidence.service.structured.core.CompletenessGuard;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainFieldRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainMetricRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.ExecutionMode;
+import cn.iocoder.yudao.module.evidence.service.structured.core.FieldDefinition;
+import cn.iocoder.yudao.module.evidence.service.structured.core.MetricDefinition;
 import cn.iocoder.yudao.module.evidence.service.structured.core.Operation;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
@@ -19,13 +22,20 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.stream.Collectors;
 
 /**
- * Query Planner V2：检索前先生成类型安全的执行计划。
- * <p>
- * 优先级：明确比较/原文/逐实体/主观歧义 → Structured Complete → 语义 Planner LLM。
- * 这样“哪些专利比较相似”不会因为“哪些”被误抢成普通 LIST/Structured。
+ * Query Planner V2 的语义兜底层。
+ *
+ * <p>确定性强语义（精确原文、跨实体比较、逐实体语义）由 {@link QueryPlannerFacade}
+ * 在进入本类之前处理。本类只负责：
+ * <ul>
+ *   <li>明显 Structured/主观歧义的确定性收口；</li>
+ *   <li>剩余模糊问题的一次 LLM 类型化规划；</li>
+ *   <li>LLM 输出白名单校验和安全回退。</li>
+ * </ul>
+ *
+ * <p>这里刻意只使用仓库当前版本稳定存在的基础 API，避免 Planner 因 Hutool 重载差异
+ * 或过度复杂的辅助调用导致主工程无法编译。</p>
  */
 @Slf4j
 @Component
@@ -42,11 +52,11 @@ public class QueryPlannerV2 {
             1. 统计、完整列举、排序、分组优先 STRUCTURED，禁止用 TopK RAG 推断全集；
             2. 单对象语义问题用 SCOPED_RAG；多个明确对象分别回答用 PER_ENTITY_SEMANTIC；
             3. 相似/共同点/区别/比较用 CROSS_ENTITY_COMPARE；普通发现型语义问题才用 HYBRID_RAG；
-            4. 用户明确说“原文出现/包含某词/精确搜索”用 EXACT_TEXT_SEARCH；
-            5. 主观“哪个好/更先进/更有价值”且没有评价标准时 CLARIFY；
+            4. 用户明确说原文出现/包含某词时用 EXACT_TEXT_SEARCH；
+            5. 主观哪个好/更先进/更有价值且没有评价标准时 CLARIFY；
             6. 不得创造未注册 field/metric。
             JSON 格式：
-            {"queryClass":"...","executionMode":"...","entityType":null,
+            {"queryClass":"SEMANTIC_QUERY","executionMode":"HYBRID_RAG","entityType":null,
              "projections":[],"metrics":[],"operation":"NONE",
              "comparisonType":"NONE","completenessPolicy":"BEST_EFFORT",
              "perEntityTopK":2,"requireDistinctEntities":false,"coveragePolicy":"BEST_EFFORT",
@@ -74,77 +84,41 @@ public class QueryPlannerV2 {
         this.validator = validator;
     }
 
-    public QueryPlan plan(String query, String domainCode, List<ChatTurnDTO> history, String contextResolutionJson) {
+    public QueryPlan plan(String query, String domainCode, List<ChatTurnDTO> history,
+                          String contextResolutionJson) {
         List<Long> contextIds = parseContextEntityIds(contextResolutionJson);
+
         QueryPlan deterministic = deterministic(query, domainCode, contextIds);
-        if (deterministic != null) return deterministic;
+        if (deterministic != null) {
+            return deterministic;
+        }
 
-        QueryPlan llm = semanticPlan(query, domainCode, history, contextIds);
-        QueryPlanValidator.Validation validation = validator.validate(llm);
-        if (validation.valid()) return llm;
+        QueryPlan llmPlan = semanticPlan(query, domainCode, history, contextIds);
+        QueryPlanValidator.Validation validation = validator.validate(llmPlan);
+        if (validation.valid()) {
+            return llmPlan;
+        }
 
-        log.warn("[plan][LLM QueryPlan 非法, reason={}, query={}]", validation.reasonCode(), StrUtil.maxLength(query, 80));
-        return fallback(query, domainCode, contextIds, validation.reasonCode());
+        log.warn("[plan][invalid LLM QueryPlan, reason={}, query={}]",
+                validation.reasonCode(), abbreviate(query, 80));
+        return fallback(domainCode, contextIds, validation.reasonCode());
     }
 
     private QueryPlan deterministic(String query, String domainCode, List<Long> contextIds) {
-        if (StrUtil.isBlank(query)) return clarify(domainCode, "请描述你想查询的问题。", "EMPTY_QUERY");
+        if (isBlank(query)) {
+            return clarify(domainCode, "请描述你想查询的问题。", "EMPTY_QUERY");
+        }
 
-        // 1. 主观比较没有评价标准时必须先反问，禁止模型自行发明“好/先进/价值”的标准。
+        // 主观评价没有显式标准时必须先反问，禁止模型自行发明评价标准。
         if (isSubjectiveComparison(query) && !hasExplicitCriterion(query)) {
             return clarify(domainCode,
                     "请说明你希望按什么标准比较，例如技术相似度、权利要求数量、申请时间或其他明确指标。",
                     "MISSING_COMPARISON_CRITERION");
         }
 
-        // 2. 强比较语义优先于“哪些/分别”等泛结构化词。
-        ComparisonType comparison = detectComparison(query);
-        if (comparison != ComparisonType.NONE) {
-            return QueryPlan.builder()
-                    .queryClass(QueryClass.SEMANTIC_QUERY)
-                    .executionMode(ExecutionMode.CROSS_ENTITY_COMPARE)
-                    .domainCode(domainCode)
-                    .scopeType(contextIds.isEmpty() ? "CURRENT_KB" : "PREVIOUS_RESULT_SET")
-                    .entityIds(contextIds)
-                    .comparisonType(comparison)
-                    .perEntityTopK(2)
-                    .requireDistinctEntities(true)
-                    .coveragePolicy("ALL")
-                    .completenessPolicy(CompletenessPolicy.BEST_EFFORT)
-                    .plannerSource("DETERMINISTIC")
-                    .build();
-        }
-
-        // 3. 精确原文搜索不是普通语义召回，也不能被“哪些”抢成 Structured LIST。
-        if (isExactText(query)) {
-            return QueryPlan.builder()
-                    .queryClass(QueryClass.SEMANTIC_QUERY)
-                    .executionMode(ExecutionMode.EXACT_TEXT_SEARCH)
-                    .domainCode(domainCode)
-                    .scopeType(contextIds.isEmpty() ? "CURRENT_KB" : "PREVIOUS_RESULT_SET")
-                    .entityIds(contextIds)
-                    .completenessPolicy(CompletenessPolicy.COMPLETE_REQUIRED)
-                    .plannerSource("DETERMINISTIC")
-                    .build();
-        }
-
-        // 4. 上一轮已有明确实体集，且当前问“分别的核心技术”等语义属性 → 逐实体 hard-scope。
-        if (!contextIds.isEmpty() && isPerEntitySemantic(query)) {
-            return QueryPlan.builder()
-                    .queryClass(QueryClass.SEMANTIC_QUERY)
-                    .executionMode(ExecutionMode.PER_ENTITY_SEMANTIC)
-                    .domainCode(domainCode)
-                    .scopeType("PREVIOUS_RESULT_SET")
-                    .entityIds(contextIds)
-                    .perEntityTopK(4)
-                    .coveragePolicy("ALL")
-                    .completenessPolicy(CompletenessPolicy.BEST_EFFORT)
-                    .plannerSource("DETERMINISTIC")
-                    .build();
-        }
-
-        // 5. 最后才进入完整数据集 Structured。TopK 永远不能证明全集。
-        if (completenessGuard.isStructuredCandidate(query) || completenessGuard.requiresCompleteDataset(query)) {
+        // 完整统计/列举必须进入 Structured，不能交给 TopK RAG。
+        if (completenessGuard.isStructuredCandidate(query)
+                || completenessGuard.requiresCompleteDataset(query)) {
             return QueryPlan.builder()
                     .queryClass(QueryClass.STRUCTURED_QUERY)
                     .executionMode(ExecutionMode.STRUCTURED)
@@ -158,156 +132,286 @@ public class QueryPlannerV2 {
         return null;
     }
 
-    private QueryPlan semanticPlan(String query, String domainCode, List<ChatTurnDTO> history, List<Long> contextIds) {
+    private QueryPlan semanticPlan(String query, String domainCode, List<ChatTurnDTO> history,
+                                   List<Long> contextIds) {
         try {
             ModelChatReqDTO req = new ModelChatReqDTO();
             req.setSystem(promptSupport.get("query-planner-v2", DEFAULT_PROMPT));
             req.setUser(buildPlannerInput(query, domainCode, history, contextIds));
-            String raw = modelApi.chat(req).getCheckedData();
-            JSONObject json = parseJson(raw);
-            if (json == null) return fallback(query, domainCode, contextIds, "PLANNER_PARSE_FAILED");
+            req.setTemperature(0D);
+            req.setScenario("query-planner-v2");
 
+            CommonResult<String> response = modelApi.chat(req);
+            String raw = response == null ? null : response.getCheckedData();
+            JSONObject json = parseJson(raw);
+            if (json == null) {
+                return fallback(domainCode, contextIds, "PLANNER_PARSE_FAILED");
+            }
+
+            boolean requiresClarification = booleanValue(json.get("requiresClarification"), false);
             QueryPlan plan = QueryPlan.builder()
-                    .queryClass(enumValue(QueryClass.class, json.getStr("queryClass"), QueryClass.SEMANTIC_QUERY))
-                    .executionMode(enumValue(ExecutionMode.class, json.getStr("executionMode"), ExecutionMode.HYBRID_RAG))
+                    .queryClass(enumValue(QueryClass.class, stringValue(json.get("queryClass")),
+                            QueryClass.SEMANTIC_QUERY))
+                    .executionMode(enumValue(ExecutionMode.class, stringValue(json.get("executionMode")),
+                            ExecutionMode.HYBRID_RAG))
                     .domainCode(domainCode)
-                    .entityType(json.getStr("entityType"))
+                    .entityType(stringValue(json.get("entityType")))
                     .scopeType(contextIds.isEmpty() ? "CURRENT_KB" : "PREVIOUS_RESULT_SET")
                     .entityIds(contextIds)
-                    .projections(strList(json.getJSONArray("projections")))
-                    .metrics(strList(json.getJSONArray("metrics")))
-                    .operation(enumValue(Operation.class, json.getStr("operation"), Operation.NONE))
-                    .comparisonType(enumValue(ComparisonType.class, json.getStr("comparisonType"), ComparisonType.NONE))
-                    .completenessPolicy(enumValue(CompletenessPolicy.class, json.getStr("completenessPolicy"), CompletenessPolicy.BEST_EFFORT))
-                    .perEntityTopK(clamp(json.getInt("perEntityTopK"), 1, 8, 2))
-                    .requireDistinctEntities(json.getBool("requireDistinctEntities", false))
-                    .coveragePolicy(StrUtil.blankToDefault(json.getStr("coveragePolicy"), "BEST_EFFORT"))
-                    .requiresClarification(json.getBool("requiresClarification", false))
-                    .clarificationQuestion(json.getStr("clarificationQuestion"))
+                    .projections(stringList(json.get("projections")))
+                    .metrics(stringList(json.get("metrics")))
+                    .operation(enumValue(Operation.class, stringValue(json.get("operation")), Operation.NONE))
+                    .comparisonType(enumValue(ComparisonType.class, stringValue(json.get("comparisonType")),
+                            ComparisonType.NONE))
+                    .completenessPolicy(enumValue(CompletenessPolicy.class,
+                            stringValue(json.get("completenessPolicy")), CompletenessPolicy.BEST_EFFORT))
+                    .perEntityTopK(clamp(integerValue(json.get("perEntityTopK"), 2), 1, 8))
+                    .requireDistinctEntities(booleanValue(json.get("requireDistinctEntities"), false))
+                    .coveragePolicy(defaultIfBlank(stringValue(json.get("coveragePolicy")), "BEST_EFFORT"))
+                    .requiresClarification(requiresClarification)
+                    .clarificationQuestion(stringValue(json.get("clarificationQuestion")))
                     .plannerSource("LLM")
                     .build();
-            if (plan.isRequiresClarification()) plan.setQueryClass(QueryClass.CLARIFY);
+
+            if (requiresClarification) {
+                plan.setQueryClass(QueryClass.CLARIFY);
+            }
             return plan;
         } catch (Exception e) {
-            log.warn("[plan][Semantic Planner 失败, 回退 HYBRID: {}]", e.getMessage());
-            return fallback(query, domainCode, contextIds, "PLANNER_UNAVAILABLE");
+            log.warn("[plan][Semantic Planner failed, fallback: {}]", e.getMessage());
+            return fallback(domainCode, contextIds, "PLANNER_UNAVAILABLE");
         }
     }
 
-    private String buildPlannerInput(String query, String domainCode, List<ChatTurnDTO> history, List<Long> contextIds) {
-        String fields = domainCode == null ? "[]" : fieldRegistry.all(domainCode).stream()
-                .map(f -> f.getFieldCode()).distinct().collect(Collectors.joining(",", "[", "]"));
-        String metrics = domainCode == null ? "[]" : metricRegistry.all(domainCode).stream()
-                .map(m -> m.getMetricCode()).distinct().collect(Collectors.joining(",", "[", "]"));
-        StringBuilder sb = new StringBuilder();
+    private String buildPlannerInput(String query, String domainCode, List<ChatTurnDTO> history,
+                                     List<Long> contextIds) {
+        StringBuilder sb = new StringBuilder(512);
         sb.append("domain=").append(domainCode).append('\n');
-        sb.append("allowedFields=").append(fields).append('\n');
-        sb.append("allowedMetrics=").append(metrics).append('\n');
+        sb.append("allowedFields=").append(registeredFields(domainCode)).append('\n');
+        sb.append("allowedMetrics=").append(registeredMetrics(domainCode)).append('\n');
         sb.append("previousResultEntityCount=").append(contextIds.size()).append('\n');
+
         if (history != null && !history.isEmpty()) {
             sb.append("recentContext:\n");
             int from = Math.max(0, history.size() - 4);
             for (int i = from; i < history.size(); i++) {
-                ChatTurnDTO t = history.get(i);
-                if (t != null && StrUtil.isNotBlank(t.getContent())) {
-                    sb.append(t.getRole()).append(':').append(StrUtil.maxLength(t.getContent(), 180)).append('\n');
+                ChatTurnDTO turn = history.get(i);
+                if (turn == null || isBlank(turn.getContent())) {
+                    continue;
                 }
+                sb.append(defaultIfBlank(turn.getRole(), "UNKNOWN"))
+                        .append(':')
+                        .append(abbreviate(turn.getContent(), 180))
+                        .append('\n');
             }
         }
-        return sb.append("currentQuery=").append(query).toString();
+        sb.append("currentQuery=").append(query == null ? "" : query);
+        return sb.toString();
     }
 
-    private QueryPlan fallback(String query, String domainCode, List<Long> contextIds, String reason) {
+    private String registeredFields(String domainCode) {
+        if (isBlank(domainCode)) {
+            return "[]";
+        }
+        List<String> codes = new ArrayList<>();
+        for (FieldDefinition field : fieldRegistry.all(domainCode)) {
+            if (field != null && !isBlank(field.getFieldCode()) && !codes.contains(field.getFieldCode())) {
+                codes.add(field.getFieldCode());
+            }
+        }
+        return "[" + String.join(",", codes) + "]";
+    }
+
+    private String registeredMetrics(String domainCode) {
+        if (isBlank(domainCode)) {
+            return "[]";
+        }
+        List<String> codes = new ArrayList<>();
+        for (MetricDefinition metric : metricRegistry.all(domainCode)) {
+            if (metric != null && !isBlank(metric.getMetricCode()) && !codes.contains(metric.getMetricCode())) {
+                codes.add(metric.getMetricCode());
+            }
+        }
+        return "[" + String.join(",", codes) + "]";
+    }
+
+    private QueryPlan fallback(String domainCode, List<Long> contextIds, String reasonCode) {
         return QueryPlan.builder()
                 .queryClass(QueryClass.SEMANTIC_QUERY)
-                .executionMode(contextIds.isEmpty() ? ExecutionMode.HYBRID_RAG : ExecutionMode.PER_ENTITY_SEMANTIC)
+                .executionMode(contextIds.isEmpty()
+                        ? ExecutionMode.HYBRID_RAG : ExecutionMode.PER_ENTITY_SEMANTIC)
                 .domainCode(domainCode)
                 .scopeType(contextIds.isEmpty() ? "CURRENT_KB" : "PREVIOUS_RESULT_SET")
                 .entityIds(contextIds)
                 .comparisonType(ComparisonType.NONE)
                 .completenessPolicy(CompletenessPolicy.BEST_EFFORT)
-                .reasonCode(reason)
+                .reasonCode(reasonCode)
                 .plannerSource("FALLBACK")
                 .build();
     }
 
-    private QueryPlan clarify(String domainCode, String question, String reason) {
-        return QueryPlan.builder().queryClass(QueryClass.CLARIFY).domainCode(domainCode)
-                .requiresClarification(true).clarificationQuestion(question).reasonCode(reason)
-                .plannerSource("DETERMINISTIC").build();
-    }
-
-    private ComparisonType detectComparison(String query) {
-        if (StrUtil.containsAny(query, "最相似", "最像", "最接近", "类似")) return ComparisonType.SIMILARITY;
-        if (StrUtil.containsAny(query, "共同点", "共性", "相同点")) return ComparisonType.COMMONALITY;
-        if (StrUtil.containsAny(query, "区别", "差异", "不同点")) return ComparisonType.DIFFERENCE;
-        if (StrUtil.containsAny(query, "相似", "比较", "对比")) return ComparisonType.PAIR_COMPARE;
-        return ComparisonType.NONE;
+    private QueryPlan clarify(String domainCode, String question, String reasonCode) {
+        return QueryPlan.builder()
+                .queryClass(QueryClass.CLARIFY)
+                .domainCode(domainCode)
+                .requiresClarification(true)
+                .clarificationQuestion(question)
+                .reasonCode(reasonCode)
+                .plannerSource("DETERMINISTIC")
+                .build();
     }
 
     private boolean isSubjectiveComparison(String query) {
-        return StrUtil.containsAny(query, "哪个好", "哪个更好", "更先进", "最先进", "更有价值", "最有价值",
+        return containsAny(query, "哪个好", "哪个更好", "更先进", "最先进", "更有价值", "最有价值",
                 "更优秀", "最好", "最优", "更强", "最强");
     }
 
     private boolean hasExplicitCriterion(String query) {
-        return StrUtil.containsAny(query, "按", "根据", "以", "从", "相似度", "权利要求", "申请时间", "申请日",
+        return containsAny(query, "按", "根据", "以", "从", "相似度", "权利要求", "申请时间", "申请日",
                 "公布时间", "公开日", "数量", "成本", "价格", "性能", "准确率", "效率");
     }
 
-    private boolean isPerEntitySemantic(String query) {
-        boolean semantic = StrUtil.containsAny(query, "核心技术", "技术方案", "技术原理", "解决什么", "背景技术",
-                "实施例", "实施方式", "主要内容", "总结", "概括");
-        boolean perEntity = StrUtil.containsAny(query, "分别", "各自", "逐个", "每个", "它们", "这些", "这几个");
-        return semantic && perEntity;
-    }
-
-    private boolean isExactText(String query) {
-        return StrUtil.containsAny(query, "原文出现", "原文包含", "精确搜索", "精确匹配", "出现过", "出现了哪些");
-    }
-
-    private List<Long> parseContextEntityIds(String json) {
-        if (StrUtil.isBlank(json)) return List.of();
+    private List<Long> parseContextEntityIds(String jsonText) {
+        if (isBlank(jsonText)) {
+            return List.of();
+        }
         try {
-            JSONArray arr = JSONUtil.parseObj(json).getJSONArray("explicitEntityIds");
-            if (arr == null) return List.of();
-            List<Long> ids = new ArrayList<>();
-            for (Object value : arr) {
-                if (value instanceof Number n) ids.add(n.longValue());
-                else if (value != null) ids.add(Long.parseLong(String.valueOf(value)));
+            JSONObject object = JSONUtil.parseObj(jsonText);
+            Object rawIds = object.get("explicitEntityIds");
+            if (!(rawIds instanceof JSONArray array)) {
+                return List.of();
             }
-            return ids.stream().distinct().toList();
+            List<Long> result = new ArrayList<>();
+            for (Object value : array) {
+                Long id = longValue(value);
+                if (id != null && !result.contains(id)) {
+                    result.add(id);
+                }
+            }
+            return result;
         } catch (Exception ignored) {
             return List.of();
         }
     }
 
     private JSONObject parseJson(String raw) {
-        if (StrUtil.isBlank(raw)) return null;
+        if (isBlank(raw)) {
+            return null;
+        }
         try {
-            int a = raw.indexOf('{');
-            int b = raw.lastIndexOf('}');
-            return a >= 0 && b > a ? JSONUtil.parseObj(raw.substring(a, b + 1)) : null;
-        } catch (Exception e) {
+            int start = raw.indexOf('{');
+            int end = raw.lastIndexOf('}');
+            if (start < 0 || end <= start) {
+                return null;
+            }
+            return JSONUtil.parseObj(raw.substring(start, end + 1));
+        } catch (Exception ignored) {
             return null;
         }
     }
 
-    private List<String> strList(JSONArray arr) {
-        if (arr == null) return new ArrayList<>();
-        List<String> out = new ArrayList<>();
-        for (Object o : arr) if (o != null && StrUtil.isNotBlank(String.valueOf(o))) out.add(String.valueOf(o));
-        return out;
+    private List<String> stringList(Object value) {
+        List<String> result = new ArrayList<>();
+        if (!(value instanceof JSONArray array)) {
+            return result;
+        }
+        for (Object item : array) {
+            String text = stringValue(item);
+            if (!isBlank(text) && !result.contains(text)) {
+                result.add(text);
+            }
+        }
+        return result;
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private boolean booleanValue(Object value, boolean fallback) {
+        if (value == null) {
+            return fallback;
+        }
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        String text = String.valueOf(value).trim();
+        if ("true".equalsIgnoreCase(text)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(text)) {
+            return false;
+        }
+        return fallback;
+    }
+
+    private int integerValue(Object value, int fallback) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value != null) {
+            try {
+                return Integer.parseInt(String.valueOf(value).trim());
+            } catch (NumberFormatException ignored) {
+                // fall through
+            }
+        }
+        return fallback;
+    }
+
+    private Long longValue(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value != null) {
+            try {
+                return Long.parseLong(String.valueOf(value).trim());
+            } catch (NumberFormatException ignored) {
+                // fall through
+            }
+        }
+        return null;
     }
 
     private <E extends Enum<E>> E enumValue(Class<E> type, String raw, E fallback) {
-        if (StrUtil.isBlank(raw)) return fallback;
-        try { return Enum.valueOf(type, raw.trim().toUpperCase(Locale.ROOT)); }
-        catch (Exception ignored) { return fallback; }
+        if (isBlank(raw)) {
+            return fallback;
+        }
+        try {
+            return Enum.valueOf(type, raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ignored) {
+            return fallback;
+        }
     }
 
-    private int clamp(Integer value, int min, int max, int fallback) {
-        if (value == null) return fallback;
+    private int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private boolean containsAny(String text, String... words) {
+        if (text == null || words == null) {
+            return false;
+        }
+        for (String word : words) {
+            if (word != null && text.contains(word)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isBlank(String text) {
+        return text == null || text.trim().isEmpty();
+    }
+
+    private String defaultIfBlank(String text, String fallback) {
+        return isBlank(text) ? fallback : text;
+    }
+
+    private String abbreviate(String text, int maxLength) {
+        if (text == null || text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(0, Math.max(0, maxLength));
     }
 }
