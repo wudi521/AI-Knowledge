@@ -18,6 +18,12 @@ public interface AiChatResultSetMapper extends BaseMapperX<AiChatResultSetDO> {
                 .eq(AiChatResultSetDO::getResultSetId, resultSetId));
     }
 
+    /** CQ-02/47 幂等: 该 queryId 是否已有结果集快照(SSE 重试/重复提交去重) */
+    default boolean existsByQueryId(String queryId) {
+        return selectCount(new LambdaQueryWrapper<AiChatResultSetDO>()
+                .eq(AiChatResultSetDO::getQueryId, queryId)) > 0;
+    }
+
     default List<AiChatResultSetDO> selectByConversationId(Long conversationId) {
         return selectList(new LambdaQueryWrapper<AiChatResultSetDO>()
                 .eq(AiChatResultSetDO::getConversationId, conversationId)

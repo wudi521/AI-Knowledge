@@ -3,10 +3,12 @@ package cn.iocoder.yudao.module.chat.service.evidence;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
+import cn.iocoder.yudao.module.chat.framework.chat.ChatProperties;
 import cn.iocoder.yudao.module.evidence.api.EvidenceApi;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateReqDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
+import cn.iocoder.yudao.module.evidence.api.dto.QueryPlanBudgetDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -30,6 +32,8 @@ public class EvidenceRpcAdapter {
 
     @Resource
     private EvidenceApi evidenceApi;
+    @Resource
+    private ChatProperties chatProperties;
 
     /**
      * 证据评估(单轮, 无历史上下文)
@@ -96,6 +100,13 @@ public class EvidenceRpcAdapter {
         req.setTraceId(traceId); // P0-09 统一主 traceId
         req.setDomainCode(domainCode); // 会话绑定 KB 领域, Structured Query 路由用
         req.setContextResolutionJson(contextResolutionJson); // CQ-04~10 多轮上下文
+        // CQ-02/38: Composite Query Plan 预算(对话层 yudao.chat.plan-* 配置 → 证据侧执行约束)
+        QueryPlanBudgetDTO budget = new QueryPlanBudgetDTO();
+        budget.setMaxSteps(chatProperties.getPlanMaxSteps());
+        budget.setMaxEntities(chatProperties.getPlanMaxEntities());
+        budget.setMaxModelCalls(chatProperties.getPlanMaxModelCalls());
+        budget.setDeadlineMs(chatProperties.getPlanDeadlineMs());
+        req.setPlanBudget(budget);
         CommonResult<EvidenceEvaluateRespDTO> resp;
         try {
             resp = evidenceApi.evaluate(req);

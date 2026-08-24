@@ -121,6 +121,7 @@ class ChatMultiTurnContextTest {
         when(referenceResolver.resolve(any(), any(), any()))
                 .thenReturn(cn.iocoder.yudao.module.chat.service.context.model.QueryContextResolution.noReference());
         when(resultSetService.getRecentFrames(100L)).thenReturn(List.of());
+        when(resultSetService.existsByQueryId("q-test123456")).thenReturn(false);
         when(resultSetService.createResultSet(any()))
                 .thenAnswer(inv -> inv.getArgument(0));
         AiMessageDO userMessage = new AiMessageDO();
@@ -178,6 +179,7 @@ class ChatMultiTurnContextTest {
                         .explicitEntityIds(List.of(101L, 102L))
                         .build());
         when(resultSetService.getRecentFrames(100L)).thenReturn(List.of());
+        when(resultSetService.existsByQueryId("q-test123456")).thenReturn(false);
         when(resultSetService.createResultSet(any())).thenAnswer(inv -> inv.getArgument(0));
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3030L);

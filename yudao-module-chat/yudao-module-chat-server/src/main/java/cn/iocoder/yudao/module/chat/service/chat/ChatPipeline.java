@@ -774,10 +774,8 @@ public class ChatPipeline {
             return;
         }
         try {
-            // CQ-47 幂等: 同 queryId 已存在帧则跳过(SSE 重试/重复)
-            boolean exists = resultSetService.getRecentFrames(conversationId).stream()
-                    .anyMatch(f -> traceId.equals(f.getQueryId()));
-            if (exists) {
+            // CQ-02/47 幂等: 同 queryId 已存在结果集则跳过(SSE 重试/重复; 不依赖帧窗口)
+            if (resultSetService.existsByQueryId(traceId)) {
                 return;
             }
             cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO sr = resp.getStructuredResult();

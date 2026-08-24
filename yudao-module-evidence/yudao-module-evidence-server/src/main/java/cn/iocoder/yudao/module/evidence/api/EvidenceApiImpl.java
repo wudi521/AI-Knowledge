@@ -37,7 +37,7 @@ public class EvidenceApiImpl implements EvidenceApi {
     public CommonResult<EvidenceEvaluateRespDTO> evaluate(EvidenceEvaluateReqDTO req) {
         EvidenceEvaluateRespVO vo = evidenceService.evaluate(req.getQuery(), req.getKbIds(), req.getTopK(),
                 req.getTenantId(), req.getUserId(), req.getHistory(), req.getSkipSlotDetection(), req.getTraceId(),
-                req.getDomainCode(), req.getContextResolutionJson());
+                req.getDomainCode(), req.getContextResolutionJson(), req.getPlanBudget());
         // 映射 EvidenceEvaluateRespVO -> EvidenceEvaluateRespDTO
         EvidenceEvaluateRespDTO dto = new EvidenceEvaluateRespDTO();
         dto.setTraceId(vo.getTraceId());

@@ -40,4 +40,7 @@ public class EvidenceEvaluateReqDTO {
     /** CQ-04~10: chat 侧已消解的多轮上下文(JSON: QueryContextResolution 的 explicitEntityIds/fieldCodeHint 等) */
     private String contextResolutionJson;
 
+    /** CQ-02/38: Composite Query Plan 预算(对话层配置下发; null 字段证据侧默认值兜底) */
+    private QueryPlanBudgetDTO planBudget;
+
 }

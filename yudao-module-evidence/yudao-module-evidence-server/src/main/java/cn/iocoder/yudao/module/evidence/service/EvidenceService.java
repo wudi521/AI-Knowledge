@@ -22,12 +22,15 @@ import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
 import cn.iocoder.yudao.module.evidence.service.rule.RuleShortCircuit;
 import cn.iocoder.yudao.module.evidence.service.semantics.SemanticsExecutionService;
 import cn.iocoder.yudao.module.evidence.service.structured.core.CompletenessGuard;
+import cn.iocoder.yudao.module.evidence.service.structured.core.CompositeQueryExecutor;
+import cn.iocoder.yudao.module.evidence.service.structured.core.CompositeQueryPlan;
 import cn.iocoder.yudao.module.evidence.service.structured.core.ExecutionMode;
 import cn.iocoder.yudao.module.evidence.service.structured.core.QueryType;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredContextHint;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryService;
+import cn.iocoder.yudao.module.evidence.api.dto.QueryPlanBudgetDTO;
 import cn.iocoder.yudao.module.evidence.service.slot.SlotDetectionResult;
 import cn.iocoder.yudao.module.evidence.service.slot.SlotDetector;
 import cn.iocoder.yudao.module.evidence.service.sufficiency.SufficiencyJudge;
@@ -81,7 +84,7 @@ public class EvidenceService {
     @Resource
     private cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryService structuredQueryService;
     @Resource
-    private cn.iocoder.yudao.module.evidence.service.semantics.SemanticsExecutionService semanticsExecutionService;
+    private cn.iocoder.yudao.module.evidence.service.structured.core.CompositeQueryExecutor compositeQueryExecutor;
     @Resource
     private cn.iocoder.yudao.module.knowledge.api.KnowledgeApi knowledgeApi;
     @Resource
@@ -185,6 +188,16 @@ public class EvidenceService {
                                            Long tenantId, Long userId, List<ChatTurnDTO> history,
                                            Boolean skipSlotDetection, String incomingTraceId,
                                            String domainCode, String contextResolutionJson) {
+        return evaluate(query, kbIds, topK, tenantId, userId, history, skipSlotDetection, incomingTraceId,
+                domainCode, contextResolutionJson, null);
+    }
+
+    /** 带多轮上下文 + Composite Query Plan 预算的评估(CQ-02/38; planBudget 为 null 时用默认) */
+    public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
+                                           Long tenantId, Long userId, List<ChatTurnDTO> history,
+                                           Boolean skipSlotDetection, String incomingTraceId,
+                                           String domainCode, String contextResolutionJson,
+                                           QueryPlanBudgetDTO planBudget) {
         long start = System.currentTimeMillis();
         String traceId = StrUtil.isNotBlank(incomingTraceId) ? incomingTraceId : newTraceId();
 
@@ -212,45 +225,45 @@ public class EvidenceService {
 
         // Structured Query(Platform Core): 聚合/列举/排序等完整数据集查询走结构化引擎, 不走 TopK RAG。
         // Completeness Guard: RAG TopK 永远不能证明全集; 完整数据集语义无法结构化作答时明确拒绝, 不猜。
+        // CQ-02/38: 结构化与逐实体语义执行统一由 CompositeQueryExecutor 编排(受 plan budget 约束)。
         boolean structuredCandidate = completenessGuard.isStructuredCandidate(query);
         boolean completenessSemantics = completenessGuard.requiresCompleteDataset(query);
         if (structuredCandidate || completenessSemantics) {
             Long singleKbId = kbIds != null && kbIds.size() == 1 ? kbIds.get(0) : null;
-            StructuredQueryService.HandleResult structured = null;
+            CompositeQueryExecutor.Result composite = null;
             if (structuredCandidate && domainCode != null) {
                 // CQ-04~10: chat 侧已消解多轮上下文时传入 explicitEntityIds/fieldCode
                 StructuredContextHint hint = parseContextHint(contextResolutionJson);
-                structured = hint != null
-                        ? structuredQueryService.handle(query, singleKbId, domainCode, history,
-                                hint.getExplicitEntityIds(), hint.getFieldCode())
-                        : structuredQueryService.handle(query, singleKbId, domainCode, history);
+                CompositeQueryExecutor.Request req = new CompositeQueryExecutor.Request(
+                        query, singleKbId, domainCode, history,
+                        hint != null ? hint.getExplicitEntityIds() : null,
+                        hint != null ? hint.getFieldCode() : null,
+                        tenantId, userId, traceId, CompositeQueryPlan.Budget.of(planBudget));
+                composite = compositeQueryExecutor.execute(req);
             }
-            if (structured != null && structured.state() == StructuredQueryService.State.ANSWER) {
-                EvidenceEvaluateRespVO resp = buildStructuredResp(traceId, query, history, structured, start);
+            if (composite != null && composite.state() == StructuredQueryService.State.ANSWER) {
+                EvidenceEvaluateRespVO resp = buildCompositeAnswerResp(traceId, query, history, composite, start);
                 recorder.record(resp, List.of(), List.of());
                 return resp;
             }
-            if (structured != null && structured.state() == StructuredQueryService.State.CLARIFY) {
-                EvidenceEvaluateRespVO resp = buildStructuredClarifyResp(traceId, query, history, structured, start);
-                recorder.record(resp, List.of(), List.of());
-                return resp;
-            }
-            if (structured != null && structured.state() == StructuredQueryService.State.SEMANTIC) {
-                // CQ-38: 无法结构化但已有明确实体集 → 逐实体语义执行(每实体 SCOPED_RAG)
-                EvidenceEvaluateRespVO resp = buildSemanticsResp(traceId, query, history, structured,
-                        singleKbId, tenantId, userId, start);
+            if (composite != null && composite.state() == StructuredQueryService.State.CLARIFY) {
+                EvidenceEvaluateRespVO resp = buildCompositeClarifyResp(traceId, query, history, composite, start);
                 recorder.record(resp, List.of(), List.of());
                 return resp;
             }
             // 完整数据集语义(或结构化候选不可作答: 指标/运算不支持/非单库/数据集不完整) → 明确拒绝, 不猜
-            if (structured == null || structured.state() == StructuredQueryService.State.UNANSWERABLE
+            if (composite == null || composite.state() == StructuredQueryService.State.UNANSWERABLE
                     || completenessSemantics) {
-                judgement = buildJudgement(false, 0.0, "该问题需要基于全部数据统计，当前无法可靠回答。", 0, 0);
+                boolean timedOut = composite != null && composite.timedOut();
+                String reason = timedOut ? "本次查询执行超时，请缩小查询范围或稍后重试。"
+                        : "该问题需要基于全部数据统计，当前无法可靠回答。";
+                judgement = buildJudgement(false, 0.0, reason, 0, 0);
                 EvidenceEvaluateRespVO resp = buildResp(traceId, query, judgement, List.of(), List.of(), null, history);
                 resp.setRoute("STRUCTURED_QUERY");
-                resp.setIntent("STRUCTURED_QUERY_REJECTED");
-                resp.setExecutionMode(ExecutionMode.CODE_STRUCTURED);
-                resp.setReasonCode(structured != null ? structured.reasonCode() : "AMBIGUOUS_SCOPE"); // CQ-38
+                resp.setIntent(timedOut ? "STRUCTURED_QUERY_TIMEOUT" : "STRUCTURED_QUERY_REJECTED");
+                resp.setExecutionMode(composite != null && composite.executionMode() != null
+                        ? composite.executionMode() : ExecutionMode.CODE_STRUCTURED);
+                resp.setReasonCode(composite != null ? composite.reasonCode() : "AMBIGUOUS_SCOPE"); // CQ-38
                 resp.setElapsedMs((int) (System.currentTimeMillis() - start));
                 resp.setStages(buildStructuredStages(resp.getElapsedMs(), "REJECTED"));
                 recorder.record(resp, List.of(), List.of());
@@ -462,137 +475,98 @@ public class EvidenceService {
 
     /** CQ-02/03: 结构化结果 → 保序实体回流(chat 侧据此形成 ResultSetSnapshot) */
     private cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO buildStructuredResult(
-            StructuredQueryService.HandleResult structured) {
-        if (structured == null || structured.plan() == null || structured.result() == null) {
+            CompositeQueryExecutor.Result composite) {
+        if (composite == null || composite.plan() == null) {
             return null;
         }
-        cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult result = structured.result();
+        cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult result = composite.structuredResult();
         cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO dto =
                 new cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO();
-        if (result.getRows() != null && !result.getRows().isEmpty()) {
+        if (result != null && result.getRows() != null && !result.getRows().isEmpty()) {
             dto.setEntityIds(result.getRows().stream()
                     .map(cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult.Row::getEntityId)
                     .toList());
             dto.setEntityKeys(result.getRows().stream()
                     .map(r -> r.getEntityKey() != null ? r.getEntityKey() : String.valueOf(r.getEntityId()))
                     .toList());
+        } else if (composite.entityIds() != null && !composite.entityIds().isEmpty()) {
+            dto.setEntityIds(composite.entityIds());
         }
-        dto.setEntityType(structured.plan().getEntityType());
-        dto.setMetricCode(structured.plan().getMetricCode());
-        dto.setFieldCode(structured.plan().getFieldCode());
-        dto.setOperation(structured.plan().getOperation() != null
-                ? structured.plan().getOperation().name() : null);
-        dto.setQueryType(structured.plan().getQueryType() != null
-                ? structured.plan().getQueryType().name() : null);
-        dto.setScopeType(structured.plan().getScope() != null
-                ? structured.plan().getScope().getType().name() : null);
-        dto.setTruncated(result.isTruncated());
-        dto.setEntityCount(result.getRows() == null ? 0 : result.getRows().size());
+        dto.setEntityType(composite.plan().getEntityType());
+        dto.setMetricCode(composite.plan().getMetricCode());
+        dto.setFieldCode(composite.plan().getFieldCode());
+        dto.setOperation(composite.plan().getOperation() != null
+                ? composite.plan().getOperation().name() : null);
+        dto.setQueryType(composite.plan().getQueryType() != null
+                ? composite.plan().getQueryType().name() : null);
+        dto.setScopeType(composite.plan().getScope() != null
+                ? composite.plan().getScope().getType().name() : null);
+        dto.setTruncated(result != null && result.isTruncated());
+        dto.setEntityCount(result != null && result.getRows() != null
+                ? result.getRows().size() : (composite.entityIds() != null ? composite.entityIds().size() : 0));
         return dto;
     }
 
-    private EvidenceEvaluateRespVO buildStructuredResp(String traceId, String query, List<ChatTurnDTO> history,
-                                                       StructuredQueryService.HandleResult structured, long start) {
+    /** CQ-02/38: Composite Query 确定性回答(结构化确定性路径或逐实体语义执行) */
+    private EvidenceEvaluateRespVO buildCompositeAnswerResp(String traceId, String query, List<ChatTurnDTO> history,
+                                                            CompositeQueryExecutor.Result composite, long start) {
         Judgement j = buildJudgement(true, 1.0, null, 0, 0);
-        EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
-        resp.setAnswer(structured.answer());
-        resp.setRoute("STRUCTURED_QUERY");
-        resp.setIntent(subTypeIntent(structured.plan()));
-        resp.setExecutionMode(ExecutionMode.CODE_STRUCTURED);
-        resp.setElapsedMs((int) (System.currentTimeMillis() - start));
-        resp.setStructuredResult(buildStructuredResult(structured));
-        EvidenceEvaluateRespVO.EvidenceItemVO ev = new EvidenceEvaluateRespVO.EvidenceItemVO();
-        ev.setEvidenceType("STRUCTURED_RESULT");
-        ev.setKbId(structured.plan().getScope() != null ? structured.plan().getScope().getCurrentKbId() : null);
-        ev.setDomainCode(structured.plan().getDomainCode());
-        ev.setMetric(structured.plan().getMetricCode());
-        if (structured.result() != null && structured.result().getValue() != null) {
-            ev.setAggregateValue(structured.result().getValue()
-                    == Math.floor(structured.result().getValue())
-                    ? (int) Math.round(structured.result().getValue()) : null);
-        }
-        ev.setFilters("operation=" + structured.plan().getOperation()
-                + ",scope=" + (structured.plan().getScope() != null ? structured.plan().getScope().getType() : "null")
-                + ",rows=" + (structured.result() != null ? structured.result().getRowCount() : 0));
-        ev.setContent(structured.answer());
-        ev.setScore(1.0);
-        resp.setEvidence(List.of(ev));
-        resp.setStages(buildStructuredStages(resp.getElapsedMs(), "SUCCEEDED"));
-        return resp;
-    }
-
-    /** Structured Query 需要反问(scope/metric/operation 无法消解; 禁止猜测/随机) */
-    private EvidenceEvaluateRespVO buildStructuredClarifyResp(String traceId, String query, List<ChatTurnDTO> history,
-                                                              StructuredQueryService.HandleResult structured, long start) {
-        Judgement j = buildJudgement(false, 0.0, structured.clarificationQuestion(), 0, 0);
-        EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
-        resp.setRoute("CLARIFY");
-        resp.setIntent("STRUCTURED_CLARIFY");
-        resp.setClarifyQuestion(structured.clarificationQuestion());
-        resp.setReasonCode(structured.reasonCode()); // CQ-38 失败/澄清原因码
-        resp.setExecutionMode(ExecutionMode.CODE_STRUCTURED);
-        resp.setElapsedMs((int) (System.currentTimeMillis() - start));
-        resp.setStages(buildStructuredStages(resp.getElapsedMs(), "CLARIFY"));
-        return resp;
-    }
-
-    /** CQ-38: 逐实体语义执行响应(PER_ENTITY_SEMANTIC: 每实体 SCOPED_RAG + 聚合生成) */
-    private EvidenceEvaluateRespVO buildSemanticsResp(String traceId, String query, List<ChatTurnDTO> history,
-                                                      StructuredQueryService.HandleResult structured,
-                                                      Long kbId, Long tenantId, Long userId, long start) {
-        Long effectiveKbId = structured.plan() != null && structured.plan().getScope() != null
-                ? structured.plan().getScope().getCurrentKbId() : kbId;
-        SemanticsExecutionService.Result sr = semanticsExecutionService.execute(query, effectiveKbId,
-                structured.semanticEntityIds(), tenantId, userId, history, traceId);
-        if (sr.overLimit()) {
-            // 超限: 不静默截断, 反问要求缩小范围
-            String question = "共 " + sr.entityIds().size() + " 个对象, 一次最多可逐项说明 "
-                    + sr.limit() + " 个, 请缩小范围后再问。";
-            Judgement j = buildJudgement(false, 0.0, question, 0, 0);
-            EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
-            resp.setRoute("CLARIFY");
-            resp.setIntent("SEMANTIC_CLARIFY");
-            resp.setClarifyQuestion(question);
-            resp.setReasonCode("AMBIGUOUS_SCOPE");
-            resp.setExecutionMode(ExecutionMode.CODE_PER_ENTITY_SEMANTIC);
-            resp.setElapsedMs((int) (System.currentTimeMillis() - start));
-            resp.setStages(buildSemanticStages(resp.getElapsedMs(), "CLARIFY"));
-            return resp;
-        }
-        if (sr.evidences().isEmpty()) {
-            Judgement j = buildJudgement(false, 0.0, NO_EVIDENCE_REASON, 0, 0);
-            EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
-            resp.setRoute("PER_ENTITY_SEMANTIC");
-            resp.setIntent("SEMANTIC");
-            resp.setReasonCode("EMPTY_RESULT_SET");
-            resp.setExecutionMode(ExecutionMode.CODE_PER_ENTITY_SEMANTIC);
-            resp.setElapsedMs((int) (System.currentTimeMillis() - start));
-            resp.setStages(buildSemanticStages(resp.getElapsedMs(), "EMPTY"));
-            return resp;
-        }
-        if (sr.generation() != null && StrUtil.isNotBlank(sr.generation().getAnswer())) {
-            Judgement j = buildJudgement(true, 1.0, null, sr.evidences().size(), 0);
-            EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, sr.evidences(), List.of(),
-                    sr.generation(), history);
+        if (ExecutionMode.CODE_PER_ENTITY_SEMANTIC.equals(composite.executionMode())) {
+            // 语义执行: 证据来自逐实体检索, 生成结果含逐项回答
+            EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, composite.evidences(), List.of(),
+                    composite.generation(), history);
+            resp.setAnswer(composite.answer());
             resp.setRoute("PER_ENTITY_SEMANTIC");
             resp.setIntent("SEMANTIC");
             resp.setExecutionMode(ExecutionMode.CODE_PER_ENTITY_SEMANTIC);
-            // 实体回流: 本轮引用的实体集即结果集(供 chat 侧 ResultSetSnapshot 后续继承)
-            resp.setStructuredResult(buildSemanticsResultDTO(structured.semanticEntityIds()));
+            resp.setStructuredResult(buildSemanticsResultDTO(composite.entityIds()));
             resp.setElapsedMs((int) (System.currentTimeMillis() - start));
             resp.setStages(buildSemanticStages(resp.getElapsedMs(), "SUCCEEDED"));
             return resp;
         }
-        // 生成失败/claimFail(证据已检索但未能生成可靠逐项回答)
-        Judgement j = buildJudgement(false, 0.0, "已检索到证据但未能生成可靠的逐项回答。",
-                sr.evidences().size(), 0);
-        EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, sr.evidences(), List.of(),
-                sr.generation(), history);
-        resp.setRoute("PER_ENTITY_SEMANTIC");
-        resp.setIntent("SEMANTIC");
-        resp.setExecutionMode(ExecutionMode.CODE_PER_ENTITY_SEMANTIC);
+        // 结构化确定性路径(0 LLM)
+        EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
+        resp.setAnswer(composite.answer());
+        resp.setRoute("STRUCTURED_QUERY");
+        resp.setIntent(composite.plan() != null ? subTypeIntent(composite.plan()) : "STRUCTURED_QUERY");
+        resp.setExecutionMode(ExecutionMode.CODE_STRUCTURED);
+        resp.setStructuredResult(buildStructuredResult(composite));
+        EvidenceEvaluateRespVO.EvidenceItemVO ev = new EvidenceEvaluateRespVO.EvidenceItemVO();
+        ev.setEvidenceType("STRUCTURED_RESULT");
+        ev.setKbId(composite.plan() != null && composite.plan().getScope() != null
+                ? composite.plan().getScope().getCurrentKbId() : null);
+        ev.setDomainCode(composite.plan() != null ? composite.plan().getDomainCode() : null);
+        ev.setMetric(composite.plan() != null ? composite.plan().getMetricCode() : null);
+        if (composite.structuredResult() != null && composite.structuredResult().getValue() != null) {
+            double v = composite.structuredResult().getValue();
+            ev.setAggregateValue(v == Math.floor(v) ? (int) Math.round(v) : null);
+        }
+        ev.setFilters("operation=" + (composite.plan() != null ? composite.plan().getOperation() : null)
+                + ",scope=" + (composite.plan() != null && composite.plan().getScope() != null
+                ? composite.plan().getScope().getType() : "null")
+                + ",rows=" + (composite.structuredResult() != null ? composite.structuredResult().getRowCount() : 0));
+        ev.setContent(composite.answer());
+        ev.setScore(1.0);
+        resp.setEvidence(List.of(ev));
         resp.setElapsedMs((int) (System.currentTimeMillis() - start));
-        resp.setStages(buildSemanticStages(resp.getElapsedMs(), "FAILED"));
+        resp.setStages(buildStructuredStages(resp.getElapsedMs(), "SUCCEEDED"));
+        return resp;
+    }
+
+    /** CQ-02/38: Composite Query 需要反问(scope/metric/operation 无法消解或实体超限; 禁止猜测/随机) */
+    private EvidenceEvaluateRespVO buildCompositeClarifyResp(String traceId, String query, List<ChatTurnDTO> history,
+                                                             CompositeQueryExecutor.Result composite, long start) {
+        Judgement j = buildJudgement(false, 0.0, composite.clarificationQuestion(), 0, 0);
+        EvidenceEvaluateRespVO resp = buildResp(traceId, query, j, List.of(), List.of(), null, history);
+        boolean semantic = ExecutionMode.CODE_PER_ENTITY_SEMANTIC.equals(composite.executionMode());
+        resp.setRoute("CLARIFY");
+        resp.setIntent(semantic ? "SEMANTIC_CLARIFY" : "STRUCTURED_CLARIFY");
+        resp.setClarifyQuestion(composite.clarificationQuestion());
+        resp.setReasonCode(composite.reasonCode());
+        resp.setExecutionMode(composite.executionMode() != null ? composite.executionMode() : ExecutionMode.CODE_STRUCTURED);
+        resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+        resp.setStages(semantic ? buildSemanticStages(resp.getElapsedMs(), "CLARIFY")
+                : buildStructuredStages(resp.getElapsedMs(), "CLARIFY"));
         return resp;
     }
 

@@ -66,6 +66,14 @@ public class ResultSetService {
         return ResultSetSnapshot.fromDO(resultSetMapper.selectByResultSetId(resultSetId));
     }
 
+    /** CQ-02/47 幂等: 该 queryId 是否已有结果集快照(不依赖帧窗口, SSE 重试/重复提交去重) */
+    public boolean existsByQueryId(String queryId) {
+        if (queryId == null) {
+            return false;
+        }
+        return resultSetMapper.existsByQueryId(queryId);
+    }
+
     /** 标记结果集过期(知识/权限变化后由 revalidate 触发) */
     public void markStale(String resultSetId) {
         if (resultSetId == null) {
