@@ -1,12 +1,16 @@
 package cn.iocoder.yudao.module.evidence.service.structured.patent;
 
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONArray;
+import cn.hutool.json.JSONObject;
+import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainEntityResolver;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainStructuredDataAdapter;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
+import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.PatentDocumentLookupReqDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryReqDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRespDTO;
@@ -39,7 +43,11 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
     private static final Set<String> EXECUTABLE_FIELDS = Set.of(
             PatentStructuredPack.FIELD_PUBLICATION_NO,
             PatentStructuredPack.FIELD_APPLICATION_NO,
-            PatentStructuredPack.FIELD_TITLE);
+            PatentStructuredPack.FIELD_TITLE,
+            PatentStructuredPack.FIELD_APPLICANT,
+            PatentStructuredPack.FIELD_INVENTOR,
+            PatentStructuredPack.FIELD_FILING_DATE,
+            PatentStructuredPack.FIELD_PUBLICATION_DATE);
 
     private final KnowledgeApi knowledgeApi;
 
@@ -95,20 +103,25 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                 return StructuredQueryResult.unsupported("知识库结构化数据访问失败");
             }
             StructuredQueryRespDTO data = resp.getData();
+            List<StructuredQueryRowDTO> sourceRows = data.getRows() == null ? List.of() : data.getRows();
+            List<Long> docIds = sourceRows.stream().map(StructuredQueryRowDTO::getDocumentId)
+                    .filter(java.util.Objects::nonNull).distinct().toList();
+            Map<Long, KnowledgeDocumentRespDTO> documents = docIds.isEmpty()
+                    ? Map.of() : safeDocumentMap(docIds);
+
             List<StructuredQueryResult.Row> rows = new ArrayList<>();
-            if (data.getRows() != null) {
-                for (StructuredQueryRowDTO r : data.getRows()) {
-                    String fieldValue = fieldValueOf(r, fieldCode);
-                    String identity = patentIdentity(r);
-                    Map<String, String> fields = allFilterableValues(r);
-                    rows.add(StructuredQueryResult.Row.builder()
-                            .entityId(r.getDocumentId())
-                            .entityKey(StrUtil.isNotBlank(fieldValue) && projections.size() <= 1 ? fieldValue : identity)
-                            .entityName(buildEntityName(r, projections.size() <= 1 ? fieldCode : null))
-                            .value(fieldCode != null ? null : r.getValue())
-                            .fields(fields)
-                            .build());
-                }
+            for (StructuredQueryRowDTO r : sourceRows) {
+                KnowledgeDocumentRespDTO doc = documents.get(r.getDocumentId());
+                String fieldValue = fieldValueOf(r, doc, fieldCode);
+                String identity = patentIdentity(r);
+                Map<String, String> fields = allFilterableValues(r, doc);
+                rows.add(StructuredQueryResult.Row.builder()
+                        .entityId(r.getDocumentId())
+                        .entityKey(StrUtil.isNotBlank(fieldValue) && projections.size() <= 1 ? fieldValue : identity)
+                        .entityName(buildEntityName(r, doc, projections.size() <= 1 ? fieldCode : null))
+                        .value(fieldCode != null ? null : r.getValue())
+                        .fields(fields)
+                        .build());
             }
 
             if (PatentStructuredPack.METRIC_PATENT_COUNT.equals(plan.getMetricCode())) {
@@ -128,6 +141,16 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         }
     }
 
+    private Map<Long, KnowledgeDocumentRespDTO> safeDocumentMap(List<Long> ids) {
+        try {
+            Map<Long, KnowledgeDocumentRespDTO> map = knowledgeApi.getDocumentMap(ids).getCheckedData();
+            return map == null ? Map.of() : map;
+        } catch (Exception e) {
+            log.warn("[safeDocumentMap][专利元数据读取失败, 仅使用基础结构化字段: {}]", e.getMessage());
+            return Map.of();
+        }
+    }
+
     private List<String> normalizedProjections(StructuredQueryPlan plan) {
         if (plan.getProjections() != null && !plan.getProjections().isEmpty()) {
             return plan.getProjections().stream().filter(StrUtil::isNotBlank).map(String::toUpperCase).distinct().toList();
@@ -135,21 +158,30 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         return plan.getFieldCode() == null ? List.of() : List.of(plan.getFieldCode().toUpperCase());
     }
 
-    /** 内部行始终带当前可确定性读取的字段全集，输出层仍只渲染 plan.projections。 */
-    private Map<String, String> allFilterableValues(StructuredQueryRowDTO row) {
+    /** 内部行始终带可确定性读取的字段全集，供 V3 Filter/Project 共用。 */
+    private Map<String, String> allFilterableValues(StructuredQueryRowDTO row, KnowledgeDocumentRespDTO doc) {
         Map<String, String> values = new LinkedHashMap<>();
-        for (String field : EXECUTABLE_FIELDS) values.put(field, fieldValueOf(row, field));
+        for (String field : EXECUTABLE_FIELDS) values.put(field, fieldValueOf(row, doc, field));
         return values;
     }
 
     private List<StructuredQueryResult.Row> dedupePatentRows(List<StructuredQueryResult.Row> rows) {
         Map<String, StructuredQueryResult.Row> unique = new LinkedHashMap<>();
         for (StructuredQueryResult.Row row : rows) {
-            String key = StrUtil.isNotBlank(row.getEntityKey()) ? normalize(row.getEntityKey())
+            String key = patentIdentityFromFields(row);
+            if (StrUtil.isBlank(key)) key = StrUtil.isNotBlank(row.getEntityKey()) ? normalize(row.getEntityKey())
                     : "DOC:" + row.getEntityId();
             unique.putIfAbsent(key, row);
         }
         return new ArrayList<>(unique.values());
+    }
+
+    private String patentIdentityFromFields(StructuredQueryResult.Row row) {
+        if (row == null || row.getFields() == null) return null;
+        String app = row.getFields().get(PatentStructuredPack.FIELD_APPLICATION_NO);
+        if (StrUtil.isNotBlank(app)) return "APP:" + normalize(app);
+        String pub = row.getFields().get(PatentStructuredPack.FIELD_PUBLICATION_NO);
+        return StrUtil.isBlank(pub) ? null : "PUB:" + normalize(pub);
     }
 
     private String patentIdentity(StructuredQueryRowDTO r) {
@@ -163,20 +195,54 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         return value == null ? null : value.replaceAll("\\s+", "").toUpperCase();
     }
 
-    private String fieldValueOf(StructuredQueryRowDTO r, String fieldCode) {
+    private String fieldValueOf(StructuredQueryRowDTO r, KnowledgeDocumentRespDTO doc, String fieldCode) {
         if (fieldCode == null || r == null) return null;
         return switch (fieldCode) {
             case PatentStructuredPack.FIELD_PUBLICATION_NO -> r.getPublicationNo();
             case PatentStructuredPack.FIELD_APPLICATION_NO -> r.getApplicationNo();
             case PatentStructuredPack.FIELD_TITLE -> r.getDocumentName();
+            case PatentStructuredPack.FIELD_APPLICANT -> metadataText(doc, "applicants", "applicant");
+            case PatentStructuredPack.FIELD_INVENTOR -> metadataText(doc, "inventors", "inventor");
+            case PatentStructuredPack.FIELD_FILING_DATE -> metadataText(doc, "filingDate", "applicationDate");
+            case PatentStructuredPack.FIELD_PUBLICATION_DATE -> metadataText(doc, "publicationDate", "publishDate");
             default -> null;
         };
     }
 
-    private String buildEntityName(StructuredQueryRowDTO r, String fieldCode) {
+    private String metadataText(KnowledgeDocumentRespDTO doc, String... keys) {
+        if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return null;
+        try {
+            JSONObject meta = JSONUtil.parseObj(doc.getDomainMetadata());
+            for (String key : keys) {
+                Object raw = meta.get(key);
+                String text = normalizeMetadataValue(raw);
+                if (StrUtil.isNotBlank(text)) return text;
+            }
+        } catch (Exception ignore) {
+            return null;
+        }
+        return null;
+    }
+
+    private String normalizeMetadataValue(Object raw) {
+        if (raw == null) return null;
+        if (raw instanceof JSONArray array) {
+            List<String> values = new ArrayList<>();
+            for (Object item : array) if (item != null && StrUtil.isNotBlank(String.valueOf(item))) values.add(String.valueOf(item));
+            return String.join("、", values);
+        }
+        if (raw instanceof Iterable<?> iterable) {
+            List<String> values = new ArrayList<>();
+            for (Object item : iterable) if (item != null && StrUtil.isNotBlank(String.valueOf(item))) values.add(String.valueOf(item));
+            return String.join("、", values);
+        }
+        return String.valueOf(raw);
+    }
+
+    private String buildEntityName(StructuredQueryRowDTO r, KnowledgeDocumentRespDTO doc, String fieldCode) {
         String name = StrUtil.isNotBlank(r.getDocumentName()) ? r.getDocumentName()
                 : (StrUtil.isNotBlank(r.getPublicationNo()) ? r.getPublicationNo() : "文档" + r.getDocumentId());
-        String fieldValue = fieldValueOf(r, fieldCode);
+        String fieldValue = fieldValueOf(r, doc, fieldCode);
         return StrUtil.isBlank(fieldValue) ? name : name + " · " + fieldValue;
     }
 
