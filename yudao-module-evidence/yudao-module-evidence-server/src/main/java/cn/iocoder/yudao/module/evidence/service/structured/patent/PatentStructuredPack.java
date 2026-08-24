@@ -103,7 +103,7 @@ public class PatentStructuredPack {
                 .sortable(true).filterable(true).groupable(true).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_APPLICATION_NO).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
-                .valueType("STRING").aliases(List.of("申请号"))
+                .valueType("STRING").aliases(List.of("申请号", "专利号"))
                 .sortable(true).filterable(true).groupable(true).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_APPLICANT).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
