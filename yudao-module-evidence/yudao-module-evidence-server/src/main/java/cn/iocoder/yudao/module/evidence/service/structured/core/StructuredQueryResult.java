@@ -3,73 +3,43 @@ package cn.iocoder.yudao.module.evidence.service.structured.core;
 import lombok.Builder;
 import lombok.Data;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
-/**
- * Structured Query 结果(Platform Core 领域无关)。
- * <p>
- * rows 为范围内完整结构化数据集(非 TopK 召回); 聚合运算由 Executor 基于完整 rows 计算。
- * truncated=true 表示数据源未返回完整集(超过上限), 此时禁止基于 rows 计算全集结论。
- */
+/** Structured Query 结果(Platform Core 领域无关)。 */
 @Data
 @Builder
 public class StructuredQueryResult {
 
-    /** 指标编码 */
     private String metricCode;
-
-    /** 已执行的运算 */
     private Operation operation;
-
-    /** 聚合结果值(COUNT/COUNT_DISTINCT/SUM/AVG/MIN/MAX; LIST/GROUP/TOP_N 时可为 null) */
     private Double value;
-
-    /** 每对象一行(完整结构化数据集; 供 GROUP/LIST/TOP_N/分项展示) */
     private List<Row> rows;
-
-    /** rows 行数 */
     private Integer rowCount;
-
-    /** 逻辑集合实体总数(可能 > rows; 截断/分页时 rows 为子集) */
     private Integer totalEntities;
-
-    /** 存在有效字段值的实体数(PARTIAL 统计, CQ-31) */
     private Integer validValueCount;
-
-    /** 缺少字段值的实体数(PARTIAL 统计, CQ-31) */
     private Integer missingValueCount;
-
-    /** 是否存在同一字段多个当前值冲突(CQ-32) */
     private Boolean conflict;
-
-    /** 是否还有更多(分页; rows 为当前页子集时 true) */
     private Boolean hasMore;
-
-    /** 数据是否被截断(数据源超过上限); true 时禁止全集聚合结论 */
     private boolean truncated;
-
-    /** 是否数据源不支持该指标/运算 */
     private boolean unsupported;
-
-    /** 不支持原因(unsupported=true 时) */
     private String unsupportedReason;
 
     @Data
     @Builder
     public static class Row {
-
-        /** 对象编号(如 documentId) */
         private Long entityId;
-
-        /** 对象键(如 publicationNo / applicationNo; 用于 COUNT_DISTINCT 去重) */
         private String entityKey;
-
-        /** 对象名(如文档名/发明名称; 答案展示用) */
         private String entityName;
-
-        /** 该对象指标值(如 claimCount) */
         private Double value;
 
+        /**
+         * 多字段投影值，key 为 DomainFieldRegistry fieldCode，value 为确定性结构化值。
+         * LinkedHashMap 用于保持 Planner 投影顺序，便于确定性渲染。
+         */
+        @Builder.Default
+        private Map<String, String> fields = new LinkedHashMap<>();
     }
 
     public static StructuredQueryResult unsupported(String reason) {
