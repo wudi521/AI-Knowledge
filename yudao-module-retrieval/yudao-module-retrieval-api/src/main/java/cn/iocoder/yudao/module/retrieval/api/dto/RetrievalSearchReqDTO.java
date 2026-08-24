@@ -35,10 +35,17 @@ public class RetrievalSearchReqDTO {
     private List<Long> documentIds;
 
     /**
-     * Planner 显式执行模式。当前仅允许受限值 EXACT_TEXT_SEARCH；空表示走既有 QueryAnalysis 路由。
-     * 这是内部可信提示，不接受任意 ES DSL/SQL。
+     * Planner 显式执行模式。
+     * EXACT_TEXT_SEARCH: 原文逐字检索；
+     * PLANNED_HYBRID: Query Engine 已完成自然语言规划，Retrieval 只执行 BM25/Vector/RRF/Rerank，禁止再次 QueryAnalysis。
+     * 空表示兼容旧链路。
      */
     private String searchMode;
+
+    /**
+     * Query Engine 已生成的有限检索变体。仅 PLANNED_HYBRID 使用；检索层不再自行理解用户意图。
+     */
+    private List<String> queryVariants;
 
     /**
      * EXACT_TEXT_SEARCH 的目标原文短语。与 query 分离，避免把“原文包含/是否出现”等指令词送入 match_phrase。
