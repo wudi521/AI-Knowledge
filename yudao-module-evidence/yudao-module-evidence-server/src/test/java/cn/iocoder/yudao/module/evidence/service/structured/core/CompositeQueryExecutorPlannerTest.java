@@ -16,6 +16,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -44,7 +45,7 @@ class CompositeQueryExecutorPlannerTest {
         Evidence a = Evidence.builder().chunkId(1L).documentId("65").content("a").build();
         Evidence b = Evidence.builder().chunkId(2L).documentId("66").content("b").build();
         GenerationResult generation = GenerationResult.builder().answer("A 与 B 较相似").build();
-        when(semanticsExecutionService.executeCompare(any(), any(), any(), any(), any(), any(), any(), any(Boolean.class)))
+        when(semanticsExecutionService.executeCompare(any(), any(), any(), any(), any(), any(), any(), anyBoolean()))
                 .thenReturn(new SemanticsExecutionService.CompareResult(
                         List.of(a, b), generation, List.of(65L, 66L), List.of(65L, 66L), false, 10, false));
 
