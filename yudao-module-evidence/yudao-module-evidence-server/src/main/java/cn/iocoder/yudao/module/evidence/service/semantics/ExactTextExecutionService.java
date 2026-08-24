@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.evidence.service.semantics;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
+import cn.iocoder.yudao.module.evidence.service.planner.CompletenessPolicy;
 import cn.iocoder.yudao.module.retrieval.api.RetrievalApi;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalResultDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchReqDTO;
@@ -10,7 +11,6 @@ import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -29,12 +29,20 @@ public class ExactTextExecutionService {
         this.retrievalApi = retrievalApi;
     }
 
-    public record Result(String answer, List<Evidence> evidences, boolean answerable, String reasonCode) {}
+    public record Result(String answer, List<Evidence> evidences, boolean answerable,
+                         String reasonCode, long totalHits, boolean truncated) {}
 
+    /** 兼容旧调用：默认按 BEST_EFFORT，不将 TopK 返回数冒充真实总数。 */
     public Result execute(String query, String exactText, Long kbId, List<Long> documentIds,
                           Long tenantId, Long userId, String traceId) {
+        return execute(query, exactText, kbId, documentIds, tenantId, userId, traceId,
+                CompletenessPolicy.BEST_EFFORT);
+    }
+
+    public Result execute(String query, String exactText, Long kbId, List<Long> documentIds,
+                          Long tenantId, Long userId, String traceId, CompletenessPolicy completenessPolicy) {
         if (kbId == null || StrUtil.isBlank(exactText)) {
-            return new Result(null, List.of(), false, "MISSING_EXACT_TEXT");
+            return new Result(null, List.of(), false, "MISSING_EXACT_TEXT", 0L, false);
         }
         try {
             RetrievalSearchReqDTO req = new RetrievalSearchReqDTO();
@@ -50,15 +58,22 @@ public class ExactTextExecutionService {
             CommonResult<RetrievalSearchRespDTO> rpc = retrievalApi.search(req);
             RetrievalSearchRespDTO data = rpc == null ? null : rpc.getCheckedData();
             List<RetrievalResultDTO> rows = data != null && data.getResults() != null ? data.getResults() : List.of();
-            if (rows.isEmpty()) {
+            long totalHits = data != null && data.getTotalHits() != null ? data.getTotalHits() : rows.size();
+            boolean truncated = totalHits > rows.size();
+
+            if (totalHits == 0 || rows.isEmpty()) {
                 return new Result("未在当前查询范围的已发布原文中找到精确短语「" + exactText + "」。",
-                        List.of(), true, null);
+                        List.of(), true, null, 0L, false);
             }
+
             List<Evidence> evidences = rows.stream().map(this::toEvidence).toList();
-            return new Result(render(exactText, rows), evidences, true, null);
+            String answer = render(exactText, rows, totalHits, truncated, completenessPolicy);
+            String reasonCode = truncated && completenessPolicy == CompletenessPolicy.COMPLETE_REQUIRED
+                    ? "EXACT_TEXT_RESULT_TRUNCATED" : null;
+            return new Result(answer, evidences, true, reasonCode, totalHits, truncated);
         } catch (Exception e) {
             log.warn("[execute][EXACT_TEXT_SEARCH 失败, phrase={}, error={}]", exactText, e.getMessage());
-            return new Result(null, List.of(), false, "EXACT_TEXT_RETRIEVAL_FAILED");
+            return new Result(null, List.of(), false, "EXACT_TEXT_RETRIEVAL_FAILED", 0L, false);
         }
     }
 
@@ -78,10 +93,18 @@ public class ExactTextExecutionService {
                 .build();
     }
 
-    private String render(String exactText, List<RetrievalResultDTO> rows) {
+    private String render(String exactText, List<RetrievalResultDTO> rows, long totalHits,
+                          boolean truncated, CompletenessPolicy completenessPolicy) {
         StringBuilder answer = new StringBuilder();
-        answer.append("在已发布原文中找到精确短语「").append(exactText).append("」，共命中 ")
-                .append(rows.size()).append(" 个片段：\n");
+        answer.append("在已发布原文中找到精确短语「").append(exactText).append("」，实际命中 ")
+                .append(totalHits).append(" 个片段");
+        if (truncated) {
+            answer.append("，当前仅展示前 ").append(rows.size()).append(" 个");
+            if (completenessPolicy == CompletenessPolicy.COMPLETE_REQUIRED) {
+                answer.append("。当前结果已截断，不能把下列片段视为完整清单；请缩小知识库、文档或其它查询范围后再列举全部结果");
+            }
+        }
+        answer.append("：\n");
         int index = 1;
         for (RetrievalResultDTO row : rows) {
             answer.append(index++).append(". ");
