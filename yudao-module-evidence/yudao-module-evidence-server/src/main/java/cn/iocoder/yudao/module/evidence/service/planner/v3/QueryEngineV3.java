@@ -16,13 +16,13 @@ import cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator;
 import cn.iocoder.yudao.module.evidence.service.structured.core.MetricDefinition;
 import cn.iocoder.yudao.module.evidence.service.structured.core.Operation;
 import cn.iocoder.yudao.module.evidence.service.structured.core.QueryScope;
-import cn.iocoder.yudao.module.evidence.service.structured.core.QueryStageTimingDTO;
 import cn.iocoder.yudao.module.evidence.service.structured.core.QueryType;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryExecutor;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
+import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -150,7 +150,7 @@ public class QueryEngineV3 {
             }
             case EXACT_ENTITY, STRUCTURED_FILTER -> structuredSelect(selection, intent, kbId, stages);
             case SEMANTIC -> semanticSelect(selection, intent.getDomainCode(), kbIds, tenantId, userId, traceId, stages);
-            case EXACT_TEXT -> exactTextSelect(selection, kbIds, tenantId, userId, traceId, stages);
+            case EXACT_TEXT -> exactTextSelect(selection, intent.getDomainCode(), kbIds, tenantId, userId, traceId, stages);
         };
     }
 
@@ -251,7 +251,7 @@ public class QueryEngineV3 {
         return selectionFromEvidence(second, "SEMANTIC_BEST_EFFORT", round2.analysis(), round2.channels());
     }
 
-    private SelectionResult exactTextSelect(QueryIntentV3.Selection selection, List<Long> kbIds,
+    private SelectionResult exactTextSelect(QueryIntentV3.Selection selection, String domainCode, List<Long> kbIds,
                                              Long tenantId, Long userId, String traceId,
                                              List<QueryStageTimingDTO> stages) {
         PlannedEvidenceRetriever.Result result = plannedRetriever.exactText(selection.getQuery(), kbIds, null,
@@ -259,7 +259,7 @@ public class QueryEngineV3 {
         addRetrievalStages(stages, result.analysis(), "EXACT_");
         List<Evidence> evidences = result.evidences() == null ? List.of() : result.evidences();
         String guarantee = Boolean.TRUE.equals(result.totalHitsExact()) ? "EXACT_CHUNK_COMPLETE" : "BEST_EFFORT";
-        return selectionFromEvidence(rankEntities(evidences, null), guarantee, result.analysis(), result.channels());
+        return selectionFromEvidence(rankEntities(evidences, domainCode), guarantee, result.analysis(), result.channels());
     }
 
     private Result executeActions(QueryIntentV3 intent, String originalQuery, List<Long> kbIds, Long kbId,
@@ -368,7 +368,7 @@ public class QueryEngineV3 {
                 "entityIds=" + entityIds + "; fields=" + action.getFields(), resultSummary(result)));
         if (result == null || result.isUnsupported()) return ActionResult.fail("PROJECT_FAILED",
                 result == null ? "字段投影未返回。" : result.getUnsupportedReason());
-        return ActionResult.ok(renderProjection(action.getFields(), result.getRows()), result);
+        return ActionResult.ok(renderProjection(action.getFields(), result.getRows(), intent.getDomainCode()), result);
     }
 
     private ActionResult aggregate(QueryIntentV3 intent, Long kbId, List<Long> entityIds,
@@ -396,7 +396,7 @@ public class QueryEngineV3 {
         return ActionResult.ok(action.getMetric() + " " + op + " = " + value, result);
     }
 
-    private String renderProjection(List<String> fields, List<StructuredQueryResult.Row> rows) {
+    private String renderProjection(List<String> fields, List<StructuredQueryResult.Row> rows, String domainCode) {
         if (rows == null || rows.isEmpty()) return "当前范围内没有符合条件的数据。";
         StringBuilder sb = new StringBuilder("找到 ").append(rows.size()).append(" 个对象：\n");
         int i = 1;
@@ -405,7 +405,7 @@ public class QueryEngineV3 {
             List<String> values = new ArrayList<>();
             for (String field : fields) {
                 String value = row.getFields() == null ? null : row.getFields().get(field);
-                values.add(fieldLabel(field) + "：" + StrUtil.blankToDefault(value, "未提供"));
+                values.add(fieldLabel(field, domainCode) + "：" + StrUtil.blankToDefault(value, "未提供"));
             }
             if (!values.isEmpty()) sb.append("；").append(String.join("；", values));
             sb.append('\n');
@@ -434,12 +434,12 @@ public class QueryEngineV3 {
     private MetricDefinition syntheticMetric(FieldDefinition field, String domainCode) {
         return MetricDefinition.builder().metricCode(field.getFieldCode()).domainCode(domainCode)
                 .entityType(field.getEntityType()).valueType(field.getValueType()).supportedOperations(Set.of())
-                .adapterKey(domainCode).aliases(field.getAliases()).displayName(fieldLabel(field.getFieldCode())).build();
+                .adapterKey(domainCode).aliases(field.getAliases()).displayName(fieldLabel(field.getFieldCode(), domainCode)).build();
     }
 
-    private String fieldLabel(String fieldCode) {
+    private String fieldLabel(String fieldCode, String domainCode) {
         if (StrUtil.isBlank(fieldCode)) return "字段";
-        for (FieldDefinition f : fieldRegistry.all("PATENT")) {
+        for (FieldDefinition f : fieldRegistry.all(domainCode)) {
             if (f != null && fieldCode.equalsIgnoreCase(f.getFieldCode()) && f.getAliases() != null && !f.getAliases().isEmpty()) {
                 return f.getAliases().get(0);
             }
@@ -515,7 +515,7 @@ public class QueryEngineV3 {
     private void addRetrievalStages(List<QueryStageTimingDTO> out, RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis,
                                     String prefix) {
         if (analysis == null || analysis.getStages() == null) return;
-        for (cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO source : analysis.getStages()) {
+        for (QueryStageTimingDTO source : analysis.getStages()) {
             QueryStageTimingDTO copy = new QueryStageTimingDTO();
             copy.setStage(prefix + source.getStage());
             copy.setStatus(source.getStatus());
@@ -533,7 +533,7 @@ public class QueryEngineV3 {
     private long retrievalTotal(RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis) {
         if (analysis == null || analysis.getStages() == null) return 0;
         return analysis.getStages().stream().filter(java.util.Objects::nonNull)
-                .map(cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO::getElapsedMs)
+                .map(QueryStageTimingDTO::getElapsedMs)
                 .filter(java.util.Objects::nonNull).mapToLong(Long::longValue).sum();
     }
 
