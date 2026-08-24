@@ -36,6 +36,8 @@ public class ReferenceResolver {
 
     @Resource
     private ResultSetService resultSetService;
+    @Resource
+    private ResultSetRevalidationService resultSetRevalidationService;
 
     /**
      * @param query          当前用户问题
@@ -47,7 +49,7 @@ public class ReferenceResolver {
     }
 
     /**
-     * 带上下文重校验的引用解析(CQ-38): 引用结果集前校验 tenant/kb/domain 一致 + 文档 ACL 可见 + 发布版本有效。
+     * 带上下文重校验的引用解析(CQ-38): 引用结果集前校验 tenant/kb/domain 一致 + 文档可见/发布有效性。
      *
      * @param userId   当前用户编号(null 时跳过 ACL/版本逐实体校验)
      * @param kbId     当前知识库编号(与结果集归属一致性校验)
@@ -78,8 +80,10 @@ public class ReferenceResolver {
         if (rs == null || ResultSetSnapshot.STATUS_STALE.equals(rs.getStatus())) {
             return QueryContextResolution.clarify("上一轮的结果已不可用，请重新查询。", "STALE_RESULT_SET");
         }
-        // CQ-38: 引用前重校验(权限/版本变化 → 剔除失效或反问)
-        RevalidationResult reval = resultSetService.revalidate(rs.getResultSetId(), userId, kbId, domainCode);
+
+        // CQ-38: 真实重校验基于当前用户可见 KB + 当前 PUBLISHED documentId 集合。
+        // 不再依赖 AiDocumentDO.versionId(非表字段)，避免正常发布文档被误判 STALE_RESULT_SET。
+        RevalidationResult reval = resultSetRevalidationService.revalidate(rs, userId, kbId, domainCode);
         if (!reval.isValid() && (reval.getRemainingIds() == null || reval.getRemainingIds().isEmpty())) {
             return QueryContextResolution.clarify(clarifyText(reval.getReasonCode()), reval.getReasonCode());
         }
