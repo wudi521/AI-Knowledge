@@ -38,7 +38,8 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
 
     private static final Set<String> EXECUTABLE_FIELDS = Set.of(
             PatentStructuredPack.FIELD_PUBLICATION_NO,
-            PatentStructuredPack.FIELD_APPLICATION_NO);
+            PatentStructuredPack.FIELD_APPLICATION_NO,
+            PatentStructuredPack.FIELD_TITLE);
 
     private final KnowledgeApi knowledgeApi;
 
@@ -99,7 +100,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                 for (StructuredQueryRowDTO r : data.getRows()) {
                     String fieldValue = fieldValueOf(r, fieldCode);
                     String identity = patentIdentity(r);
-                    Map<String, String> fields = projectedValues(r, projections);
+                    Map<String, String> fields = allFilterableValues(r);
                     rows.add(StructuredQueryResult.Row.builder()
                             .entityId(r.getDocumentId())
                             .entityKey(StrUtil.isNotBlank(fieldValue) && projections.size() <= 1 ? fieldValue : identity)
@@ -134,9 +135,10 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         return plan.getFieldCode() == null ? List.of() : List.of(plan.getFieldCode().toUpperCase());
     }
 
-    private Map<String, String> projectedValues(StructuredQueryRowDTO row, List<String> projections) {
+    /** 内部行始终带当前可确定性读取的字段全集，输出层仍只渲染 plan.projections。 */
+    private Map<String, String> allFilterableValues(StructuredQueryRowDTO row) {
         Map<String, String> values = new LinkedHashMap<>();
-        for (String field : projections) values.put(field, fieldValueOf(row, field));
+        for (String field : EXECUTABLE_FIELDS) values.put(field, fieldValueOf(row, field));
         return values;
     }
 
@@ -166,6 +168,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         return switch (fieldCode) {
             case PatentStructuredPack.FIELD_PUBLICATION_NO -> r.getPublicationNo();
             case PatentStructuredPack.FIELD_APPLICATION_NO -> r.getApplicationNo();
+            case PatentStructuredPack.FIELD_TITLE -> r.getDocumentName();
             default -> null;
         };
     }
