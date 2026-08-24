@@ -4,7 +4,6 @@ import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainEntityResolver;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainStructuredDataAdapter;
-import cn.iocoder.yudao.module.evidence.service.structured.core.QueryScope;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
@@ -48,9 +47,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
     }
 
     @Override
-    public String adapterKey() {
-        return PatentStructuredPack.ADAPTER_KEY;
-    }
+    public String adapterKey() { return PatentStructuredPack.ADAPTER_KEY; }
 
     @Override
     public boolean supports(String metricCode) {
@@ -60,32 +57,35 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
     }
 
     @Override
-    public String domainCode() {
-        return PatentStructuredPack.DOMAIN_CODE;
-    }
+    public String domainCode() { return PatentStructuredPack.DOMAIN_CODE; }
 
     @Override
     public StructuredQueryResult execute(StructuredQueryPlan plan) {
         if (plan == null || plan.getScope() == null || plan.getScope().getCurrentKbId() == null) {
             return StructuredQueryResult.unsupported("scope 未确定");
         }
-        String fieldCode = plan.getFieldCode();
-        if (fieldCode != null) {
-            if (!EXECUTABLE_FIELDS.contains(fieldCode)) {
-                return StructuredQueryResult.unsupported("Patent 字段暂无可结构化数据: " + fieldCode);
+
+        List<String> projections = normalizedProjections(plan);
+        for (String projection : projections) {
+            if (!EXECUTABLE_FIELDS.contains(projection)) {
+                return StructuredQueryResult.unsupported("Patent 字段暂无可结构化数据: " + projection);
             }
-        } else if (!supports(plan.getMetricCode())) {
+        }
+        String fieldCode = projections.isEmpty() ? plan.getFieldCode() : projections.get(0);
+        if (fieldCode != null && !EXECUTABLE_FIELDS.contains(fieldCode)) {
+            return StructuredQueryResult.unsupported("Patent 字段暂无可结构化数据: " + fieldCode);
+        }
+        if (fieldCode == null && !supports(plan.getMetricCode())) {
             return StructuredQueryResult.unsupported("Patent 指标暂不支持执行: " + plan.getMetricCode());
         }
 
         StructuredQueryReqDTO req = new StructuredQueryReqDTO();
         req.setKbId(plan.getScope().getCurrentKbId());
-        // Knowledge 数据层只负责返回完整专利文档 rows；PATENT_COUNT 的业务去重在 Domain Adapter 完成。
         req.setMetricCode(PatentStructuredPack.METRIC_PATENT_COUNT.equals(plan.getMetricCode())
                 ? PatentStructuredPack.METRIC_DOCUMENT_COUNT : plan.getMetricCode());
         req.setFieldCode(fieldCode);
-        req.setPublishedOnly(!"false".equalsIgnoreCase(
-                plan.getFilters().getOrDefault("publishedOnly", "true")));
+        req.setPublishedOnly(plan.getFilters() == null
+                || !"false".equalsIgnoreCase(plan.getFilters().getOrDefault("publishedOnly", "true")));
         req.setResolvedEntityIds(plan.getScope().getResolvedEntityIds());
 
         try {
@@ -99,11 +99,13 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                 for (StructuredQueryRowDTO r : data.getRows()) {
                     String fieldValue = fieldValueOf(r, fieldCode);
                     String identity = patentIdentity(r);
+                    Map<String, String> fields = projectedValues(r, projections);
                     rows.add(StructuredQueryResult.Row.builder()
                             .entityId(r.getDocumentId())
-                            .entityKey(StrUtil.isNotBlank(fieldValue) ? fieldValue : identity)
-                            .entityName(buildEntityName(r, fieldCode))
+                            .entityKey(StrUtil.isNotBlank(fieldValue) && projections.size() <= 1 ? fieldValue : identity)
+                            .entityName(buildEntityName(r, projections.size() <= 1 ? fieldCode : null))
                             .value(fieldCode != null ? null : r.getValue())
+                            .fields(fields)
                             .build());
                 }
             }
@@ -125,7 +127,19 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         }
     }
 
-    /** PATENT_COUNT 按稳定业务身份去重，保留首条 document 作为该业务实体代表。 */
+    private List<String> normalizedProjections(StructuredQueryPlan plan) {
+        if (plan.getProjections() != null && !plan.getProjections().isEmpty()) {
+            return plan.getProjections().stream().filter(StrUtil::isNotBlank).map(String::toUpperCase).distinct().toList();
+        }
+        return plan.getFieldCode() == null ? List.of() : List.of(plan.getFieldCode().toUpperCase());
+    }
+
+    private Map<String, String> projectedValues(StructuredQueryRowDTO row, List<String> projections) {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (String field : projections) values.put(field, fieldValueOf(row, field));
+        return values;
+    }
+
     private List<StructuredQueryResult.Row> dedupePatentRows(List<StructuredQueryResult.Row> rows) {
         Map<String, StructuredQueryResult.Row> unique = new LinkedHashMap<>();
         for (StructuredQueryResult.Row row : rows) {
@@ -187,9 +201,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             else continue;
             try {
                 List<Long> docIds = knowledgeApi.lookupPatentDocuments(req).getCheckedData();
-                if (docIds != null) {
-                    for (Long docId : docIds) resolved.add(new ResolvedEntity(e.identifier(), docId, null));
-                }
+                if (docIds != null) for (Long docId : docIds) resolved.add(new ResolvedEntity(e.identifier(), docId, null));
             } catch (Exception ex) {
                 log.warn("[resolveToEntities][identifier({}) 定位失败: {}]", e.identifier(), ex.getMessage());
             }
