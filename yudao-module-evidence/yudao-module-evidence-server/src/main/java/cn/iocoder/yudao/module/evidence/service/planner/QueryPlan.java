@@ -9,9 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Query Planner V2 权威计划。Planner 只生成白名单类型/字段/操作，Executor 不接受任意 SQL。
- */
+/** Query Planner V2 权威计划。Planner 只生成白名单类型/字段/操作，Executor 不接受任意 SQL。 */
 @Data
 @Builder
 public class QueryPlan {
@@ -25,11 +23,9 @@ public class QueryPlan {
     private String scopeType;
     private List<Long> entityIds;
 
-    /** 字段投影，支持“一次列申请号、公布号和申请人”。 */
     @Builder.Default
     private List<String> projections = new ArrayList<>();
 
-    /** 指标编码，可支持多指标计划。 */
     @Builder.Default
     private List<String> metrics = new ArrayList<>();
 
@@ -44,12 +40,13 @@ public class QueryPlan {
     private Long anchorEntityId;
     private CompletenessPolicy completenessPolicy;
 
-    /** 语义检索策略。 */
+    /** EXACT_TEXT_SEARCH 专用：Planner 抽取出的目标原文短语，不包含用户指令词。 */
+    private String exactText;
+
     private Integer perEntityTopK;
     private Boolean requireDistinctEntities;
     private String coveragePolicy;
 
-    /** 复杂问题允许有限步骤组合，不做开放式 Agent。 */
     @Builder.Default
     private List<QueryPlan> steps = new ArrayList<>();
 
