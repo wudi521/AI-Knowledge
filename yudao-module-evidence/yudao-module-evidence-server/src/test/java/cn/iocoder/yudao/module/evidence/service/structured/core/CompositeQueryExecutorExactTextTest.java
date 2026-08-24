@@ -42,7 +42,8 @@ class CompositeQueryExecutorExactTextTest {
         when(queryPlanner.plan(any(), any(), any(), any(), any())).thenReturn(typedPlan);
         Evidence evidence = Evidence.builder().chunkId(101L).documentId("67").content("粒子化磁涌").build();
         when(exactTextExecutionService.execute(any(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(new ExactTextExecutionService.Result("找到 1 个片段", List.of(evidence), true, null));
+                .thenReturn(new ExactTextExecutionService.Result(
+                        "找到 1 个片段", List.of(evidence), true, null, 1L, false));
 
         CompositeQueryExecutor.Result result = executor.execute(new CompositeQueryExecutor.Request(
                 "原文中包含“粒子化磁涌”吗？", 6L, "PATENT", List.of(), null, null,
