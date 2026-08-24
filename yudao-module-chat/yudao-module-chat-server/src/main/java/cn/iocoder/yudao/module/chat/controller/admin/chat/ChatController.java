@@ -11,6 +11,7 @@ import cn.iocoder.yudao.module.chat.controller.admin.chat.vo.ChatSendRespVO;
 import cn.iocoder.yudao.module.chat.controller.admin.chat.vo.ChatStreamEvent;
 import cn.iocoder.yudao.module.chat.framework.chat.ChatProperties;
 import cn.iocoder.yudao.module.chat.framework.chat.ChatStreamExecutor;
+import cn.iocoder.yudao.module.chat.framework.chat.DeferredDoneChatStreamSink;
 import cn.iocoder.yudao.module.chat.framework.chat.SseChatStreamSink;
 import cn.iocoder.yudao.module.chat.service.chat.ChatPipeline;
 import cn.iocoder.yudao.module.chat.service.chat.ChatSendResult;
@@ -64,9 +65,7 @@ public class ChatController {
 
     /**
      * SSE 流式发送。SSE-08: 禁用普通业务 ApiAccessLog——MVC afterCompletion 只能体现 HTTP
-     * handshake 耗时(约 0ms), 无法表达真实 SSE 生命周期; 真实生命周期由 Query Trace 记录
-     * (startTime/endTime/totalMs/terminalStatus)。禁用后同时规避访问日志异步写 infra 失败
-     * 对 Chat 主请求的间接干扰(SSE-09)。
+     * handshake 耗时(约 0ms), 无法表达真实 SSE 生命周期; 真实生命周期由 Query Trace 记录。
      */
     @ApiAccessLog(enable = false)
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -87,9 +86,13 @@ public class ChatController {
             return reject;
         }
         SseEmitter emitter = new SseEmitter(chatProperties.getStreamTimeoutMs());
-        SseChatStreamSink sink = new SseChatStreamSink(emitter);
+        SseChatStreamSink transportSink = new SseChatStreamSink(emitter);
+        // P0 commit-before-done: Pipeline 内部先产生 done，但先缓存；只有整个 Pipeline 返回
+        // (AI 消息/ResultSet/ContextFrame/Trace 关键状态均已处理完) 后才真正发送给前端。
+        DeferredDoneChatStreamSink sink = new DeferredDoneChatStreamSink(transportSink);
         Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
         chatStreamExecutor.execute(() -> {
+            boolean pipelineCompleted = false;
             try {
                 // 恢复租户上下文(DB 落库 tenant_id 自动填充) + 安全上下文(Pipeline 读取登录用户)
                 TenantUtils.execute(tenantId, () -> {
@@ -101,23 +104,27 @@ public class ChatController {
                         SecurityContextHolder.clearContext();
                     }
                 });
+                pipelineCompleted = true;
+                // 只有正常返回才 flush done；如果客户端已取消，Deferred Sink 会自动丢弃。
+                sink.flushDone();
             } catch (Exception e) {
-                // 兜底: 上下文传播层异常(正常业务错误已在 Pipeline 内转为 error 事件)
-                sink.emitErrorAndComplete(ChatStreamEvent.builder()
+                // 异常路径不允许 done/error 双终态。
+                sink.discardDone();
+                transportSink.emitErrorAndComplete(ChatStreamEvent.builder()
                         .type(ChatStreamEvent.TYPE_ERROR)
                         .code("INTERNAL")
                         .message("系统繁忙，请稍后重试")
                         .retryable(false)
                         .build());
             } finally {
+                if (!pipelineCompleted) {
+                    sink.discardDone();
+                }
                 if (userId != null) {
                     streamInflight.remove(userId);
                 }
-                // SSE-04: complete 幂等——仅 OPEN→COMPLETED 才真正 emitter.complete();
-                // 已 CLIENT_CANCELLED(客户端断开/停止)/TIMEOUT/ERROR/COMPLETED 时为 no-op,
-                // 不再对已关闭连接二次 complete(避免 Tomcat MimeHeaders.setValue NPE)。
-                // 客户端取消属于正常终态: 不在此处 completeWithError。
-                sink.complete();
+                // transport complete 幂等：已取消/超时/error/complete 均 no-op。
+                transportSink.complete();
             }
         });
         return emitter;
