@@ -5,37 +5,42 @@ import cn.iocoder.yudao.module.evidence.api.dto.QueryPlanBudgetDTO;
 import java.util.List;
 
 /**
- * Composite Query Plan(CQ-02/38): 单次查询的执行计划描述。
- * <p>
- * 最小 DAG: ResolveScope → StructuredLookup → Filter → Aggregate → PerEntitySemantic → Synthesis。
- * 单步结构化查询(COUNT/SUM/LIST/TOP_N)天然走 ResolveScope→StructuredLookup→Aggregate;
- * 无法结构化但有明确实体集时追加 PerEntitySemantic(逐实体 SCOPED_RAG)→Synthesis。
- * 执行由 {@code CompositeQueryExecutor} 编排, 受 planBudget(步骤/实体/模型调用/deadline)约束。
+ * Composite Query Plan：有限步骤、有限实体、有限模型预算，禁止把普通查询演化成无界 Agent。
  */
 public class CompositeQueryPlan {
 
-    /** 计划步骤类型(最小 DAG 节点) */
     public enum StepType {
         RESOLVE_SCOPE, STRUCTURED_LOOKUP, FILTER, AGGREGATE, PER_ENTITY_SEMANTIC, SYNTHESIS
     }
 
-    /** 计划预算(执行上限; null 字段用默认值兜底) */
     public record Budget(int maxSteps, int maxEntities, int maxModelCalls, long deadlineMs) {
 
+        /**
+         * P0 默认预算：最多 5 步、10 个语义实体、2 次模型预算、20 秒总 deadline。
+         * Structured/ExactText 为 0 LLM；PerEntity/Compare 按实体检索后只做一次全局综合生成。
+         */
         public static Budget defaults() {
-            return new Budget(5, 100, 12, 60_000L);
+            return new Budget(5, 10, 2, 20_000L);
         }
 
         public static Budget of(QueryPlanBudgetDTO dto) {
-            if (dto == null) {
-                return defaults();
-            }
+            if (dto == null) return defaults();
             Budget d = defaults();
-            int maxSteps = dto.getMaxSteps() != null && dto.getMaxSteps() > 0 ? dto.getMaxSteps() : d.maxSteps;
-            int maxEntities = dto.getMaxEntities() != null && dto.getMaxEntities() > 0 ? dto.getMaxEntities() : d.maxEntities;
-            int maxModelCalls = dto.getMaxModelCalls() != null && dto.getMaxModelCalls() > 0 ? dto.getMaxModelCalls() : d.maxModelCalls;
-            long deadlineMs = dto.getDeadlineMs() != null && dto.getDeadlineMs() > 0 ? dto.getDeadlineMs() : d.deadlineMs;
+            int maxSteps = positive(dto.getMaxSteps(), d.maxSteps, 1, 8);
+            int maxEntities = positive(dto.getMaxEntities(), d.maxEntities, 1, 50);
+            int maxModelCalls = positive(dto.getMaxModelCalls(), d.maxModelCalls, 1, 4);
+            long deadlineMs = positive(dto.getDeadlineMs(), d.deadlineMs, 1_000L, 60_000L);
             return new Budget(maxSteps, maxEntities, maxModelCalls, deadlineMs);
+        }
+
+        private static int positive(Integer value, int fallback, int min, int max) {
+            if (value == null || value <= 0) return fallback;
+            return Math.max(min, Math.min(max, value));
+        }
+
+        private static long positive(Long value, long fallback, long min, long max) {
+            if (value == null || value <= 0) return fallback;
+            return Math.max(min, Math.min(max, value));
         }
     }
 
@@ -56,27 +61,10 @@ public class CompositeQueryPlan {
         this.budget = budget;
     }
 
-    public String getQueryId() {
-        return queryId;
-    }
-
-    public String getQuery() {
-        return query;
-    }
-
-    public Long getKbId() {
-        return kbId;
-    }
-
-    public String getDomainCode() {
-        return domainCode;
-    }
-
-    public List<StepType> getSteps() {
-        return steps;
-    }
-
-    public Budget getBudget() {
-        return budget;
-    }
+    public String getQueryId() { return queryId; }
+    public String getQuery() { return query; }
+    public Long getKbId() { return kbId; }
+    public String getDomainCode() { return domainCode; }
+    public List<StepType> getSteps() { return steps; }
+    public Budget getBudget() { return budget; }
 }
