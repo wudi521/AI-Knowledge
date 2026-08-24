@@ -7,11 +7,7 @@ import java.util.regex.Pattern;
 
 /**
  * Completeness / Planner Entry Guard。
- * <p>
- * 识别两类入口：
- * 1. 必须完整数据集的 Structured 语义；
- * 2. 必须先经过 Query Planner V2 的比较/主观评价/精确原文语义。
- * 普通单文档语义问答暂时继续走稳定旧 RAG 主链。
+ * 识别必须完整数据集的 Structured 语义，以及必须先经过 Query Planner V2 的比较/主观评价/精确原文语义。
  */
 @Component
 public class CompletenessGuard {
@@ -29,15 +25,11 @@ public class CompletenessGuard {
             "申请号", "公布号", "公开号", "申请人", "发明人", "申请日", "公开日",
     };
 
-    /** 必须先过 Planner 的特殊语义，不能直接落普通 Hybrid TopK。 */
     private static final String[] PLANNER_ENTRY_WORDS = {
-            // 跨实体比较
             "相似", "类似", "最像", "最接近", "共同点", "共性", "相同点",
             "区别", "差异", "不同点", "比较", "对比",
-            // 主观评价：Planner 需要要求用户给评价标准
             "哪个好", "哪个更好", "更先进", "最先进", "更有价值", "最有价值", "最好", "最优", "更强", "最强",
-            // 精确原文搜索：不能用语义 TopK 冒充 exact/complete
-            "原文出现", "原文包含", "精确搜索", "精确匹配", "出现过"
+            "原文出现", "原文中出现", "原文包含", "原文中包含", "精确搜索", "精确匹配", "查找原文", "出现过"
     };
 
     private static final Pattern APPLICATION_NO = Pattern.compile("(?<!\\d)20\\d{10}\\.\\d(?!\\d)");
@@ -52,9 +44,6 @@ public class CompletenessGuard {
         return StrUtil.isNotBlank(query) && containsAny(query, COMPLETENESS_WORDS);
     }
 
-    /**
-     * 保留历史方法名兼容 EvidenceService；实际语义是“需要进入 Structured/Query Planner 的候选”。
-     */
     public boolean isStructuredCandidate(String query) {
         if (StrUtil.isBlank(query)) return false;
         if (isExactLookup(query)) return false;
