@@ -9,7 +9,7 @@ COMMON="-DskipITs -Dsurefire.failIfNoSpecifiedTests=false"
 
 echo "[1/3] evidence planner / structured / scope / semantics gate"
 mvn -pl yudao-module-evidence/yudao-module-evidence-server -am $COMMON \
-  -Dtest='QueryCapabilityGoldenMatrixTest,EvidenceQueryScopeResolverTest,CompositeQueryExecutorPlannerTest,CompositeQueryExecutorExactTextTest,CompositeQueryExecutorTest,CompositeQueryBudgetTest,MultiFieldProjectionServiceTest,StructuredFilterTreeTest,StructuredQueryEngineCoreTest,ExactTextExecutionServiceTest' \
+  -Dtest='QueryCapabilityGoldenMatrixTest,EvidenceQueryScopeResolverTest,CompositeQueryExecutorPlannerTest,CompositeQueryExecutorExactTextTest,CompositeQueryExecutorTest,CompositeQueryBudgetTest,MultiFieldProjectionServiceTest,StructuredFilterTreeTest,StructuredQueryEngineCoreTest,ExactTextExecutionServiceTest,SemanticsExecutionServiceCompareTest,GenericDomainIdentityCompareTest,SemanticsExecutionServiceTest' \
   test
 
 echo "[2/3] retrieval exact-text gate"
