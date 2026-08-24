@@ -27,6 +27,8 @@ class ConversationResultSetRegressionTest {
 
     @Mock
     private ResultSetService resultSetService;
+    @Mock
+    private ResultSetRevalidationService resultSetRevalidationService;
 
     private ReferenceResolver resolver;
 
@@ -34,7 +36,9 @@ class ConversationResultSetRegressionTest {
     void setUp() {
         resolver = new ReferenceResolver();
         ReflectionTestUtils.setField(resolver, "resultSetService", resultSetService);
-        lenient().when(resultSetService.revalidate(any(), any(), any(), any())).thenReturn(RevalidationResult.valid());
+        ReflectionTestUtils.setField(resolver, "resultSetRevalidationService", resultSetRevalidationService);
+        lenient().when(resultSetRevalidationService.revalidate(any(), any(), any(), any()))
+                .thenReturn(RevalidationResult.valid());
         lenient().when(resultSetService.materialize(any(ResultSetSnapshot.class)))
                 .thenAnswer(inv -> inv.<ResultSetSnapshot>getArgument(0).getOrderedEntityIds());
     }
@@ -108,6 +112,6 @@ class ConversationResultSetRegressionTest {
         assertThat(resolution.isClarifyRequired()).isFalse();
         assertThat(resolution.getScopeType()).isEqualTo(QueryContextResolution.SCOPE_CURRENT_KB);
         assertThat(resolution.getResultSetId()).isNull();
-        verifyNoInteractions(resultSetService);
+        verifyNoInteractions(resultSetService, resultSetRevalidationService);
     }
 }
