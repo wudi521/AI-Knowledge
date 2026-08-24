@@ -20,23 +20,23 @@ public class QueryPlanValidator {
 
     public Validation validate(QueryPlan plan) {
         if (plan == null || plan.getQueryClass() == null) {
-            return Validation.invalid("INVALID_PLAN");
+            return Validation.failure("INVALID_PLAN");
         }
         if (plan.getQueryClass() == QueryClass.CLARIFY || plan.getQueryClass() == QueryClass.ABSTAIN) {
-            return Validation.valid();
+            return Validation.success();
         }
         if (plan.getExecutionMode() == null) {
-            return Validation.invalid("MISSING_EXECUTION_MODE");
+            return Validation.failure("MISSING_EXECUTION_MODE");
         }
         if (plan.getExecutionMode() == ExecutionMode.EXACT_TEXT_SEARCH && StrUtil.isBlank(plan.getExactText())) {
-            return Validation.invalid("MISSING_EXACT_TEXT");
+            return Validation.failure("MISSING_EXACT_TEXT");
         }
         String domain = plan.getDomainCode();
         if (domain != null) {
             if (plan.getProjections() != null) {
                 for (String field : plan.getProjections()) {
                     if (field != null && fieldRegistry.byCode(domain, field).isEmpty()) {
-                        return Validation.invalid("UNSUPPORTED_FIELD:" + field);
+                        return Validation.failure("UNSUPPORTED_FIELD:" + field);
                     }
                 }
             }
@@ -45,27 +45,35 @@ public class QueryPlanValidator {
                     boolean exists = metricRegistry.all(domain).stream()
                             .anyMatch(m -> metric != null && metric.equals(m.getMetricCode()));
                     if (!exists) {
-                        return Validation.invalid("UNSUPPORTED_METRIC:" + metric);
+                        return Validation.failure("UNSUPPORTED_METRIC:" + metric);
                     }
                 }
             }
         }
         if (plan.getExecutionMode() == ExecutionMode.CROSS_ENTITY_COMPARE) {
             if (plan.getComparisonType() == null || plan.getComparisonType() == ComparisonType.NONE) {
-                return Validation.invalid("MISSING_COMPARISON_TYPE");
+                return Validation.failure("MISSING_COMPARISON_TYPE");
             }
             if (plan.getEntityIds() != null && plan.getEntityIds().stream().distinct().count() == 1) {
-                return Validation.invalid("INSUFFICIENT_COMPARE_ENTITIES");
+                return Validation.failure("INSUFFICIENT_COMPARE_ENTITIES");
             }
         }
         if (plan.getSteps() != null && plan.getSteps().size() > 5) {
-            return Validation.invalid("PLAN_TOO_MANY_STEPS");
+            return Validation.failure("PLAN_TOO_MANY_STEPS");
         }
-        return Validation.valid();
+        return Validation.success();
     }
 
+    /**
+     * record 会自动生成实例访问器 valid()；静态工厂不能再叫 valid()，否则 Java 方法签名冲突。
+     */
     public record Validation(boolean valid, String reasonCode) {
-        public static Validation valid() { return new Validation(true, null); }
-        public static Validation invalid(String reason) { return new Validation(false, reason); }
+        public static Validation success() {
+            return new Validation(true, null);
+        }
+
+        public static Validation failure(String reason) {
+            return new Validation(false, reason);
+        }
     }
 }
