@@ -7,14 +7,16 @@ import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
 import cn.iocoder.yudao.module.evidence.service.planner.QueryClass;
 import cn.iocoder.yudao.module.evidence.service.planner.QueryPlan;
 import cn.iocoder.yudao.module.evidence.service.planner.QueryPlannerFacade;
+import cn.iocoder.yudao.module.evidence.service.semantics.ExactTextExecutionService;
 import cn.iocoder.yudao.module.evidence.service.semantics.SemanticsExecutionService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
 /**
- * Composite Query Plan 执行器：Query Planner V2 → Structured / Per-Entity / Cross-Entity Compare。
+ * Composite Query Plan 执行器：Query Planner V2 → Structured / ExactText / Per-Entity / Cross-Entity Compare。
  * 普通 Hybrid/Scoped RAG 返回 NOT_STRUCTURED，继续复用既有稳定检索主链。
  */
 @Slf4j
@@ -24,13 +26,24 @@ public class CompositeQueryExecutor {
     private final StructuredQueryService structuredQueryService;
     private final SemanticsExecutionService semanticsExecutionService;
     private final QueryPlannerFacade queryPlanner;
+    private final ExactTextExecutionService exactTextExecutionService;
 
+    @Autowired
     public CompositeQueryExecutor(StructuredQueryService structuredQueryService,
                                   SemanticsExecutionService semanticsExecutionService,
-                                  QueryPlannerFacade queryPlanner) {
+                                  QueryPlannerFacade queryPlanner,
+                                  ExactTextExecutionService exactTextExecutionService) {
         this.structuredQueryService = structuredQueryService;
         this.semanticsExecutionService = semanticsExecutionService;
         this.queryPlanner = queryPlanner;
+        this.exactTextExecutionService = exactTextExecutionService;
+    }
+
+    /** 源码兼容构造器，供既有单测使用。 */
+    public CompositeQueryExecutor(StructuredQueryService structuredQueryService,
+                                  SemanticsExecutionService semanticsExecutionService,
+                                  QueryPlannerFacade queryPlanner) {
+        this(structuredQueryService, semanticsExecutionService, queryPlanner, null);
     }
 
     public record Request(String query, Long kbId, String domainCode, List<ChatTurnDTO> history,
@@ -53,7 +66,6 @@ public class CompositeQueryExecutor {
         CompositeQueryPlan.Budget budget = req.budget() != null ? req.budget() : CompositeQueryPlan.Budget.defaults();
         long deadlineAt = System.currentTimeMillis() + budget.deadlineMs();
 
-        // P0 Query Planner V2：在实际检索/结构化执行之前决定执行模式。
         QueryPlan typedPlan = queryPlanner.plan(req.query(), req.domainCode(), req.history(),
                 req.explicitEntityIds(), null);
         if (typedPlan != null) {
@@ -64,7 +76,11 @@ public class CompositeQueryExecutor {
                 return new Result(StructuredQueryService.State.CLARIFY, null,
                         StrUtil.blankToDefault(typedPlan.getClarificationQuestion(), "请补充查询范围或比较标准。"),
                         StrUtil.blankToDefault(typedPlan.getReasonCode(), "PLANNER_CLARIFY"),
-                        null, null, null, null, null, false, null);
+                        typedPlan.getExecutionMode() != null ? typedPlan.getExecutionMode().code() : null,
+                        null, null, null, null, false, null);
+            }
+            if (typedPlan.getExecutionMode() == ExecutionMode.EXACT_TEXT_SEARCH) {
+                return executeExactText(req, typedPlan, deadlineAt);
             }
             if (typedPlan.getExecutionMode() == ExecutionMode.CROSS_ENTITY_COMPARE) {
                 return executeCrossEntityCompare(req, typedPlan, budget, deadlineAt);
@@ -73,7 +89,6 @@ public class CompositeQueryExecutor {
                     && req.explicitEntityIds() != null && !req.explicitEntityIds().isEmpty()) {
                 return executePerEntityPlan(req, typedPlan, budget, deadlineAt);
             }
-            // 普通语义模式继续走既有 Retrieval QueryAnalysis/Hybrid/Scoped 主链，避免第一批扩大回归面。
             if (typedPlan.getQueryClass() == QueryClass.SEMANTIC_QUERY
                     && typedPlan.getExecutionMode() != ExecutionMode.STRUCTURED) {
                 return new Result(StructuredQueryService.State.NOT_STRUCTURED, null, null, null,
@@ -113,40 +128,65 @@ public class CompositeQueryExecutor {
         }
     }
 
+    private Result executeExactText(Request req, QueryPlan typedPlan, long deadlineAt) {
+        List<Long> ids = typedPlan.getEntityIds() == null ? List.of() : typedPlan.getEntityIds();
+        StructuredQueryPlan plan = semanticPlan(req, ids, ExecutionMode.CODE_EXACT_TEXT_SEARCH);
+        if (System.currentTimeMillis() > deadlineAt) return timedOut(plan);
+        if (exactTextExecutionService == null) {
+            return new Result(StructuredQueryService.State.UNANSWERABLE, null, null,
+                    "EXACT_TEXT_EXECUTOR_UNAVAILABLE", ExecutionMode.CODE_EXACT_TEXT_SEARCH,
+                    plan, ids, List.of(), null, false, null);
+        }
+        ExactTextExecutionService.Result sr = exactTextExecutionService.execute(
+                req.query(), typedPlan.getExactText(), req.kbId(), ids,
+                req.tenantId(), req.userId(), req.traceId());
+        if (!sr.answerable()) {
+            return new Result(StructuredQueryService.State.UNANSWERABLE, null, null,
+                    sr.reasonCode(), ExecutionMode.CODE_EXACT_TEXT_SEARCH,
+                    plan, ids, sr.evidences(), null, false, null);
+        }
+        return new Result(StructuredQueryService.State.ANSWER, sr.answer(), null, null,
+                ExecutionMode.CODE_EXACT_TEXT_SEARCH, plan, ids, sr.evidences(), null, false, null);
+    }
+
     private Result executeCrossEntityCompare(Request req, QueryPlan typedPlan,
                                              CompositeQueryPlan.Budget budget, long deadlineAt) {
         List<Long> ids = typedPlan.getEntityIds() != null ? typedPlan.getEntityIds() : List.of();
         if (!ids.isEmpty() && ids.size() > budget.maxEntities()) {
             return new Result(StructuredQueryService.State.CLARIFY, null,
                     "共 " + ids.size() + " 个对象，一次最多比较 " + budget.maxEntities() + " 个，请缩小范围后再问。",
-                    "COMPARE_ENTITY_LIMIT", ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC,
-                    semanticPlan(req, ids), null, null, null, false, null);
+                    "COMPARE_ENTITY_LIMIT", ExecutionMode.CODE_CROSS_ENTITY_COMPARE,
+                    semanticPlan(req, ids, ExecutionMode.CODE_CROSS_ENTITY_COMPARE), null, null, null, false, null);
         }
-        if (System.currentTimeMillis() > deadlineAt) return timedOut(semanticPlan(req, ids));
+        if (System.currentTimeMillis() > deadlineAt) return timedOut(semanticPlan(req, ids, ExecutionMode.CODE_CROSS_ENTITY_COMPARE));
 
         boolean requireAll = "ALL".equalsIgnoreCase(typedPlan.getCoveragePolicy());
         SemanticsExecutionService.CompareResult sr = semanticsExecutionService.executeCompare(
-                req.query(), req.kbId(), ids, req.tenantId(), req.userId(), req.history(), req.traceId(), requireAll);
+                req.query(), req.kbId(), req.domainCode(), ids,
+                req.tenantId(), req.userId(), req.history(), req.traceId(), requireAll);
         if (sr.overLimit()) {
             return new Result(StructuredQueryService.State.CLARIFY, null,
                     "当前范围有 " + sr.entityIds().size() + " 个对象，一次最多比较 " + sr.limit() + " 个，请缩小范围。",
-                    "COMPARE_ENTITY_LIMIT", ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC,
-                    semanticPlan(req, sr.entityIds()), null, null, null, false, null);
+                    "COMPARE_ENTITY_LIMIT", ExecutionMode.CODE_CROSS_ENTITY_COMPARE,
+                    semanticPlan(req, sr.entityIds(), ExecutionMode.CODE_CROSS_ENTITY_COMPARE), null, null, null, false, null);
         }
         if (sr.coverageInsufficient()) {
             return new Result(StructuredQueryService.State.CLARIFY, null,
                     "当前比较范围的证据覆盖不足：需要至少两个不同对象，并且每个待比较对象都应有可用证据。请缩小范围或检查知识文档后重试。",
-                    "INSUFFICIENT_CROSS_ENTITY_COVERAGE", ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC,
-                    semanticPlan(req, sr.entityIds()), sr.entityIds(), sr.evidences(), null, false, null);
+                    "INSUFFICIENT_CROSS_ENTITY_COVERAGE", ExecutionMode.CODE_CROSS_ENTITY_COMPARE,
+                    semanticPlan(req, sr.entityIds(), ExecutionMode.CODE_CROSS_ENTITY_COMPARE),
+                    sr.entityIds(), sr.evidences(), null, false, null);
         }
         if (sr.generation() != null && StrUtil.isNotBlank(sr.generation().getAnswer())) {
             return new Result(StructuredQueryService.State.ANSWER, sr.generation().getAnswer(), null, null,
-                    ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC, semanticPlan(req, sr.entityIds()),
+                    ExecutionMode.CODE_CROSS_ENTITY_COMPARE,
+                    semanticPlan(req, sr.entityIds(), ExecutionMode.CODE_CROSS_ENTITY_COMPARE),
                     sr.entityIds(), sr.evidences(), sr.generation(), false, null);
         }
         return new Result(StructuredQueryService.State.UNANSWERABLE, null, null,
-                StructuredFailureReason.EMPTY_RESULT_SET, ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC,
-                semanticPlan(req, sr.entityIds()), sr.entityIds(), sr.evidences(), sr.generation(), false, null);
+                StructuredFailureReason.EMPTY_RESULT_SET, ExecutionMode.CODE_CROSS_ENTITY_COMPARE,
+                semanticPlan(req, sr.entityIds(), ExecutionMode.CODE_CROSS_ENTITY_COMPARE),
+                sr.entityIds(), sr.evidences(), sr.generation(), false, null);
     }
 
     private Result executePerEntityPlan(Request req, QueryPlan typedPlan,
@@ -156,30 +196,33 @@ public class CompositeQueryExecutor {
             return new Result(StructuredQueryService.State.CLARIFY, null,
                     "共 " + ids.size() + " 个对象，一次最多可逐项说明 " + budget.maxEntities() + " 个，请缩小范围后再问。",
                     StructuredFailureReason.AMBIGUOUS_SCOPE, ExecutionMode.CODE_PER_ENTITY_SEMANTIC,
-                    semanticPlan(req, ids), null, null, null, false, null);
+                    semanticPlan(req, ids, ExecutionMode.CODE_PER_ENTITY_SEMANTIC), null, null, null, false, null);
         }
-        if (System.currentTimeMillis() > deadlineAt) return timedOut(semanticPlan(req, ids));
+        if (System.currentTimeMillis() > deadlineAt) return timedOut(semanticPlan(req, ids, ExecutionMode.CODE_PER_ENTITY_SEMANTIC));
         SemanticsExecutionService.Result sr = semanticsExecutionService.execute(
                 req.query(), req.kbId(), ids, req.tenantId(), req.userId(), req.history(), req.traceId());
         if (sr.overLimit()) {
             return new Result(StructuredQueryService.State.CLARIFY, null,
                     "共 " + sr.entityIds().size() + " 个对象，一次最多可逐项说明 " + sr.limit() + " 个，请缩小范围后再问。",
                     StructuredFailureReason.AMBIGUOUS_SCOPE, ExecutionMode.CODE_PER_ENTITY_SEMANTIC,
-                    semanticPlan(req, ids), null, null, null, false, null);
+                    semanticPlan(req, ids, ExecutionMode.CODE_PER_ENTITY_SEMANTIC), null, null, null, false, null);
         }
         if (sr.generation() != null && StrUtil.isNotBlank(sr.generation().getAnswer())) {
             return new Result(StructuredQueryService.State.ANSWER, sr.generation().getAnswer(), null, null,
-                    ExecutionMode.CODE_PER_ENTITY_SEMANTIC, semanticPlan(req, ids),
+                    ExecutionMode.CODE_PER_ENTITY_SEMANTIC,
+                    semanticPlan(req, ids, ExecutionMode.CODE_PER_ENTITY_SEMANTIC),
                     ids, sr.evidences(), sr.generation(), false, null);
         }
         return new Result(StructuredQueryService.State.UNANSWERABLE, null, null,
                 StructuredFailureReason.EMPTY_RESULT_SET, ExecutionMode.CODE_PER_ENTITY_SEMANTIC,
-                semanticPlan(req, ids), ids, sr.evidences(), sr.generation(), false, null);
+                semanticPlan(req, ids, ExecutionMode.CODE_PER_ENTITY_SEMANTIC),
+                ids, sr.evidences(), sr.generation(), false, null);
     }
 
-    private StructuredQueryPlan semanticPlan(Request req, List<Long> ids) {
+    private StructuredQueryPlan semanticPlan(Request req, List<Long> ids, String executionMode) {
         return StructuredQueryPlan.builder()
-                .route(ExecutionMode.CODE_CROSS_ENTITY_SEMANTIC)
+                // route 仅承载兼容主路由；内部执行模式由 Result.executionMode 单独表达。
+                .route("HYBRID_RAG")
                 .domainCode(req.domainCode())
                 .scope(ids == null || ids.isEmpty() ? QueryScope.currentKb(req.kbId()) : QueryScope.documentSet(req.kbId(), ids))
                 .resolvedEntities(ids)
