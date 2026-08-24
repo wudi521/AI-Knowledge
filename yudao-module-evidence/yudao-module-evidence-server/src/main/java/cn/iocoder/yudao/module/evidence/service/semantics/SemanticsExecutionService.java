@@ -90,7 +90,10 @@ public class SemanticsExecutionService {
         return execute(query, kbId, collectPublishedDocumentIds(kbId), tenantId, userId, history, traceId);
     }
 
-    /** 旧调用兼容；未给 domainCode 时按 documentId 去重。 */
+    /**
+     * 旧调用兼容。domainCode 未显式传入时，Core 会询问所有已注册的 Provider；
+     * 任何 Provider 能识别该证据即可返回业务实体身份，否则回退 documentId。
+     */
     public CompareResult executeCompare(String query, Long kbId, List<Long> entityIds,
                                         Long tenantId, Long userId, List<ChatTurnDTO> history,
                                         String traceId, boolean requireAllCoverage) {
@@ -152,6 +155,7 @@ public class SemanticsExecutionService {
     }
 
     private String resolveIdentity(String domainCode, Evidence evidence, Long fallbackDocumentId) {
+        // 明确领域：只询问对应 Domain Provider，防止不同领域 Provider 误识别同一 metadata。
         if (StrUtil.isNotBlank(domainCode)) {
             for (DomainEntityIdentityProvider provider : identityProviders) {
                 if (provider != null && domainCode.equalsIgnoreCase(provider.domainCode())) {
@@ -159,6 +163,13 @@ public class SemanticsExecutionService {
                     if (StrUtil.isNotBlank(key)) return key;
                 }
             }
+            return "DOC:" + fallbackDocumentId;
+        }
+        // 兼容旧调用：没有 domainCode 时按注册顺序询问所有 Provider；识别失败再回退 documentId。
+        for (DomainEntityIdentityProvider provider : identityProviders) {
+            if (provider == null) continue;
+            String key = provider.identityKey(evidence, fallbackDocumentId);
+            if (StrUtil.isNotBlank(key)) return key;
         }
         return "DOC:" + fallbackDocumentId;
     }
