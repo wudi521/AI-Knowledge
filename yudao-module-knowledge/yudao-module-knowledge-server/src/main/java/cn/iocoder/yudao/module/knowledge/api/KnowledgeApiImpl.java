@@ -6,6 +6,8 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
+import cn.iocoder.yudao.module.ingestion.api.IngestionApi;
+import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.DocumentVisibilityReqDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
@@ -21,8 +23,8 @@ import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseSlotDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
-import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
+import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
 import cn.iocoder.yudao.module.knowledge.service.common.PublishedContentCollector;
 import cn.iocoder.yudao.module.knowledge.service.intent.IntentService;
 import cn.iocoder.yudao.module.knowledge.service.knowledge.AiDocumentService;
@@ -60,9 +62,29 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     @Resource private AiKnowledgeBaseSlotService aiKnowledgeBaseSlotService;
     @Resource private PublishedContentCollector publishedContentCollector;
     @Resource private cn.iocoder.yudao.module.knowledge.dal.mysql.scope.AiKnowledgeScopeMapper aiKnowledgeScopeMapper;
+    @Resource private IngestionApi ingestionApi;
 
+    /**
+     * chunk 级权限校验：chunk -> document -> KB ACL。任何缺失/RPC异常一律 fail-closed。
+     * 旧实现 return true 会让调用方绕过知识库 ACL，商用环境不可接受。
+     */
     @Override
-    public Boolean checkKnowledgePermission(Long chunkId, Long userId) { return true; }
+    public Boolean checkKnowledgePermission(Long chunkId, Long userId) {
+        if (chunkId == null || userId == null) return false;
+        try {
+            Map<Long, ChunkDocInfoDTO> infoMap = ingestionApi.getChunkDocInfo(List.of(chunkId)).getCheckedData();
+            ChunkDocInfoDTO info = infoMap == null ? null : infoMap.get(chunkId);
+            if (info == null || info.getDocumentId() == null) return false;
+            AiDocumentDO doc = aiDocumentMapper.selectById(info.getDocumentId());
+            if (doc == null || doc.getKbId() == null) return false;
+            AiKnowledgeBaseDO kb = aiKnowledgeBaseMapper.selectById(doc.getKbId());
+            return kb != null && knowledgePermissionHelper.isKbVisibleToUser(userId, kb);
+        } catch (Exception e) {
+            log.warn("[checkKnowledgePermission][chunkId({}) userId({}) 校验异常, fail-closed: {}]",
+                    chunkId, userId, e.getMessage());
+            return false;
+        }
+    }
 
     @Override
     public CommonResult<Boolean> updateDocumentParseStatus(Long documentId, String parseStatus,
@@ -150,7 +172,7 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     @Override
     public CommonResult<Map<Long, String>> getDocumentVisibility(DocumentVisibilityReqDTO req) {
         Map<Long, String> result = new HashMap<>();
-        if (req == null || CollUtil.isEmpty(req.getDocumentIds())) {
+        if (req == null || CollUtil.isEmpty(req.getDocumentIds()) || req.getUserId() == null) {
             return success(result);
         }
         List<Long> ids = req.getDocumentIds().stream().distinct().toList();
@@ -160,11 +182,10 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         for (Long docId : ids) {
             AiDocumentDO doc = docs.get(docId);
             if (doc == null || visibleKbIds == null || !visibleKbIds.contains(doc.getKbId())) {
-                // 文档不存在或所属知识库对当前用户不可见(文档级 ACL 继承 KB ACL)
                 result.put(docId, "PERMISSION_CHANGED");
                 continue;
             }
-            if (!hasValidPublishedVersion(doc)) {
+            if (!hasValidPublishedVersion(doc.getId())) {
                 result.put(docId, "STALE_RESULT_SET");
                 continue;
             }
@@ -173,35 +194,23 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         return success(result);
     }
 
-    /** 文档当前发布版本有效: 版本存在 + PUBLISHED + 处于生效区间 */
-    private boolean hasValidPublishedVersion(AiDocumentDO doc) {
-        Long versionId = doc.getVersionId();
-        if (versionId == null) {
-            return false;
-        }
-        AiDocVersionDO version = aiDocVersionMapper.selectById(versionId);
-        if (version == null || !VersionStatusEnum.PUBLISHED.getStatus().equals(version.getStatus())) {
-            return false;
-        }
+    /** 不读取 AiDocumentDO.versionId 非表字段；直接查询该文档真实 PUBLISHED version。 */
+    private boolean hasValidPublishedVersion(Long documentId) {
+        if (documentId == null) return false;
+        List<AiDocVersionDO> published = aiDocVersionMapper.selectPublishedByDocIds(List.of(documentId));
+        if (CollUtil.isEmpty(published)) return false;
         LocalDateTime now = LocalDateTime.now();
-        if (version.getEffectiveFrom() != null && version.getEffectiveFrom().isAfter(now)) {
-            return false;
-        }
-        if (version.getEffectiveTo() != null && version.getEffectiveTo().isBefore(now)) {
-            return false;
-        }
-        return true;
+        return published.stream().anyMatch(version ->
+                VersionStatusEnum.PUBLISHED.getStatus().equals(version.getStatus())
+                        && (version.getEffectiveFrom() == null || !version.getEffectiveFrom().isAfter(now))
+                        && (version.getEffectiveTo() == null || !version.getEffectiveTo().isBefore(now)));
     }
 
     @Override
     public CommonResult<List<Long>> getPublishedDocumentIds(Long kbId) {
-        if (kbId == null) {
-            return success(List.of());
-        }
+        if (kbId == null) return success(List.of());
         List<AiDocumentDO> docs = aiDocumentMapper.selectListByKbId(kbId);
-        if (docs.isEmpty()) {
-            return success(List.of());
-        }
+        if (docs.isEmpty()) return success(List.of());
         List<Long> docIds = docs.stream().map(AiDocumentDO::getId).toList();
         List<AiDocVersionDO> published = aiDocVersionMapper.selectPublishedByDocIds(docIds);
         return success(published.stream().map(AiDocVersionDO::getDocId).distinct().toList());
@@ -294,32 +303,17 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         return success(publishedContentCollector.collectPublishedChunks(kbId));
     }
 
-    /**
-     * 知识库聚合统计(AG-03): 按 metric 确定性计数, 禁止统计 chunk/evidence/vector hit/version 行。
-     * <p>
-     * metric:
-     * <ul>
-     *     <li>DOCUMENT_COUNT — 文档数(按 domainCode 可选过滤, 按 publishedOnly 过滤已发布)</li>
-     *     <li>PATENT_COUNT — 去重专利数(按文档 domainMetadata.applicationNo, 默认 domainCode=PATENT)</li>
-     *     <li>KNOWLEDGE_ENTRY_COUNT — 知识条目数(已发布文档的 chunkCount 合计)</li>
-     * </ul>
-     */
     @Override
     public CommonResult<Integer> aggregateCount(Long kbId, String metric, Boolean publishedOnly, String domainCode) {
-        if (kbId == null || StrUtil.isBlank(metric)) {
-            return success(0);
-        }
+        if (kbId == null || StrUtil.isBlank(metric)) return success(0);
         try {
             boolean published = !Boolean.FALSE.equals(publishedOnly);
             List<AiDocumentDO> docs = aiDocumentMapper.selectListByKbId(kbId);
-            if (CollUtil.isEmpty(docs)) {
-                return success(0);
-            }
-            // 已发布过滤: 仅保留存在已发布版本的文档
+            if (CollUtil.isEmpty(docs)) return success(0);
             final Set<Long> publishedDocIds;
             if (published) {
                 publishedDocIds = aiDocVersionMapper.selectPublishedByDocIds(
-                        docs.stream().map(AiDocumentDO::getId).toList())
+                                docs.stream().map(AiDocumentDO::getId).toList())
                         .stream().map(AiDocVersionDO::getDocId).collect(Collectors.toSet());
             } else {
                 publishedDocIds = null;
@@ -348,9 +342,7 @@ public class KnowledgeApiImpl implements KnowledgeApi {
                 }
                 case "KNOWLEDGE_ENTRY_COUNT": {
                     int total = 0;
-                    for (AiDocumentDO doc : effective) {
-                        total += doc.getChunkCount() == null ? 0 : doc.getChunkCount();
-                    }
+                    for (AiDocumentDO doc : effective) total += doc.getChunkCount() == null ? 0 : doc.getChunkCount();
                     return success(total);
                 }
                 default:
@@ -362,7 +354,6 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         }
     }
 
-    /** 文档 domainMetadata 中的 domainCode */
     private String docDomainCode(AiDocumentDO doc) {
         if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return null;
         try {
@@ -372,7 +363,6 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         }
     }
 
-    /** 文档 domainMetadata 中的 applicationNo */
     private String docApplicationNo(AiDocumentDO doc) {
         if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return null;
         try {
@@ -382,7 +372,6 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         }
     }
 
-    /** 文档 domainMetadata 中的 claimCount(未识别返回 null) */
     private Integer docClaimCount(AiDocumentDO doc) {
         if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return null;
         try {
@@ -392,24 +381,15 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         }
     }
 
-    /**
-     * Structured Query 数据访问(白名单化): 按 kbId + 已发布 + PATENT 领域(可选已解析文档集合)返回
-     * 完整结构化数据集(每对象一行)。Core Executor 基于完整 rows 计算聚合, 禁止 TopK。
-     */
     @Override
     public CommonResult<StructuredQueryRespDTO> structuredQuery(StructuredQueryReqDTO req) {
         StructuredQueryRespDTO resp = new StructuredQueryRespDTO();
         resp.setRows(new ArrayList<>());
-        if (req == null || req.getKbId() == null || StrUtil.isBlank(req.getMetricCode())) {
-            return success(resp);
-        }
+        if (req == null || req.getKbId() == null || StrUtil.isBlank(req.getMetricCode())) return success(resp);
         try {
             boolean published = !Boolean.FALSE.equals(req.getPublishedOnly());
             List<AiDocumentDO> docs = aiDocumentMapper.selectListByKbId(req.getKbId());
-            if (CollUtil.isEmpty(docs)) {
-                return success(resp);
-            }
-            // 已发布过滤
+            if (CollUtil.isEmpty(docs)) return success(resp);
             final Set<Long> publishedDocIds;
             if (published) {
                 publishedDocIds = aiDocVersionMapper.selectPublishedByDocIds(
@@ -446,7 +426,6 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         }
     }
 
-    /** 单对象指标值(白名单 metric; DOCUMENT_COUNT 恒为 1, CLAIM_COUNT 取 claimCount) */
     private Double metricValue(AiDocumentDO doc, String metricCode) {
         switch (metricCode.toUpperCase()) {
             case "DOCUMENT_COUNT":
@@ -468,7 +447,6 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         }
     }
 
-    /** 取文档 domainCode(显式传参优先, 否则读 metadata) */
     private String domainCodeOf(AiDocumentDO doc, String fallback) {
         String code = docDomainCode(doc);
         return StrUtil.isNotBlank(code) ? code : fallback;
