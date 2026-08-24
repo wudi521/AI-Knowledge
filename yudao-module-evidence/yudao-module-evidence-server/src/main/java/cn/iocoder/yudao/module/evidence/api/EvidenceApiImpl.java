@@ -1,15 +1,16 @@
 package cn.iocoder.yudao.module.evidence.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.evidence.api.dto.EvidenceAnalysisDTO;
+import cn.iocoder.yudao.module.evidence.api.dto.EvidenceChannelStatDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceClaimDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceConflictDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateReqDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceEvaluateRespDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceItemDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.EvidenceSlotValueDTO;
-import cn.iocoder.yudao.module.evidence.api.dto.EvidenceAnalysisDTO;
-import cn.iocoder.yudao.module.evidence.api.dto.EvidenceChannelStatDTO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
+import cn.iocoder.yudao.module.evidence.service.EvidenceQueryScopeResolver;
 import cn.iocoder.yudao.module.evidence.service.EvidenceService;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
 import jakarta.annotation.Resource;
@@ -22,23 +23,52 @@ import java.util.List;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
-/**
- * 证据平台 对外 RPC 实现(Feign 调用, 无登录态, 租户/用户显式传递)
- */
+/** 证据平台 对外 RPC 实现。Chat 与管理端 evaluate 共用同一查询范围解析和 EvidenceService 执行内核。 */
 @Slf4j
-@RestController // 提供 RESTful API 接口，给 Feign 调用
+@RestController
 @Validated
 public class EvidenceApiImpl implements EvidenceApi {
 
     @Resource
     private EvidenceService evidenceService;
+    @Resource
+    private EvidenceQueryScopeResolver queryScopeResolver;
 
     @Override
     public CommonResult<EvidenceEvaluateRespDTO> evaluate(EvidenceEvaluateReqDTO req) {
-        EvidenceEvaluateRespVO vo = evidenceService.evaluate(req.getQuery(), req.getKbIds(), req.getTopK(),
+        EvidenceQueryScopeResolver.Resolution scope = queryScopeResolver.resolve(
+                req.getKbIds(), req.getUserId(), req.getDomainCode());
+        if (!scope.allowed()) {
+            return success(denied(req, scope.reasonCode(), scope.message()));
+        }
+
+        EvidenceEvaluateRespVO vo = evidenceService.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
                 req.getTenantId(), req.getUserId(), req.getHistory(), req.getSkipSlotDetection(), req.getTraceId(),
-                req.getDomainCode(), req.getContextResolutionJson(), req.getPlanBudget());
-        // 映射 EvidenceEvaluateRespVO -> EvidenceEvaluateRespDTO
+                scope.domainCode(), req.getContextResolutionJson(), req.getPlanBudget());
+        return success(toDto(vo));
+    }
+
+    private EvidenceEvaluateRespDTO denied(EvidenceEvaluateReqDTO req, String reasonCode, String message) {
+        EvidenceEvaluateRespDTO dto = new EvidenceEvaluateRespDTO();
+        dto.setQuery(req != null ? req.getQuery() : null);
+        dto.setAnswerable(false);
+        dto.setConfidence(0D);
+        dto.setConsultable(false);
+        dto.setRefusalReason(message);
+        dto.setEvidence(List.of());
+        dto.setConflicts(List.of());
+        dto.setClaims(List.of());
+        dto.setClaimFail(false);
+        dto.setRoute("ABSTAIN");
+        dto.setIntent("SCOPE_REJECTED");
+        dto.setExecutionMode(null);
+        dto.setReasonCode(reasonCode);
+        dto.setHistory(req != null ? req.getHistory() : null);
+        dto.setElapsedMs(0);
+        return dto;
+    }
+
+    private EvidenceEvaluateRespDTO toDto(EvidenceEvaluateRespVO vo) {
         EvidenceEvaluateRespDTO dto = new EvidenceEvaluateRespDTO();
         dto.setTraceId(vo.getTraceId());
         dto.setQuery(vo.getQuery());
@@ -52,7 +82,7 @@ public class EvidenceApiImpl implements EvidenceApi {
         dto.setTimedOut(vo.getTimedOut());
         dto.setStages(vo.getStages());
         dto.setElapsedMs(vo.getElapsedMs());
-        // 证据列表映射
+
         List<EvidenceItemDTO> evidence = new ArrayList<>();
         if (vo.getEvidence() != null) {
             for (EvidenceEvaluateRespVO.EvidenceItemVO item : vo.getEvidence()) {
@@ -79,12 +109,12 @@ public class EvidenceApiImpl implements EvidenceApi {
                 d.setAggregateValue(item.getAggregateValue());
                 d.setFilters(item.getFilters());
                 d.setChannels(item.getChannels() != null ? new ArrayList<>(item.getChannels()) : null);
-                d.setChunkMetadata(item.getChunkMetadata()); // 内部字段, 不对外展示
+                d.setChunkMetadata(item.getChunkMetadata());
                 evidence.add(d);
             }
         }
         dto.setEvidence(evidence);
-        // 冲突列表映射
+
         List<EvidenceConflictDTO> conflicts = new ArrayList<>();
         if (vo.getConflicts() != null) {
             for (EvidenceEvaluateRespVO.ConflictVO c : vo.getConflicts()) {
@@ -96,7 +126,7 @@ public class EvidenceApiImpl implements EvidenceApi {
             }
         }
         dto.setConflicts(conflicts);
-        // 逐句断言验证结果映射
+
         List<EvidenceClaimDTO> claims = new ArrayList<>();
         if (vo.getClaims() != null) {
             for (EvidenceEvaluateRespVO.ClaimVO c : vo.getClaims()) {
@@ -108,27 +138,22 @@ public class EvidenceApiImpl implements EvidenceApi {
             }
         }
         dto.setClaims(claims);
-        // 槽位检测结果映射(缺槽位反问: 供对话层展示/后续合并)
+
         dto.setSlotKbId(vo.getSlotKbId());
         dto.setExtractedSlots(toSlotValueDTOList(vo.getExtractedSlots()));
         dto.setMissingSlots(toSlotValueDTOList(vo.getMissingSlots()));
         dto.setClarifyQuestion(vo.getClarifyQuestion());
-        // 检索诊断透传(意图/实体/改写/通道统计; 供前端检索测试页单接口展示)
         dto.setAnalysis(toAnalysisDTO(vo.getAnalysis()));
         dto.setChannels(toChannelStatDTO(vo.getChannels()));
-        // 检索路由透传(Query Planner 权威产出; 供对话层直接使用, 不自行推断)
         dto.setRoute(vo.getRoute());
-        // 意图透传(如 STRUCTURED_AGGREGATE; 聚合等确定性路径)
         dto.setIntent(vo.getIntent());
-        // 上下文回显(evidence-api ChatTurnDTO, 与 VO 同类型, 直接透传)
         dto.setHistory(vo.getHistory());
-        dto.setStructuredResult(vo.getStructuredResult()); // CQ-02/03 结构化结果回流
-        dto.setExecutionMode(vo.getExecutionMode());       // CQ-38 执行模式
-        dto.setReasonCode(vo.getReasonCode());             // CQ-38 失败/澄清原因码
-        return success(dto);
+        dto.setStructuredResult(vo.getStructuredResult());
+        dto.setExecutionMode(vo.getExecutionMode());
+        dto.setReasonCode(vo.getReasonCode());
+        return dto;
     }
 
-    /** 槽位值 VO → DTO 列表映射(null 安全) */
     private List<EvidenceSlotValueDTO> toSlotValueDTOList(List<EvidenceEvaluateRespVO.SlotValueVO> list) {
         List<EvidenceSlotValueDTO> result = new ArrayList<>();
         if (list != null) {
@@ -143,11 +168,8 @@ public class EvidenceApiImpl implements EvidenceApi {
         return result;
     }
 
-    /** 语义分析 VO → DTO 映射(null 安全; 跨模块 DTO 独立) */
     private EvidenceAnalysisDTO toAnalysisDTO(RetrievalSearchRespDTO.RetrievalAnalysisDTO vo) {
-        if (vo == null) {
-            return null;
-        }
+        if (vo == null) return null;
         EvidenceAnalysisDTO dto = new EvidenceAnalysisDTO();
         dto.setIntent(vo.getIntent());
         dto.setEntities(vo.getEntities());
@@ -158,11 +180,8 @@ public class EvidenceApiImpl implements EvidenceApi {
         return dto;
     }
 
-    /** 通道统计 VO → DTO 映射(null 安全) */
     private EvidenceChannelStatDTO toChannelStatDTO(RetrievalSearchRespDTO.RetrievalChannelStatDTO vo) {
-        if (vo == null) {
-            return null;
-        }
+        if (vo == null) return null;
         EvidenceChannelStatDTO dto = new EvidenceChannelStatDTO();
         dto.setBm25(vo.getBm25());
         dto.setVector(vo.getVector());
