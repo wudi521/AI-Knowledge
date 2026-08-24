@@ -8,8 +8,10 @@ import java.util.regex.Pattern;
 /**
  * Completeness / Planner Entry Guard。
  * <p>
- * 一方面识别必须完整数据集的统计语义；另一方面把“跨实体比较”送入 Query Planner V2。
- * 普通单文档语义问答暂时继续走稳定的旧 RAG 主链，逐类通过 Golden Test 后再迁移。
+ * 识别两类入口：
+ * 1. 必须完整数据集的 Structured 语义；
+ * 2. 必须先经过 Query Planner V2 的比较/主观评价/精确原文语义。
+ * 普通单文档语义问答暂时继续走稳定旧 RAG 主链。
  */
 @Component
 public class CompletenessGuard {
@@ -27,10 +29,15 @@ public class CompletenessGuard {
             "申请号", "公布号", "公开号", "申请人", "发明人", "申请日", "公开日",
     };
 
-    /** 需要专用 Compare Executor 的语义，不能落普通全局 TopK。 */
-    private static final String[] COMPARISON_PLANNER_WORDS = {
+    /** 必须先过 Planner 的特殊语义，不能直接落普通 Hybrid TopK。 */
+    private static final String[] PLANNER_ENTRY_WORDS = {
+            // 跨实体比较
             "相似", "类似", "最像", "最接近", "共同点", "共性", "相同点",
-            "区别", "差异", "不同点", "比较", "对比"
+            "区别", "差异", "不同点", "比较", "对比",
+            // 主观评价：Planner 需要要求用户给评价标准
+            "哪个好", "哪个更好", "更先进", "最先进", "更有价值", "最有价值", "最好", "最优", "更强", "最强",
+            // 精确原文搜索：不能用语义 TopK 冒充 exact/complete
+            "原文出现", "原文包含", "精确搜索", "精确匹配", "出现过"
     };
 
     private static final Pattern APPLICATION_NO = Pattern.compile("(?<!\\d)20\\d{10}\\.\\d(?!\\d)");
@@ -52,7 +59,7 @@ public class CompletenessGuard {
         if (StrUtil.isBlank(query)) return false;
         if (isExactLookup(query)) return false;
         if (BARE_SCOPE_FOLLOW_UP.matcher(query.trim()).matches()) return true;
-        return containsAny(query, STRUCTURED_CANDIDATE_WORDS) || containsAny(query, COMPARISON_PLANNER_WORDS);
+        return containsAny(query, STRUCTURED_CANDIDATE_WORDS) || containsAny(query, PLANNER_ENTRY_WORDS);
     }
 
     private boolean isExactLookup(String query) {
