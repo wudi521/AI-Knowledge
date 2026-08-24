@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.evidence.service.structured.core.ExecutionMode;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -16,6 +17,7 @@ public class QueryPlannerFacade {
     private static final Pattern QUOTED = Pattern.compile("[\"“‘']([^\"”’']{1,200})[\"”’']");
     private static final Pattern EXACT_SENTENCE = Pattern.compile(
             "(?:原文(?:中)?(?:是否)?(?:包含|出现|有)|精确搜索|精确匹配|查找原文)(?:短语|词语|文字)?[：:]?\\s*([^？?，,。；;]{1,120})");
+    private static final Set<String> GENERIC_EXACT_WORDS = Set.of("原文", "内容", "文本", "文字", "短语", "词语", "关键词", "关键字");
 
     private final QueryPlannerV2 delegate;
 
@@ -27,7 +29,6 @@ public class QueryPlannerFacade {
                           List<Long> explicitEntityIds, String contextResolutionJson) {
         List<Long> ids = explicitEntityIds == null ? List.of() : explicitEntityIds.stream().distinct().toList();
 
-        // Exact Text 必须先于“哪些/出现”等宽泛候选，且必须有明确 phrase；否则反问，不降级向量搜索。
         if (isExactTextIntent(query)) {
             String phrase = extractExactText(query);
             if (StrUtil.isBlank(phrase)) {
@@ -107,7 +108,8 @@ public class QueryPlannerFacade {
                 .replaceAll("^(是否|有没有|有无|过|了|这个|这个词|这个短语)\\s*", "")
                 .replaceAll("\\s*(吗|么|呢|？|\\?)$", "")
                 .trim();
-        return StrUtil.isBlank(phrase) ? null : StrUtil.maxLength(phrase, 200);
+        if (StrUtil.isBlank(phrase) || GENERIC_EXACT_WORDS.contains(phrase)) return null;
+        return StrUtil.maxLength(phrase, 200);
     }
 
     private ComparisonType comparison(String query) {
