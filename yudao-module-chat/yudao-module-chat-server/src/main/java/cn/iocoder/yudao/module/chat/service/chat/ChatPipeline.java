@@ -3,6 +3,9 @@ package cn.iocoder.yudao.module.chat.service.chat;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.module.chat.service.context.model.ContextFrame;
+import cn.iocoder.yudao.module.chat.service.context.model.QueryContextResolution;
+import cn.iocoder.yudao.module.chat.service.context.model.ResultSetSnapshot;
 import cn.iocoder.yudao.framework.common.exception.ServiceException;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.security.core.LoginUser;
@@ -38,6 +41,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_CONTEXT_STALE;
 import static cn.iocoder.yudao.module.chat.enums.ErrorCodeConstants.CONVERSATION_NOT_EXISTS;
@@ -73,6 +77,10 @@ public class ChatPipeline {
     private KnowledgeApi knowledgeApi;
     @Resource
     private QueryTraceService queryTraceService;
+    @Resource
+    private cn.iocoder.yudao.module.chat.service.context.ReferenceResolver referenceResolver;
+    @Resource
+    private cn.iocoder.yudao.module.chat.service.context.ResultSetService resultSetService;
 
     public ChatSendResult send(Long conversationId, String message, String channel, String customerId) {
         return send(conversationId, message, channel, customerId, (Long) null);
@@ -224,10 +232,22 @@ public class ChatPipeline {
             emitStage(sink, QueryStageEnum.EVIDENCE.getCode(), "RUNNING", "正在评估证据、检索知识", 0L, null, null, null, null);
         }
 
-        // 6. 证据判定(P0-09: 透传统一主 traceId; SQ-10: 会话绑定 KB 领域透传供 Structured Query 路由)。
+        // 6. 证据判定(P0-09: 透传统一主 traceId; CQ-04~10: chat 侧多轮上下文 resolution 透传)。
         tRpc0 = System.currentTimeMillis();
+        String contextResolutionJson = null;
+        QueryContextResolution qr = resolveContext(message, conversationId, knowledgeContext);
+        if (qr != null && qr.isClarifyRequired()) {
+            // CQ-05/08: 数量不一致/范围歧义 → 直接反问(不走证据链路)
+            AiMessageDO aiMsg = messageService.addMessage(conversationId, "AI", qr.getClarifyQuestion(),
+                    null, null, null, null, traceId, traceId, ChatRouteEnum.ABSTAIN);
+            return emitDoneAndReturn(buildClarifyResolutionResult(conversation, knowledgeContext, qr,
+                    aiMsg != null ? aiMsg.getId() : null), traceId, sink, traceStartMs);
+        }
+        if (qr != null && QueryContextResolution.SCOPE_PREVIOUS_RESULT_SET.equals(qr.getScopeType())) {
+            contextResolutionJson = JSONUtil.toJsonStr(qr);
+        }
         EvidenceEvaluateRespDTO resp = evidenceRpcAdapter.evaluate(message, tenantId, userId, null, history,
-                effectiveKbIds, traceId, knowledgeContext.domainCode());
+                effectiveKbIds, traceId, knowledgeContext.domainCode(), contextResolutionJson);
         tRpc1 = System.currentTimeMillis();
 
         // P0-08: RPC 返回后若客户端已断开, 不再生成/落库 AI 消息(USER 消息已保留)
@@ -267,6 +287,9 @@ public class ChatPipeline {
             result.setLatencyMs((int) (System.currentTimeMillis() - traceStartMs));
             emitDone(sink, result, traceId);
         }
+
+        // CQ-02/03: 结构化结果 → 保序 ResultSetSnapshot + 上下文帧(供后续"这些/它们"继承)
+        persistResultSet(traceId, conversationId, resp, knowledgeContext);
 
         // P0-09: 落库全链路阶段 + 完成 Query Trace
         // SQ-10: 汇聚管线级阶段(含 RPC/持久化归因) + 证据侧阶段, 定位"阶段总和 << total latency"缺口
@@ -716,6 +739,77 @@ public class ChatPipeline {
     // ==================== P0-08 流式事件输出 ====================
 
     /** 返回前输出 done 事件(仅流式路径; 同步路径直接返回) */
+    // ==================== CQ-04~10 多轮上下文 ====================
+
+    /** 解析当前问题对历史上下文的引用(指代/子集/数量; CQ-04~08) */
+    private QueryContextResolution resolveContext(String message, Long conversationId, KnowledgeContext kc) {
+        String entityTypeHint = "PATENT".equals(kc.domainCode()) ? "PATENT_DOCUMENT" : null;
+        List<ContextFrame> frames = resultSetService.getRecentFrames(conversationId);
+        return referenceResolver.resolve(message, frames, entityTypeHint);
+    }
+
+    /** 数量不一致/范围歧义的反问结果(CQ-05/08: 禁止猜) */
+    private ChatSendResult buildClarifyResolutionResult(AiConversationDO conversation, KnowledgeContext knowledgeContext,
+                                                        QueryContextResolution qr, Long aiMessageId) {
+        return ChatSendResult.builder()
+                .conversationId(conversation.getId())
+                .messageId(aiMessageId)
+                .kbId(knowledgeContext.kbId())
+                .domainCode(knowledgeContext.domainCode())
+                .route(ChatRouteEnum.ABSTAIN)
+                .answer(qr.getClarifyQuestion())
+                .answerable(false)
+                .degraded(false)
+                .citations(List.of())
+                .transferRequired(false)
+                .build();
+    }
+
+    /** 结构化结果 → 保序 ResultSetSnapshot + 上下文帧(供后续"这些/它们"继承; CQ-02/22/47 幂等) */
+    private void persistResultSet(String traceId, Long conversationId, EvidenceEvaluateRespDTO resp,
+                                  KnowledgeContext kc) {
+        if (resp == null || resp.getStructuredResult() == null
+                || resp.getStructuredResult().getEntityIds() == null
+                || resp.getStructuredResult().getEntityIds().isEmpty()) {
+            return;
+        }
+        try {
+            // CQ-47 幂等: 同 queryId 已存在帧则跳过(SSE 重试/重复)
+            boolean exists = resultSetService.getRecentFrames(conversationId).stream()
+                    .anyMatch(f -> traceId.equals(f.getQueryId()));
+            if (exists) {
+                return;
+            }
+            cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO sr = resp.getStructuredResult();
+            String resultSetId = "rs-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+            ResultSetSnapshot snapshot = ResultSetSnapshot.builder()
+                    .resultSetId(resultSetId)
+                    .queryId(traceId)
+                    .conversationId(conversationId)
+                    .entityType(sr.getEntityType() != null ? sr.getEntityType() : "PATENT_DOCUMENT")
+                    .entityCount(sr.getEntityCount())
+                    .orderedEntityIds(sr.getEntityIds())
+                    .truncated(sr.getTruncated())
+                    .build();
+            ResultSetSnapshot saved = resultSetService.createResultSet(snapshot);
+            resultSetService.pushFrame(ContextFrame.builder()
+                    .conversationId(conversationId)
+                    .queryId(traceId)
+                    .entityType(saved.getEntityType())
+                    .resultSetId(saved.getResultSetId())
+                    .metricCode(sr.getMetricCode())
+                    .fieldCode(sr.getFieldCode())
+                    .operation(sr.getOperation())
+                    .scopeType(sr.getScopeType())
+                    .queryType(sr.getQueryType())
+                    .executionMode("STRUCTURED")
+                    .queryText(StrUtil.maxLength(resp.getQuery(), 200))
+                    .build());
+        } catch (Exception e) {
+            log.warn("[persistResultSet][会话({}) 结果集落库失败: {}]", conversationId, e.getMessage());
+        }
+    }
+
     private ChatSendResult emitDoneAndReturn(ChatSendResult result, String traceId, ChatStreamSink sink, long traceStartMs) {
         if (sink != null && result != null) {
             result.setQueryTraceId(traceId);

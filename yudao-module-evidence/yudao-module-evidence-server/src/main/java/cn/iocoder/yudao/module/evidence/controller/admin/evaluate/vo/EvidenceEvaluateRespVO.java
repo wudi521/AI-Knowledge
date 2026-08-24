@@ -91,6 +91,9 @@ public class EvidenceEvaluateRespVO {
     /** 通道召回统计(BM25/向量/融合; 供前端检索诊断) */
     private RetrievalSearchRespDTO.RetrievalChannelStatDTO channels;
 
+    /** 结构化查询结果回流(CQ-02/03; 结构化路径携带保序实体 id, 供 chat 侧形成 ResultSetSnapshot) */
+    private cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO structuredResult;
+
     @Data
     public static class SlotValueVO {
 

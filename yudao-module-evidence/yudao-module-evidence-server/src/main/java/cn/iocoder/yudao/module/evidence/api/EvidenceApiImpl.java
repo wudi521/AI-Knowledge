@@ -37,7 +37,7 @@ public class EvidenceApiImpl implements EvidenceApi {
     public CommonResult<EvidenceEvaluateRespDTO> evaluate(EvidenceEvaluateReqDTO req) {
         EvidenceEvaluateRespVO vo = evidenceService.evaluate(req.getQuery(), req.getKbIds(), req.getTopK(),
                 req.getTenantId(), req.getUserId(), req.getHistory(), req.getSkipSlotDetection(), req.getTraceId(),
-                req.getDomainCode());
+                req.getDomainCode(), req.getContextResolutionJson());
         // 映射 EvidenceEvaluateRespVO -> EvidenceEvaluateRespDTO
         EvidenceEvaluateRespDTO dto = new EvidenceEvaluateRespDTO();
         dto.setTraceId(vo.getTraceId());
@@ -122,6 +122,7 @@ public class EvidenceApiImpl implements EvidenceApi {
         dto.setIntent(vo.getIntent());
         // 上下文回显(evidence-api ChatTurnDTO, 与 VO 同类型, 直接透传)
         dto.setHistory(vo.getHistory());
+        dto.setStructuredResult(vo.getStructuredResult()); // CQ-02/03 结构化结果回流
         return success(dto);
     }
 

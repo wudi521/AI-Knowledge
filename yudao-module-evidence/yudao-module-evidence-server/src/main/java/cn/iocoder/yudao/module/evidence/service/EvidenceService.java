@@ -22,6 +22,7 @@ import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
 import cn.iocoder.yudao.module.evidence.service.rule.RuleShortCircuit;
 import cn.iocoder.yudao.module.evidence.service.structured.core.CompletenessGuard;
 import cn.iocoder.yudao.module.evidence.service.structured.core.QueryType;
+import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredContextHint;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryService;
@@ -171,6 +172,15 @@ public class EvidenceService {
                                            Long tenantId, Long userId, List<ChatTurnDTO> history,
                                            Boolean skipSlotDetection, String incomingTraceId,
                                            String domainCode) {
+        return evaluate(query, kbIds, topK, tenantId, userId, history, skipSlotDetection, incomingTraceId,
+                domainCode, null);
+    }
+
+    /** 带多轮上下文解析结果(JSON: explicitEntityIds/fieldCode)的评估(CQ-04~10) */
+    public EvidenceEvaluateRespVO evaluate(String query, List<Long> kbIds, Integer topK,
+                                           Long tenantId, Long userId, List<ChatTurnDTO> history,
+                                           Boolean skipSlotDetection, String incomingTraceId,
+                                           String domainCode, String contextResolutionJson) {
         long start = System.currentTimeMillis();
         String traceId = StrUtil.isNotBlank(incomingTraceId) ? incomingTraceId : newTraceId();
 
@@ -204,7 +214,12 @@ public class EvidenceService {
             Long singleKbId = kbIds != null && kbIds.size() == 1 ? kbIds.get(0) : null;
             StructuredQueryService.HandleResult structured = null;
             if (structuredCandidate && domainCode != null) {
-                structured = structuredQueryService.handle(query, singleKbId, domainCode, history);
+                // CQ-04~10: chat 侧已消解多轮上下文时传入 explicitEntityIds/fieldCode
+                StructuredContextHint hint = parseContextHint(contextResolutionJson);
+                structured = hint != null
+                        ? structuredQueryService.handle(query, singleKbId, domainCode, history,
+                                hint.getExplicitEntityIds(), hint.getFieldCode())
+                        : structuredQueryService.handle(query, singleKbId, domainCode, history);
             }
             if (structured != null && structured.state() == StructuredQueryService.State.ANSWER) {
                 EvidenceEvaluateRespVO resp = buildStructuredResp(traceId, query, history, structured, start);
@@ -413,6 +428,56 @@ public class EvidenceService {
     }
 
     /** Structured Query 确定性回答 + STRUCTURED_RESULT 证据 */
+    /** CQ-04~10: 解析 chat 侧传入的多轮上下文(JSON → StructuredContextHint); 无/解析失败返回 null */
+    private StructuredContextHint parseContextHint(String contextResolutionJson) {
+        if (cn.hutool.core.util.StrUtil.isBlank(contextResolutionJson)) {
+            return null;
+        }
+        try {
+            StructuredContextHint hint = cn.hutool.json.JSONUtil.toBean(contextResolutionJson, StructuredContextHint.class);
+            if (hint == null || (cn.hutool.core.collection.CollUtil.isEmpty(hint.getExplicitEntityIds())
+                    && cn.hutool.core.util.StrUtil.isBlank(hint.getFieldCode())
+                    && cn.hutool.core.util.StrUtil.isBlank(hint.getMetricCode()))) {
+                return null;
+            }
+            return hint;
+        } catch (Exception e) {
+            log.warn("[parseContextHint][contextResolutionJson 解析失败: {}]", e.getMessage());
+            return null;
+        }
+    }
+
+    /** CQ-02/03: 结构化结果 → 保序实体回流(chat 侧据此形成 ResultSetSnapshot) */
+    private cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO buildStructuredResult(
+            StructuredQueryService.HandleResult structured) {
+        if (structured == null || structured.plan() == null || structured.result() == null) {
+            return null;
+        }
+        cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult result = structured.result();
+        cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO dto =
+                new cn.iocoder.yudao.module.evidence.api.dto.StructuredResultDTO();
+        if (result.getRows() != null && !result.getRows().isEmpty()) {
+            dto.setEntityIds(result.getRows().stream()
+                    .map(cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult.Row::getEntityId)
+                    .toList());
+            dto.setEntityKeys(result.getRows().stream()
+                    .map(r -> r.getEntityKey() != null ? r.getEntityKey() : String.valueOf(r.getEntityId()))
+                    .toList());
+        }
+        dto.setEntityType(structured.plan().getEntityType());
+        dto.setMetricCode(structured.plan().getMetricCode());
+        dto.setFieldCode(structured.plan().getFieldCode());
+        dto.setOperation(structured.plan().getOperation() != null
+                ? structured.plan().getOperation().name() : null);
+        dto.setQueryType(structured.plan().getQueryType() != null
+                ? structured.plan().getQueryType().name() : null);
+        dto.setScopeType(structured.plan().getScope() != null
+                ? structured.plan().getScope().getType().name() : null);
+        dto.setTruncated(result.isTruncated());
+        dto.setEntityCount(result.getRows() == null ? 0 : result.getRows().size());
+        return dto;
+    }
+
     private EvidenceEvaluateRespVO buildStructuredResp(String traceId, String query, List<ChatTurnDTO> history,
                                                        StructuredQueryService.HandleResult structured, long start) {
         Judgement j = buildJudgement(true, 1.0, null, 0, 0);
@@ -421,6 +486,7 @@ public class EvidenceService {
         resp.setRoute("STRUCTURED_QUERY");
         resp.setIntent(subTypeIntent(structured.plan()));
         resp.setElapsedMs((int) (System.currentTimeMillis() - start));
+        resp.setStructuredResult(buildStructuredResult(structured));
         EvidenceEvaluateRespVO.EvidenceItemVO ev = new EvidenceEvaluateRespVO.EvidenceItemVO();
         ev.setEvidenceType("STRUCTURED_RESULT");
         ev.setKbId(structured.plan().getScope() != null ? structured.plan().getScope().getCurrentKbId() : null);

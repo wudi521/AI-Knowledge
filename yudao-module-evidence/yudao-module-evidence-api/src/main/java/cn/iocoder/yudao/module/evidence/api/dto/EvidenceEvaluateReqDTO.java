@@ -37,4 +37,7 @@ public class EvidenceEvaluateReqDTO {
     /** P0-09: 统一主 traceId(q- 前缀, 对话层下发; 贯穿检索/证据全链路) */
     private String traceId;
 
+    /** CQ-04~10: chat 侧已消解的多轮上下文(JSON: QueryContextResolution 的 explicitEntityIds/fieldCodeHint 等) */
+    private String contextResolutionJson;
+
 }

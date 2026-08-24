@@ -71,6 +71,10 @@ class ChatPipelineTest {
     private KnowledgeApi knowledgeApi;
     @Mock
     private cn.iocoder.yudao.module.chat.service.trace.QueryTraceService queryTraceService;
+    @Mock
+    private cn.iocoder.yudao.module.chat.service.context.ReferenceResolver referenceResolver;
+    @Mock
+    private cn.iocoder.yudao.module.chat.service.context.ResultSetService resultSetService;
 
     private ChatPipeline pipeline;
     private MockedStatic<SecurityFrameworkUtils> securityFrameworkUtils;
@@ -86,7 +90,12 @@ class ChatPipelineTest {
         ReflectionTestUtils.setField(pipeline, "channelAdapters", List.<ChannelAdapter>of());
         ReflectionTestUtils.setField(pipeline, "knowledgeApi", knowledgeApi);
         ReflectionTestUtils.setField(pipeline, "queryTraceService", queryTraceService);
+        ReflectionTestUtils.setField(pipeline, "referenceResolver", referenceResolver);
+        ReflectionTestUtils.setField(pipeline, "resultSetService", resultSetService);
         when(queryTraceService.newTraceId()).thenReturn("q-test123456");
+        when(referenceResolver.resolve(any(), any(), any()))
+                .thenReturn(cn.iocoder.yudao.module.chat.service.context.model.QueryContextResolution.noReference());
+        when(resultSetService.getRecentFrames(any())).thenReturn(List.of());
 
         LoginUser loginUser = new LoginUser();
         loginUser.setId(42L);
@@ -110,13 +119,13 @@ class ChatPipelineTest {
         when(knowledgeApi.getVisibleKbIds(42L)).thenReturn(CommonResult.success(Set.of(6L)));
         when(knowledgeApi.getKbDomainCodes(List.of(6L))).thenReturn(CommonResult.success(Map.of(6L, "PATENT")));
         when(conversationService.createConversation("WEB", null, 6L, "PATENT", 42L)).thenReturn(conversation);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(null);
 
         pipeline.send(null, "专利权利要求1是什么？", "web", null, 6L);
 
         verify(conversationService).createConversation("WEB", null, 6L, "PATENT", 42L);
-        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any());
+        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any());
     }
 
     @Test
@@ -130,7 +139,7 @@ class ChatPipelineTest {
         EvidenceAnalysisDTO analysis = new EvidenceAnalysisDTO();
         analysis.setIntent("PATENT_QA");
         response.setAnalysis(analysis);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
@@ -160,7 +169,7 @@ class ChatPipelineTest {
         EvidenceAnalysisDTO analysis = new EvidenceAnalysisDTO();
         analysis.setIntent("PATENT_CLARIFY");
         response.setAnalysis(analysis);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
@@ -189,7 +198,7 @@ class ChatPipelineTest {
         EvidenceAnalysisDTO analysis = new EvidenceAnalysisDTO();
         analysis.setIntent("PATENT_OUT_OF_SCOPE");
         response.setAnalysis(analysis);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(response);
         ChatSendResult transferResult = ChatSendResult.builder()
                 .conversationId(100L)
@@ -244,7 +253,7 @@ class ChatPipelineTest {
                 .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
 
         verify(conversationService, never()).createConversation(anyString(), isNull(), any(), anyString(), any());
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
     }
 
     @Test
@@ -256,7 +265,7 @@ class ChatPipelineTest {
                 .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
 
         verify(conversationService, never()).createConversation(anyString(), isNull(), any(), anyString(), any());
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
     }
 
     @Test
@@ -268,7 +277,7 @@ class ChatPipelineTest {
                 .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
 
         verify(conversationService, never()).createConversation(anyString(), isNull(), any(), anyString(), any());
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
     }
 
     @Test
@@ -280,20 +289,20 @@ class ChatPipelineTest {
                 .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
 
         verify(conversationService, never()).createConversation(anyString(), isNull(), any(), anyString(), any());
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
     }
 
     @Test
     void existingConversationRevalidatesKbVisibilityEachRound() {
         AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
         when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(null);
 
         pipeline.send(100L, "问题", "web", null, 7L);
 
         verify(knowledgeApi).getVisibleKbIds(42L);
-        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any());
+        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any());
     }
 
     @Test
@@ -306,7 +315,7 @@ class ChatPipelineTest {
                 .isInstanceOf(ServiceException.class)
                 .extracting("code").isEqualTo(KNOWLEDGE_BASE_NOT_EXISTS.getCode());
 
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
     }
 
     @Test
@@ -317,7 +326,7 @@ class ChatPipelineTest {
                 .isInstanceOf(ServiceException.class)
                 .extracting("code").isEqualTo(CONVERSATION_NOT_EXISTS.getCode());
 
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
     }
 
     @Test
@@ -330,7 +339,7 @@ class ChatPipelineTest {
 
         assertThat(result.getConversationId()).isEqualTo(100L);
         assertThat(result.getAnswerable()).isFalse();
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
         verify(knowledgeApi, never()).getVisibleKbIds(any());
     }
 
@@ -338,7 +347,7 @@ class ChatPipelineTest {
     void unavailableEvaluationTransferIsMarkedDegraded() {
         AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
         when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(null);
         ChatSendResult transferResult = ChatSendResult.builder()
                 .conversationId(100L).transferRequired(true).build();
@@ -384,7 +393,7 @@ class ChatPipelineTest {
         verify(knowledgeApi, never()).getKbDomainCodes(anyList());
         verify(messageService, never()).getRecentMessages(any(), anyInt());
         verify(messageService, never()).addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
     }
 
     @Test
@@ -396,7 +405,7 @@ class ChatPipelineTest {
         response.setAnswerable(true);
         response.setAnswer("答案");
         response.setRoute(ChatRouteEnum.EXACT_METADATA);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
@@ -420,7 +429,7 @@ class ChatPipelineTest {
         response.setAnswerable(true);
         response.setAnswer("答案");
         response.setRoute(ChatRouteEnum.EXACT_CLAIM);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
@@ -444,7 +453,7 @@ class ChatPipelineTest {
         response.setAnswer("答案");
         // GENERAL 证据无 sectionType, 不应被丢弃
         response.setEvidence(List.of(evidenceItem(2091L, null)));
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
@@ -478,7 +487,7 @@ class ChatPipelineTest {
         EvidenceEvaluateRespDTO response = new EvidenceEvaluateRespDTO();
         response.setAnswerable(false);
         response.setRefusalReason("证据不足");
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(response);
         ChatSendResult transferResult = ChatSendResult.builder()
                 .conversationId(100L)
@@ -500,13 +509,13 @@ class ChatPipelineTest {
         AiConversationDO conversation = conversation(100L, 6L, 42L, "ACTIVE");
         conversation.setDomainCode("PATENT");
         when(conversationService.getConversationForUser(100L, 42L)).thenReturn(conversation);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(null);
 
         pipeline.send(100L, "问题", "web", null, 7L);
 
         verify(knowledgeApi).getKbDomainCodes(List.of(6L));
-        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any());
+        verify(evidenceRpcAdapter).evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any());
     }
 
     @Test
@@ -521,7 +530,7 @@ class ChatPipelineTest {
                 .isInstanceOf(ServiceException.class)
                 .extracting("code").isEqualTo(CONVERSATION_CONTEXT_STALE.getCode());
 
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
     }
 
     @Test
@@ -535,7 +544,7 @@ class ChatPipelineTest {
                 .isInstanceOf(ServiceException.class)
                 .extracting("code").isEqualTo(KNOWLEDGE_DOMAIN_UNAVAILABLE.getCode());
 
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
     }
 
     @Test
@@ -547,7 +556,7 @@ class ChatPipelineTest {
         response.setAnswerable(true);
         response.setAnswer("跨省寄送预计 3 天送达。");
         response.setRoute(ChatRouteEnum.RULE);
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
@@ -571,7 +580,7 @@ class ChatPipelineTest {
         response.setAnswerable(true);
         response.setAnswer("答案");
         response.setRoute(null); // 异常缺失时 Chat 兜底 ABSTAIN, 不允许 null(RF2-06)
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
@@ -599,7 +608,7 @@ class ChatPipelineTest {
         response.setRoute(ChatRouteEnum.SCOPED_RAG);
         response.setEvidence(List.of(evidenceItem(2091L, null)));
         response.setStages(List.of(stage("BM25", "SUCCEEDED", 12L), stage("EVIDENCE", "SUCCEEDED", 5L)));
-        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any()))
+        when(evidenceRpcAdapter.evaluate(any(), eq(7L), eq(42L), isNull(), anyList(), eq(List.of(6L)), any(), any(), any()))
                 .thenReturn(response);
         AiMessageDO userMessage = new AiMessageDO();
         userMessage.setId(3020L);
@@ -654,7 +663,7 @@ class ChatPipelineTest {
         // 取消后不再输出 conversation/delta/done, 不落 USER/AI 消息, 不发起 RPC
         assertThat(sink.events().stream().noneMatch(e -> ChatStreamEvent.TYPE_CONVERSATION.equals(e.getType()))).isTrue();
         assertThat(sink.events().stream().noneMatch(e -> ChatStreamEvent.TYPE_DONE.equals(e.getType()))).isTrue();
-        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any());
+        verify(evidenceRpcAdapter, never()).evaluate(any(), any(), any(), any(), anyList(), anyList(), any(), any(), any());
         verify(messageService, never()).addMessage(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
