@@ -60,6 +60,9 @@ public class AiConversationDO extends TenantBaseDO {
     /** 会话上下文摘要(近轮对话要点, 转人工时由 TransferHandler 写入) */
     private String contextSummary;
 
+    /** 多轮查询状态快照(JSON: ConversationQueryState; 只存引用/计数, 不存大 ID 集) */
+    private String queryState;
+
     /** 接单客服编号(人工接单后记录) */
     private Long operatorId;
 

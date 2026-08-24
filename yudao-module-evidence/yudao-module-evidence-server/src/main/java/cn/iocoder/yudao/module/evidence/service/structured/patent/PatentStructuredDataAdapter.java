@@ -40,6 +40,11 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             PatentStructuredPack.METRIC_DOCUMENT_COUNT,
             PatentStructuredPack.METRIC_CLAIM_COUNT);
 
+    /** 字段查询当前可执行集(数据源 domainMetadata 已含的字段; 申请人/发明人/日期暂缺数据) */
+    private static final Set<String> EXECUTABLE_FIELDS = Set.of(
+            PatentStructuredPack.FIELD_PUBLICATION_NO,
+            PatentStructuredPack.FIELD_APPLICATION_NO);
+
     private final KnowledgeApi knowledgeApi;
 
     public PatentStructuredDataAdapter(KnowledgeApi knowledgeApi) {
@@ -53,7 +58,12 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
 
     @Override
     public boolean supports(String metricCode) {
-        return metricCode != null && EXECUTABLE_METRICS.contains(metricCode.toUpperCase());
+        if (metricCode == null) {
+            return false;
+        }
+        // 字段查询时 fieldToMetric 会把 fieldCode 作为 metricCode 传入, 故字段集也需支持
+        return EXECUTABLE_METRICS.contains(metricCode.toUpperCase())
+                || EXECUTABLE_FIELDS.contains(metricCode.toUpperCase());
     }
 
     @Override
@@ -66,12 +76,18 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         if (plan == null || plan.getScope() == null || plan.getScope().getCurrentKbId() == null) {
             return StructuredQueryResult.unsupported("scope 未确定");
         }
-        if (!supports(plan.getMetricCode())) {
+        String fieldCode = plan.getFieldCode();
+        if (fieldCode != null) {
+            if (!EXECUTABLE_FIELDS.contains(fieldCode)) {
+                return StructuredQueryResult.unsupported("Patent 字段暂无可结构化数据: " + fieldCode);
+            }
+        } else if (!supports(plan.getMetricCode())) {
             return StructuredQueryResult.unsupported("Patent 指标暂不支持执行: " + plan.getMetricCode());
         }
         StructuredQueryReqDTO req = new StructuredQueryReqDTO();
         req.setKbId(plan.getScope().getCurrentKbId());
         req.setMetricCode(plan.getMetricCode());
+        req.setFieldCode(fieldCode);
         req.setPublishedOnly(!"false".equalsIgnoreCase(
                 plan.getFilters().getOrDefault("publishedOnly", "true")));
         req.setResolvedEntityIds(plan.getScope().getResolvedEntityIds());
@@ -84,12 +100,13 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             List<StructuredQueryResult.Row> rows = new ArrayList<>();
             if (data.getRows() != null) {
                 for (StructuredQueryRowDTO r : data.getRows()) {
+                    String fieldValue = fieldValueOf(r, fieldCode);
                     rows.add(StructuredQueryResult.Row.builder()
                             .entityId(r.getDocumentId())
-                            .entityKey(StrUtil.isNotBlank(r.getApplicationNo()) ? r.getApplicationNo() : r.getPublicationNo())
-                            .entityName(StrUtil.isNotBlank(r.getDocumentName()) ? r.getDocumentName()
-                                    : (StrUtil.isNotBlank(r.getPublicationNo()) ? r.getPublicationNo() : "文档" + r.getDocumentId()))
-                            .value(r.getValue())
+                            .entityKey(StrUtil.isNotBlank(fieldValue) ? fieldValue
+                                    : (StrUtil.isNotBlank(r.getApplicationNo()) ? r.getApplicationNo() : r.getPublicationNo()))
+                            .entityName(buildEntityName(r, fieldCode))
+                            .value(fieldCode != null ? null : r.getValue())
                             .build());
                 }
             }
@@ -104,6 +121,26 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             log.warn("[execute][metric({}) 数据访问失败: {}]", plan.getMetricCode(), e.getMessage());
             return StructuredQueryResult.unsupported("知识库结构化数据访问异常");
         }
+    }
+
+    /** 字段取值(PUBLICATION_NO/APPLICATION_NO; 其余字段返回 null) */
+    private String fieldValueOf(StructuredQueryRowDTO r, String fieldCode) {
+        if (fieldCode == null || r == null) {
+            return null;
+        }
+        return switch (fieldCode) {
+            case PatentStructuredPack.FIELD_PUBLICATION_NO -> r.getPublicationNo();
+            case PatentStructuredPack.FIELD_APPLICATION_NO -> r.getApplicationNo();
+            default -> null;
+        };
+    }
+
+    /** 实体展示名: 字段查询时并入字段值(如 "专利名 · CN122604134A"), 便于 LIST 输出每实体一值 */
+    private String buildEntityName(StructuredQueryRowDTO r, String fieldCode) {
+        String name = StrUtil.isNotBlank(r.getDocumentName()) ? r.getDocumentName()
+                : (StrUtil.isNotBlank(r.getPublicationNo()) ? r.getPublicationNo() : "文档" + r.getDocumentId());
+        String fieldValue = fieldValueOf(r, fieldCode);
+        return StrUtil.isBlank(fieldValue) ? name : name + " · " + fieldValue;
     }
 
     // ========== DomainEntityResolver: 从历史/文本中抽取并定位专利对象 ==========

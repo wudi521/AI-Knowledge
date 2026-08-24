@@ -30,6 +30,8 @@ public class CompletenessGuard {
             "多少", "几个", "总共", "共有", "一共", "合计", "数量", "总数",
             "平均", "最多", "最少", "最大", "最小", "最高", "最低", "占比", "排名",
             "分别", "有哪些", "分别是哪些", "列举", "列出",
+            // 字段词(CQ-12): "它们申请号呢/公布号分别是什么" → 结构化字段查询; 明确编号由 isExactLookup 挡
+            "申请号", "公布号", "公开号", "申请人", "发明人", "申请日", "公开日",
     };
 
     /** 显式对象标识(申请号/公布号式编号) → 精确对象定位, 不属聚合候选 */
@@ -63,9 +65,19 @@ public class CompletenessGuard {
     }
 
     /** 精确对象定位(申请号/公布号文本或编号), 由既有 EXACT_METADATA/EXACT_CLAIM 处理 */
+    /** 列举/指代语境(命中 → 非精确单对象, 可走结构化 LIST 字段查询) */
+    private static final String[] LIST_CONTEXT_WORDS = {
+            "分别", "哪些", "有几个", "几个", "它们", "这些", "那些", "分别是什么", "列举", "列出", "前面", "上述"
+    };
+
     private boolean isExactLookup(String query) {
-        if (query.contains("申请号") || query.contains("公布号") || query.contains("公开号")) return true;
-        return APPLICATION_NO.matcher(query).find() || PUBLICATION_NO.matcher(query).find();
+        // 明确编号(申请号/公布号具体值) → 精确对象定位
+        if (APPLICATION_NO.matcher(query).find() || PUBLICATION_NO.matcher(query).find()) return true;
+        // 字段词("公布号/申请号")单数精确查询 → EXACT; 但"分别/哪些/这几个"列举语境 → 结构化 LIST(CQ-12)
+        if (query.contains("申请号") || query.contains("公布号") || query.contains("公开号")) {
+            return !containsAny(query, LIST_CONTEXT_WORDS);
+        }
+        return false;
     }
 
     private boolean containsAny(String text, String[] keywords) {

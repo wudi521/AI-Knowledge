@@ -30,6 +30,21 @@ public class StructuredQueryResult {
     /** rows 行数 */
     private Integer rowCount;
 
+    /** 逻辑集合实体总数(可能 > rows; 截断/分页时 rows 为子集) */
+    private Integer totalEntities;
+
+    /** 存在有效字段值的实体数(PARTIAL 统计, CQ-31) */
+    private Integer validValueCount;
+
+    /** 缺少字段值的实体数(PARTIAL 统计, CQ-31) */
+    private Integer missingValueCount;
+
+    /** 是否存在同一字段多个当前值冲突(CQ-32) */
+    private Boolean conflict;
+
+    /** 是否还有更多(分页; rows 为当前页子集时 true) */
+    private Boolean hasMore;
+
     /** 数据是否被截断(数据源超过上限); true 时禁止全集聚合结论 */
     private boolean truncated;
 

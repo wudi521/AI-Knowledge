@@ -28,7 +28,18 @@ public enum QueryStageEnum {
     GENERATE("GENERATE", "生成回答"),
     VERIFY("VERIFY", "证据校验"),
     REPAIR("REPAIR", "回答修复"),
-    ANSWER("ANSWER", "完成回答");
+    ANSWER("ANSWER", "完成回答"),
+    // CQ-40/41: 多轮上下文与结构化执行阶段(安全摘要, 不暴露内部 prompt/CoT)
+    CONTEXT_RESOLVE("CONTEXT_RESOLVE", "上下文识别"),
+    SCOPE_RESOLVE("SCOPE_RESOLVE", "范围解析"),
+    FIELD_RESOLVE("FIELD_RESOLVE", "字段解析"),
+    METRIC_RESOLVE("METRIC_RESOLVE", "指标解析"),
+    PLAN("PLAN", "执行计划"),
+    STRUCTURED_EXECUTE("STRUCTURED_EXECUTE", "结构化查询"),
+    PER_ENTITY_RETRIEVE("PER_ENTITY_RETRIEVE", "逐对象检索"),
+    CROSS_ENTITY_RETRIEVE("CROSS_ENTITY_RETRIEVE", "跨对象检索"),
+    REVALIDATE("REVALIDATE", "结果校验"),
+    RESULT_SET_PERSIST("RESULT_SET_PERSIST", "结果落库");
 
     private final String code;
     private final String label;

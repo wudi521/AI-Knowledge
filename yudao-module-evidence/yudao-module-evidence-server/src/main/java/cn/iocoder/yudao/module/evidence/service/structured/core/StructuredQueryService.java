@@ -33,6 +33,7 @@ public class StructuredQueryService {
     private final StructuredQueryPreParser preParser;
     private final DomainMetricRegistry metricRegistry;
     private final DomainEntityRegistry entityRegistry;
+    private final DomainFieldRegistry fieldRegistry;
     private final StructuredQueryContextResolver contextResolver;
     private final StructuredQueryExecutor executor;
     private final StructuredAnswerRenderer renderer;
@@ -41,6 +42,7 @@ public class StructuredQueryService {
     public StructuredQueryService(StructuredQueryPreParser preParser,
                                   DomainMetricRegistry metricRegistry,
                                   DomainEntityRegistry entityRegistry,
+                                  DomainFieldRegistry fieldRegistry,
                                   StructuredQueryContextResolver contextResolver,
                                   StructuredQueryExecutor executor,
                                   StructuredAnswerRenderer renderer,
@@ -48,6 +50,7 @@ public class StructuredQueryService {
         this.preParser = preParser;
         this.metricRegistry = metricRegistry;
         this.entityRegistry = entityRegistry;
+        this.fieldRegistry = fieldRegistry;
         this.contextResolver = contextResolver;
         this.executor = executor;
         this.renderer = renderer;
@@ -81,6 +84,15 @@ public class StructuredQueryService {
      * @param history   会话历史(范围指代消解用)
      */
     public HandleResult handle(String query, Long kbId, String domainCode, List<ChatTurnDTO> history) {
+        return handle(query, kbId, domainCode, history, null, null);
+    }
+
+    /**
+     * 多轮增强(CQ-04~10): chat 侧已消解历史结果集时, 传入 explicitEntityIds(scope=DOCUMENT_SET)
+     * 与 fieldCodeHint(已继承/解析的字段), 避免无历史时"这些/它们"无法消解范围。
+     */
+    public HandleResult handle(String query, Long kbId, String domainCode, List<ChatTurnDTO> history,
+                               List<Long> explicitEntityIds, String fieldCodeHint) {
         if (StrUtil.isBlank(query) || kbId == null) {
             return new HandleResult(State.UNANSWERABLE, null, null, null, null, null);
         }
@@ -96,13 +108,27 @@ public class StructuredQueryService {
 
         // Level-2: metric 解析(Registry 同义词, 禁止硬编码业务词)
         MetricDefinition metric = resolveMetric(query, domainCode);
+        // CQ-12/15: metric 未命中但命中 Field(公布号/申请号等维度字段) → 字段 LIST(每实体一值), 非聚合
+        FieldDefinition field = null;
         if (metric == null) {
-            return clarifyResult(domainCode, buildMetricClarify(domainCode));
+            field = fieldCodeHint != null
+                    ? fieldRegistry.byCode(domainCode, fieldCodeHint).orElse(null)
+                    : fieldRegistry.findByAlias(query, domainCode).orElse(null);
+            if (field != null) {
+                metric = fieldToMetric(field, domainCode);
+                metricRegistry.register(metric); // 供 Executor 按 metricCode 查找字段适配器
+            } else {
+                return clarifyResult(domainCode, buildMetricClarify(domainCode));
+            }
         }
 
         // 运算/查询类型解析
         Operation op = resolveOperation(query, metric);
         QueryType queryType = resolveQueryType(query, pre, op);
+        // CQ-12: 字段(维度)查询不可聚合, 一律 LIST(每实体一值)
+        if (field != null) {
+            queryType = QueryType.LIST;
+        }
         if (op != Operation.NONE && !metric.getSupportedOperations().contains(op)) {
             return clarifyResult(domainCode, "该指标不支持“" + op + "”运算，请换一种问法。");
         }
@@ -111,6 +137,9 @@ public class StructuredQueryService {
         QueryScope scope;
         if (queryType == QueryType.TOP_N) {
             scope = QueryScope.currentKb(kbId);
+        } else if (explicitEntityIds != null && !explicitEntityIds.isEmpty()) {
+            // CQ-04~10: chat 侧已消解历史结果集 → 直接作为 DOCUMENT_SET 范围
+            scope = QueryScope.documentSet(kbId, explicitEntityIds);
         } else {
             StructuredQueryContextResolver.ScopeResolution sr =
                     contextResolver.resolve(pre, domainCode, kbId, history);
@@ -127,6 +156,7 @@ public class StructuredQueryService {
                 .entityType(metric.getEntityType())
                 .scope(scope)
                 .metricCode(metric.getMetricCode())
+                .fieldCode(field != null ? field.getFieldCode() : null)
                 .operation(op)
                 .groupBy(queryType == QueryType.GROUP ? metric.getEntityType() : null)
                 .filters(java.util.Map.of("publishedOnly", "true"))
@@ -149,6 +179,19 @@ public class StructuredQueryService {
             return new HandleResult(State.UNANSWERABLE, plan, metric, result, null, null);
         }
         return new HandleResult(State.ANSWER, plan, metric, result, answer, null);
+    }
+
+    /** 字段解析回退: Field → 合成 MetricDefinition(承载 fieldCode, 无聚合运算), CQ-11/12 */
+    private MetricDefinition fieldToMetric(FieldDefinition field, String domainCode) {
+        return MetricDefinition.builder()
+                .metricCode(field.getFieldCode())
+                .domainCode(domainCode)
+                .entityType(field.getEntityType())
+                .valueType(field.getValueType())
+                .supportedOperations(java.util.Set.of())
+                .adapterKey(domainCode)
+                .aliases(field.getAliases())
+                .build();
     }
 
     /** 指标解析: ①显式别名最长匹配 → ②displayName 匹配 → ③实体计数回退(如 "几个专利" → DOCUMENT_COUNT) */

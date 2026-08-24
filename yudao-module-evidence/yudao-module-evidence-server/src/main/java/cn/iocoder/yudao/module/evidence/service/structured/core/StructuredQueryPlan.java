@@ -34,6 +34,9 @@ public class StructuredQueryPlan {
     /** 指标编码(如 CLAIM_COUNT / DOCUMENT_COUNT; 由 Domain Metric Registry 解析) */
     private String metricCode;
 
+    /** 字段编码(维度字段查询, 如 PUBLICATION_NO; 由 Domain Field Registry 解析; 与 metricCode 二选一) */
+    private String fieldCode;
+
     /** 聚合运算(COUNT / COUNT_DISTINCT / SUM / AVG / MIN / MAX / NONE) */
     private Operation operation;
 

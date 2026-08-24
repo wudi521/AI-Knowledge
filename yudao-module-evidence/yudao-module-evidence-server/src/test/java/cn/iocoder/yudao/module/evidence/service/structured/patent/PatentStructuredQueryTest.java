@@ -4,6 +4,7 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.service.structured.core.CompletenessGuard;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DefaultDomainEntityRegistry;
+import cn.iocoder.yudao.module.evidence.service.structured.core.DefaultDomainFieldRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DefaultDomainMetricRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainMetricRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.MetricDefinition;
@@ -64,7 +65,8 @@ class PatentStructuredQueryTest {
 
         DefaultDomainMetricRegistry metricRegistry = new DefaultDomainMetricRegistry();
         DefaultDomainEntityRegistry entityRegistry = new DefaultDomainEntityRegistry();
-        new PatentStructuredPack(metricRegistry, entityRegistry); // 注册 Patent Domain Pack
+        DefaultDomainFieldRegistry fieldRegistry = new DefaultDomainFieldRegistry();
+        new PatentStructuredPack(metricRegistry, entityRegistry, fieldRegistry); // 注册 Patent Domain Pack
         PatentStructuredDataAdapter adapter = new PatentStructuredDataAdapter(knowledgeApi);
 
         StructuredQueryPreParser preParser = new StructuredQueryPreParser();
@@ -72,7 +74,7 @@ class PatentStructuredQueryTest {
         StructuredQueryExecutor executor = new StructuredQueryExecutor(metricRegistry, List.of(adapter));
         StructuredAnswerRenderer renderer = new StructuredAnswerRenderer();
         CompletenessGuard guard = new CompletenessGuard();
-        service = new StructuredQueryService(preParser, metricRegistry, entityRegistry, contextResolver,
+        service = new StructuredQueryService(preParser, metricRegistry, entityRegistry, fieldRegistry, contextResolver,
                 executor, renderer, guard);
     }
 
@@ -181,7 +183,8 @@ class PatentStructuredQueryTest {
     void metricRegistry_claimCountAliases() {
         DomainMetricRegistry registry = new DefaultDomainMetricRegistry();
         DefaultDomainEntityRegistry entities = new DefaultDomainEntityRegistry();
-        new PatentStructuredPack(registry, entities);
+        DefaultDomainFieldRegistry fieldRegistry = new DefaultDomainFieldRegistry();
+        new PatentStructuredPack(registry, entities, fieldRegistry);
         MetricDefinition m = registry.findByAlias(DOMAIN, "专利要求数量").orElse(null);
         assertNotNull(m);
         assertEquals("CLAIM_COUNT", m.getMetricCode());
@@ -193,7 +196,8 @@ class PatentStructuredQueryTest {
     @Test
     void metricRegistry_independentAndDependentDefined() {
         DomainMetricRegistry registry = new DefaultDomainMetricRegistry();
-        new PatentStructuredPack(registry, new DefaultDomainEntityRegistry());
+        DefaultDomainFieldRegistry fieldRegistry = new DefaultDomainFieldRegistry();
+        new PatentStructuredPack(registry, new DefaultDomainEntityRegistry(), fieldRegistry);
         assertTrue(registry.lookup(DOMAIN, "INDEPENDENT_CLAIM_COUNT").isPresent());
         assertTrue(registry.lookup(DOMAIN, "DEPENDENT_CLAIM_COUNT").isPresent());
     }
@@ -203,6 +207,7 @@ class PatentStructuredQueryTest {
         // 未注册 Patent Pack 的纯 Core: 结构化候选 → 领域无注册指标 → NOT_STRUCTURED(交还 RAG)
         DefaultDomainMetricRegistry metricRegistry = new DefaultDomainMetricRegistry();
         DefaultDomainEntityRegistry entityRegistry = new DefaultDomainEntityRegistry();
+        DefaultDomainFieldRegistry fieldRegistry = new DefaultDomainFieldRegistry();
         PatentStructuredDataAdapter adapter = new PatentStructuredDataAdapter(knowledgeApi);
         StructuredQueryPreParser preParser = new StructuredQueryPreParser();
         StructuredQueryContextResolver contextResolver = new StructuredQueryContextResolver(List.of(adapter));
@@ -210,7 +215,7 @@ class PatentStructuredQueryTest {
         StructuredAnswerRenderer renderer = new StructuredAnswerRenderer();
         CompletenessGuard guard = new CompletenessGuard();
         StructuredQueryService bare = new StructuredQueryService(preParser, metricRegistry, entityRegistry,
-                contextResolver, executor, renderer, guard);
+                fieldRegistry, contextResolver, executor, renderer, guard);
         StructuredQueryService.HandleResult r = bare.handle("当前知识库有几个专利？", 1L, DOMAIN, List.of());
         assertEquals(StructuredQueryService.State.NOT_STRUCTURED, r.state());
     }

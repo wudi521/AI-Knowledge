@@ -1,8 +1,10 @@
 package cn.iocoder.yudao.module.evidence.service.structured.patent;
 
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainEntityRegistry;
+import cn.iocoder.yudao.module.evidence.service.structured.core.DomainFieldRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainMetricRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.EntityDefinition;
+import cn.iocoder.yudao.module.evidence.service.structured.core.FieldDefinition;
 import cn.iocoder.yudao.module.evidence.service.structured.core.MetricDefinition;
 import cn.iocoder.yudao.module.evidence.service.structured.core.Operation;
 import cn.iocoder.yudao.module.evidence.service.structured.core.QueryScopeType;
@@ -28,8 +30,16 @@ public class PatentStructuredPack {
     public static final String METRIC_INDEPENDENT_CLAIM_COUNT = "INDEPENDENT_CLAIM_COUNT";
     public static final String METRIC_DEPENDENT_CLAIM_COUNT = "DEPENDENT_CLAIM_COUNT";
     public static final String ADAPTER_KEY = "PATENT";
+    public static final String FIELD_PUBLICATION_NO = "PUBLICATION_NO";
+    public static final String FIELD_APPLICATION_NO = "APPLICATION_NO";
+    public static final String FIELD_APPLICANT = "APPLICANT";
+    public static final String FIELD_INVENTOR = "INVENTOR";
+    public static final String FIELD_TITLE = "TITLE";
+    public static final String FIELD_FILING_DATE = "FILING_DATE";
+    public static final String FIELD_PUBLICATION_DATE = "PUBLICATION_DATE";
 
-    public PatentStructuredPack(DomainMetricRegistry metricRegistry, DomainEntityRegistry entityRegistry) {
+    public PatentStructuredPack(DomainMetricRegistry metricRegistry, DomainEntityRegistry entityRegistry,
+                                DomainFieldRegistry fieldRegistry) {
         // 实体
         entityRegistry.register(EntityDefinition.builder()
                 .domainCode(DOMAIN_CODE).entityCode(ENTITY_PATENT_DOCUMENT)
@@ -85,6 +95,36 @@ public class PatentStructuredPack {
                 .description("从属权利要求数(待独立/从属关系数据提取)")
                 .adapterKey(ADAPTER_KEY)
                 .build());
+
+        // 字段(CQ-11): 维度/字段与 Metric 区分; "公布号分别是什么" → 结构化 LIST
+        fieldRegistry.register(FieldDefinition.builder()
+                .fieldCode(FIELD_PUBLICATION_NO).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
+                .valueType("STRING").aliases(List.of("公布号", "公开编号", "公开号"))
+                .sortable(true).filterable(true).groupable(true).build());
+        fieldRegistry.register(FieldDefinition.builder()
+                .fieldCode(FIELD_APPLICATION_NO).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
+                .valueType("STRING").aliases(List.of("申请号"))
+                .sortable(true).filterable(true).groupable(true).build());
+        fieldRegistry.register(FieldDefinition.builder()
+                .fieldCode(FIELD_APPLICANT).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
+                .valueType("STRING").multiValue(true).aliases(List.of("申请人", "申请单位"))
+                .filterable(true).groupable(true).build());
+        fieldRegistry.register(FieldDefinition.builder()
+                .fieldCode(FIELD_INVENTOR).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
+                .valueType("STRING").multiValue(true).aliases(List.of("发明人", "发明者"))
+                .filterable(true).groupable(true).build());
+        fieldRegistry.register(FieldDefinition.builder()
+                .fieldCode(FIELD_TITLE).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
+                .valueType("STRING").aliases(List.of("标题", "专利名称", "发明名称"))
+                .groupable(true).build());
+        fieldRegistry.register(FieldDefinition.builder()
+                .fieldCode(FIELD_FILING_DATE).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
+                .valueType("DATE").aliases(List.of("申请日", "申请日期"))
+                .sortable(true).filterable(true).build());
+        fieldRegistry.register(FieldDefinition.builder()
+                .fieldCode(FIELD_PUBLICATION_DATE).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
+                .valueType("DATE").aliases(List.of("公开日", "公告日", "公开日期"))
+                .sortable(true).filterable(true).build());
     }
 
     /** Patent Domain Pack 支持的范围类型(Core 判断用; 不强制使用) */

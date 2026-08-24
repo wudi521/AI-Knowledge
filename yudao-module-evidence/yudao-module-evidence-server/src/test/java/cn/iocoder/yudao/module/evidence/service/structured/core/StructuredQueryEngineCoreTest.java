@@ -32,6 +32,7 @@ class StructuredQueryEngineCoreTest {
     void setUp() {
         DefaultDomainMetricRegistry metricRegistry = new DefaultDomainMetricRegistry();
         DefaultDomainEntityRegistry entityRegistry = new DefaultDomainEntityRegistry();
+        DefaultDomainFieldRegistry fieldRegistry = new DefaultDomainFieldRegistry();
         // TEST 假领域注册
         entityRegistry.register(EntityDefinition.builder().domainCode(DOMAIN).entityCode("PRODUCT")
                 .displayLabel("产品").classifier("个").aliases(List.of("产品", "商品")).build());
@@ -52,7 +53,7 @@ class StructuredQueryEngineCoreTest {
         StructuredQueryExecutor executor = new StructuredQueryExecutor(metricRegistry, List.of(adapter));
         StructuredAnswerRenderer renderer = new StructuredAnswerRenderer();
         CompletenessGuard guard = new CompletenessGuard();
-        service = new StructuredQueryService(preParser, metricRegistry, entityRegistry, contextResolver,
+        service = new StructuredQueryService(preParser, metricRegistry, entityRegistry, fieldRegistry, contextResolver,
                 executor, renderer, guard);
     }
 

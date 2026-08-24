@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.knowledge.api.dto;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Structured Query 数据访问请求(Platform Core → Domain Data Adapter → Knowledge 数据访问)。
@@ -23,6 +24,15 @@ public class StructuredQueryReqDTO {
 
     /** 已解析的文档集合(DOCUMENT_SET 范围; 空 = 整库) */
     private List<Long> resolvedEntityIds;
+
+    /** 字段编码(按字段取值 LIST/GROUP, 如 PUBLICATION_NO; 空 = 按 metric 聚合) */
+    private String fieldCode;
+
+    /** 过滤条件(Map<fieldCode, value>; 仅支持等值, CQ-19 Filter follow-up) */
+    private Map<String, String> filters;
+
+    /** 排序: 逗号分隔 "fieldCode:ASC|DESC" (如 "filingDate:ASC", CQ-18) */
+    private String sort;
 
     /** 单次返回行数上限(防御性截断标记用) */
     private Integer rowCap;

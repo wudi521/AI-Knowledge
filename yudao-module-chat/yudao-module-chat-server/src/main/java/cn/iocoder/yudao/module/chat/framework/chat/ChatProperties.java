@@ -26,4 +26,25 @@ public class ChatProperties {
     /** 流式问答 SSE 超时 ms(默认 180s; 模型调用单次可达 30~120s) */
     private long streamTimeoutMs = 180_000;
 
+    /** 大结果集内联阈值: 有序实体 id 数 <= 该值则内联存储, 否则用 resultSetRef(默认 200) */
+    private int resultSetInlineThreshold = 200;
+
+    /** 上下文帧栈保留条数(每轮 query 一个 frame, 默认 10) */
+    private int contextFrameLimit = 10;
+
+    /** PER_ENTITY_SEMANTIC 单轮最多实体数(超限 CLARIFY/要求缩小, 默认 10) */
+    private int maxSemanticEntities = 10;
+
+    /** Composite Query Plan 最大步骤数(默认 5) */
+    private int planMaxSteps = 5;
+
+    /** Composite Query Plan 最大实体数(默认 100) */
+    private int planMaxEntities = 100;
+
+    /** Composite Query Plan 最大模型调用数(默认 12) */
+    private int planMaxModelCalls = 12;
+
+    /** Composite Query Plan 整体 deadline ms(默认 60s) */
+    private long planDeadlineMs = 60_000;
+
 }
