@@ -12,6 +12,7 @@ import cn.iocoder.yudao.module.evidence.api.dto.EvidenceSlotValueDTO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryScopeResolver;
 import cn.iocoder.yudao.module.evidence.service.EvidenceService;
+import cn.iocoder.yudao.module.evidence.service.trace.EvidenceTraceInspector;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +34,8 @@ public class EvidenceApiImpl implements EvidenceApi {
     private EvidenceService evidenceService;
     @Resource
     private EvidenceQueryScopeResolver queryScopeResolver;
+    @Resource
+    private EvidenceTraceInspector traceInspector;
 
     @Override
     public CommonResult<EvidenceEvaluateRespDTO> evaluate(EvidenceEvaluateReqDTO req) {
@@ -45,6 +48,7 @@ public class EvidenceApiImpl implements EvidenceApi {
         EvidenceEvaluateRespVO vo = evidenceService.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
                 req.getTenantId(), req.getUserId(), req.getHistory(), req.getSkipSlotDetection(), req.getTraceId(),
                 scope.domainCode(), req.getContextResolutionJson(), req.getPlanBudget());
+        vo = traceInspector.enrich(vo, scope.kbIds(), scope.domainCode());
         return success(toDto(vo));
     }
 
