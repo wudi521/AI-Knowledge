@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.evidence.service.structured.core;
 
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
+import cn.iocoder.yudao.module.evidence.service.planner.QueryPlannerFacade;
 import cn.iocoder.yudao.module.evidence.service.semantics.SemanticsExecutionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -11,7 +12,6 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -24,13 +24,17 @@ class CompositeQueryExecutorTest {
 
     private StructuredQueryService structuredQueryService;
     private SemanticsExecutionService semanticsExecutionService;
+    private QueryPlannerFacade queryPlanner;
     private CompositeQueryExecutor executor;
 
     @BeforeEach
     void setUp() {
         structuredQueryService = mock(StructuredQueryService.class);
         semanticsExecutionService = mock(SemanticsExecutionService.class);
-        executor = new CompositeQueryExecutor(structuredQueryService, semanticsExecutionService);
+        queryPlanner = mock(QueryPlannerFacade.class);
+        // 该测试验证旧 Structured/Semantic fallback 编排；Planner mock 默认返回 null，
+        // 因此不会进入 Planner V2 新分支。
+        executor = new CompositeQueryExecutor(structuredQueryService, semanticsExecutionService, queryPlanner);
     }
 
     private CompositeQueryExecutor.Request request(CompositeQueryPlan.Budget budget) {
@@ -99,7 +103,6 @@ class CompositeQueryExecutorTest {
                 null, null, StructuredFailureReason.MISSING_METRIC, List.of(101L, 102L, 103L));
         when(structuredQueryService.handle(any(), any(), any(), any(), any(), any())).thenReturn(semantic);
 
-        // maxEntities=2 < 3 → CLARIFY, 不静默截断
         CompositeQueryExecutor.Result r = executor.execute(request(budget(5, 2, 12, 60_000)));
 
         assertThat(r.state()).isEqualTo(StructuredQueryService.State.CLARIFY);
@@ -153,7 +156,6 @@ class CompositeQueryExecutorTest {
 
     @Test
     void stepBudgetExceeded_returnsTimedOut() {
-        // maxSteps=0 → handle 即算 1 步, 触发超限降级
         CompositeQueryExecutor.Result r = executor.execute(request(budget(0, 100, 12, 60_000)));
         assertThat(r.timedOut()).isTrue();
         assertThat(r.state()).isEqualTo(StructuredQueryService.State.UNANSWERABLE);
@@ -161,7 +163,6 @@ class CompositeQueryExecutorTest {
 
     @Test
     void crossEntitySemantic_executesCrossEntity() {
-        // CQ-38 CROSS_ENTITY_SEMANTIC: 无 explicitEntityIds 但 plan.route=CROSS_ENTITY_SEMANTIC
         StructuredQueryService.HandleResult semantic = new StructuredQueryService.HandleResult(
                 StructuredQueryService.State.SEMANTIC,
                 StructuredQueryPlan.builder().route("CROSS_ENTITY_SEMANTIC").domainCode("PATENT").build(),
