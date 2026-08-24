@@ -51,7 +51,8 @@ public class QueryPlannerFacade {
                     .scopeType(ids.isEmpty() ? "CURRENT_KB" : "PREVIOUS_RESULT_SET")
                     .entityIds(ids)
                     .exactText(phrase)
-                    .completenessPolicy(CompletenessPolicy.COMPLETE_REQUIRED)
+                    .completenessPolicy(requiresCompleteExactResult(query)
+                            ? CompletenessPolicy.COMPLETE_REQUIRED : CompletenessPolicy.TOP_K_ALLOWED)
                     .plannerSource("DETERMINISTIC")
                     .build();
         }
@@ -91,6 +92,16 @@ public class QueryPlannerFacade {
     private boolean isExactTextIntent(String query) {
         return StrUtil.isNotBlank(query) && StrUtil.containsAny(query,
                 "原文出现", "原文中出现", "原文包含", "原文中包含", "精确搜索", "精确匹配", "查找原文");
+    }
+
+    /** “有没有/是否”只需要存在性；全部/哪些/哪里/列出/数量等语义必须知道完整结果集。 */
+    private boolean requiresCompleteExactResult(String query) {
+        if (StrUtil.isBlank(query)) return false;
+        if (StrUtil.containsAny(query, "全部", "所有", "哪些", "哪里", "哪些地方", "哪些文档", "哪些专利",
+                "列出", "列举", "分别", "多少", "几处", "几条", "出现在哪", "出现于哪些")) {
+            return true;
+        }
+        return !StrUtil.containsAny(query, "有没有", "是否", "有吗", "存在吗", "出现过吗", "包含吗");
     }
 
     private String extractExactText(String query) {
