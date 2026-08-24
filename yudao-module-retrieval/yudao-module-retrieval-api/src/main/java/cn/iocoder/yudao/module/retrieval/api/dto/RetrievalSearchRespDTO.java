@@ -18,8 +18,17 @@ public class RetrievalSearchRespDTO {
     private RetrievalAnalysisDTO analysis;
     private RetrievalChannelStatDTO channels;
 
-    /** 精确/列表型检索的真实总命中数；普通检索可为空。用于避免把 TopK 数误报成全集数量。 */
+    /**
+     * 经过原文逐字二次校验后的真实总命中数；仅 totalHitsExact=true 时可用于全集结论。
+     * 普通检索或候选集合过大无法完整校验时可为空。
+     */
     private Long totalHits;
+
+    /** totalHits 是否为完整、可证明的逐字精确总数。 */
+    private Boolean totalHitsExact;
+
+    /** ES match_phrase 候选总数，仅用于诊断/完整性判断，不能冒充原文逐字命中数。 */
+    private Long candidateTotalHits;
 
     @Data
     public static class RetrievalAnalysisDTO {
@@ -28,7 +37,6 @@ public class RetrievalSearchRespDTO {
         private List<String> rewrites;
         private List<String> subQuestions;
         private Boolean success;
-        /** 外部主路由保持 RULE/EXACT_METADATA/EXACT_CLAIM/SCOPED_RAG/HYBRID_RAG/ABSTAIN 兼容集合。 */
         private String route;
         private List<QueryStageTimingDTO> stages;
     }
