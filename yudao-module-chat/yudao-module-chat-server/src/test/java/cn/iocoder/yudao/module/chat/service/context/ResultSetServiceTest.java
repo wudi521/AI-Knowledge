@@ -6,6 +6,10 @@ import cn.iocoder.yudao.module.chat.dal.mysql.context.AiChatResultSetMapper;
 import cn.iocoder.yudao.module.chat.framework.chat.ChatProperties;
 import cn.iocoder.yudao.module.chat.service.context.model.ContextFrame;
 import cn.iocoder.yudao.module.chat.service.context.model.ResultSetSnapshot;
+import cn.iocoder.yudao.module.chat.service.context.model.RevalidationResult;
+import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
+import cn.iocoder.yudao.module.knowledge.api.dto.DocumentVisibilityReqDTO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -17,6 +21,7 @@ import org.mockito.quality.Strictness;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -37,6 +42,8 @@ class ResultSetServiceTest {
     private ChatProperties chatProperties;
     @Mock
     private ConversationQueryStateService queryStateService;
+    @Mock
+    private KnowledgeApi knowledgeApi;
 
     private ResultSetService service;
 
@@ -47,6 +54,7 @@ class ResultSetServiceTest {
         ReflectionTestUtils.setField(service, "frameMapper", frameMapper);
         ReflectionTestUtils.setField(service, "chatProperties", chatProperties);
         ReflectionTestUtils.setField(service, "queryStateService", queryStateService);
+        ReflectionTestUtils.setField(service, "knowledgeApi", knowledgeApi);
         when(chatProperties.getResultSetInlineThreshold()).thenReturn(200);
         when(chatProperties.getContextFrameLimit()).thenReturn(10);
     }
@@ -139,6 +147,87 @@ class ResultSetServiceTest {
 
         assertThat(row.getStatus()).isEqualTo(ResultSetSnapshot.STATUS_STALE);
         verify(resultSetMapper).updateById(row);
+    }
+
+    // ========== CQ-38 revalidate ==========
+
+    private ResultSetSnapshot inlineRs(String resultSetId, Long kbId, String domainCode, List<Long> ids) {
+        return ResultSetSnapshot.builder()
+                .resultSetId(resultSetId).conversationId(100L)
+                .kbId(kbId).domainCode(domainCode)
+                .entityType("PATENT_DOCUMENT")
+                .storageMode(ResultSetSnapshot.STORAGE_INLINE)
+                .orderedEntityIds(ids).status(ResultSetSnapshot.STATUS_VALID)
+                .build();
+    }
+
+    private void stubVisibility(Map<Long, String> visibility) {
+        when(knowledgeApi.getDocumentVisibility(any(DocumentVisibilityReqDTO.class)))
+                .thenReturn(CommonResult.success(visibility));
+    }
+
+    @Test
+    void revalidateKbMismatch_returnsDomainMismatch() {
+        when(resultSetMapper.selectByResultSetId("rs-1"))
+                .thenReturn(inlineRs("rs-1", 6L, "PATENT", List.of(1L, 2L)).toDO());
+
+        RevalidationResult r = service.revalidate("rs-1", 42L, 99L, "PATENT");
+
+        assertThat(r.isValid()).isFalse();
+        assertThat(r.getReasonCode()).isEqualTo("DOMAIN_MISMATCH");
+    }
+
+    @Test
+    void revalidateAllVisible_returnsValid() {
+        when(resultSetMapper.selectByResultSetId("rs-1"))
+                .thenReturn(inlineRs("rs-1", 6L, "PATENT", List.of(1L, 2L)).toDO());
+        stubVisibility(Map.of(1L, "VISIBLE", 2L, "VISIBLE"));
+
+        RevalidationResult r = service.revalidate("rs-1", 42L, 6L, "PATENT");
+
+        assertThat(r.isValid()).isTrue();
+        assertThat(r.isContextChanged()).isFalse();
+    }
+
+    @Test
+    void revalidateAllPermissionChanged_returnsInvalidPermission() {
+        when(resultSetMapper.selectByResultSetId("rs-1"))
+                .thenReturn(inlineRs("rs-1", 6L, "PATENT", List.of(1L, 2L)).toDO());
+        stubVisibility(Map.of(1L, "PERMISSION_CHANGED", 2L, "PERMISSION_CHANGED"));
+
+        RevalidationResult r = service.revalidate("rs-1", 42L, 6L, "PATENT");
+
+        assertThat(r.isValid()).isFalse();
+        assertThat(r.getReasonCode()).isEqualTo("PERMISSION_CHANGED");
+        verify(resultSetMapper).updateById(any(cn.iocoder.yudao.module.chat.dal.dataobject.context.AiChatResultSetDO.class));
+    }
+
+    @Test
+    void revalidatePartial_keepsRemainingAndRemoved() {
+        when(resultSetMapper.selectByResultSetId("rs-1"))
+                .thenReturn(inlineRs("rs-1", 6L, "PATENT", List.of(1L, 2L, 3L)).toDO());
+        stubVisibility(Map.of(1L, "VISIBLE", 2L, "STALE_RESULT_SET", 3L, "VISIBLE"));
+
+        RevalidationResult r = service.revalidate("rs-1", 42L, 6L, "PATENT");
+
+        assertThat(r.isValid()).isFalse();
+        assertThat(r.isContextChanged()).isTrue();
+        assertThat(r.getRemainingIds()).containsExactly(1L, 3L);
+        assertThat(r.getRemovedIds()).containsExactly(2L);
+    }
+
+    @Test
+    void revalidateRefResultSet_skipsEntityCheck() {
+        when(resultSetMapper.selectByResultSetId("rs-ref"))
+                .thenReturn(ResultSetSnapshot.builder()
+                        .resultSetId("rs-ref").conversationId(100L).kbId(6L).domainCode("PATENT")
+                        .storageMode(ResultSetSnapshot.STORAGE_REF)
+                        .orderedEntityIds(null).entityCount(300).status(ResultSetSnapshot.STATUS_VALID)
+                        .build().toDO());
+
+        RevalidationResult r = service.revalidate("rs-ref", 42L, 6L, "PATENT");
+
+        assertThat(r.isValid()).isTrue();
     }
 
 }

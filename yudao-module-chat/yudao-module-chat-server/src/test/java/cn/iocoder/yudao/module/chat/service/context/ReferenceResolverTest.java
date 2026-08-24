@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.chat.service.context;
 import cn.iocoder.yudao.module.chat.service.context.model.ContextFrame;
 import cn.iocoder.yudao.module.chat.service.context.model.QueryContextResolution;
 import cn.iocoder.yudao.module.chat.service.context.model.ResultSetSnapshot;
+import cn.iocoder.yudao.module.chat.service.context.model.RevalidationResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -35,6 +36,8 @@ class ReferenceResolverTest {
         // materialize 直接用快照内联 ids(测试不依赖真实物化)
         when(resultSetService.materialize(any(ResultSetSnapshot.class))).thenAnswer(inv ->
                 inv.<ResultSetSnapshot>getArgument(0).getOrderedEntityIds());
+        // 默认重校验通过(3 参 resolve 无用户上下文场景)
+        when(resultSetService.revalidate(any(), any(), any(), any())).thenReturn(RevalidationResult.valid());
     }
 
     private ResultSetSnapshot rs(String id, String entityType, List<Long> ids) {
@@ -128,6 +131,38 @@ class ReferenceResolverTest {
 
         assertThat(r.getResultSetId()).isEqualTo("rs-patent");
         assertThat(r.getExplicitEntityIds()).containsExactly(1L, 2L, 3L);
+    }
+
+    @Test
+    void revalidatePermissionChanged_clarifies() {
+        // CQ-38: 引用结果集被整体判为 PERMISSION_CHANGED → 反问(不继续执行)
+        List<ContextFrame> frames = List.of(frame("rs-1", "PATENT_DOCUMENT", null, null));
+        when(resultSetService.getResultSet("rs-1")).thenReturn(rs("rs-1", "PATENT_DOCUMENT", List.of(1L, 2L)));
+        when(resultSetService.revalidate("rs-1", 42L, 6L, "PATENT"))
+                .thenReturn(RevalidationResult.invalid("PERMISSION_CHANGED"));
+
+        QueryContextResolution r = resolver.resolve("它们的公布号分别是什么？",
+                frames, "PATENT_DOCUMENT", 42L, 6L, "PATENT");
+
+        assertThat(r.isClarifyRequired()).isTrue();
+        assertThat(r.getReasonCode()).isEqualTo("PERMISSION_CHANGED");
+        assertThat(r.getClarifyQuestion()).contains("权限已变化");
+    }
+
+    @Test
+    void revalidatePartial_usesRemainingIdsAndMarksContextChanged() {
+        // CQ-38: 部分失效 → 剔除不可见实体, 引用剩余集并标记 contextChanged
+        List<ContextFrame> frames = List.of(frame("rs-1", "PATENT_DOCUMENT", null, null));
+        when(resultSetService.getResultSet("rs-1")).thenReturn(rs("rs-1", "PATENT_DOCUMENT", List.of(1L, 2L, 3L)));
+        when(resultSetService.revalidate("rs-1", 42L, 6L, "PATENT"))
+                .thenReturn(RevalidationResult.partial(List.of(1L, 3L), List.of(2L)));
+
+        QueryContextResolution r = resolver.resolve("它们分别是什么？",
+                frames, "PATENT_DOCUMENT", 42L, 6L, "PATENT");
+
+        assertThat(r.isClarifyRequired()).isFalse();
+        assertThat(r.getExplicitEntityIds()).containsExactly(1L, 3L);
+        assertThat(Boolean.TRUE.equals(r.getContextChanged())).isTrue();
     }
 
 }

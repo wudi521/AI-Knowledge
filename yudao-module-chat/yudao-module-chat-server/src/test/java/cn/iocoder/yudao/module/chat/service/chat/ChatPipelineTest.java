@@ -93,7 +93,7 @@ class ChatPipelineTest {
         ReflectionTestUtils.setField(pipeline, "referenceResolver", referenceResolver);
         ReflectionTestUtils.setField(pipeline, "resultSetService", resultSetService);
         when(queryTraceService.newTraceId()).thenReturn("q-test123456");
-        when(referenceResolver.resolve(any(), any(), any()))
+        when(referenceResolver.resolve(any(), any(), any(), any(), any(), any()))
                 .thenReturn(cn.iocoder.yudao.module.chat.service.context.model.QueryContextResolution.noReference());
         when(resultSetService.getRecentFrames(any())).thenReturn(List.of());
 

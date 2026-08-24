@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.knowledge.api;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.knowledge.api.dto.DocumentVisibilityReqDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgePublishedChunkDTO;
@@ -56,6 +57,14 @@ public interface KnowledgeApi {
 
     @GetMapping(ApiConstants.PREFIX + "/get-visible-kb-ids")
     CommonResult<Set<Long>> getVisibleKbIds(@RequestParam("userId") Long userId);
+
+    /**
+     * CQ-38: 文档粒度可见性校验(多轮结果集引用重校验)。
+     * 返回每个 documentId 的状态: VISIBLE(可见且发布版本有效) / PERMISSION_CHANGED(文档不存在或不可见) /
+     * STALE_RESULT_SET(版本未发布/已过期)。不返回文档内容, 仅返回判定码。
+     */
+    @PostMapping(ApiConstants.PREFIX + "/get-document-visibility")
+    CommonResult<Map<Long, String>> getDocumentVisibility(@RequestBody DocumentVisibilityReqDTO req);
 
     @PostMapping(ApiConstants.PREFIX + "/update-document-domain-metadata")
     CommonResult<Boolean> updateDocumentDomainMetadata(@RequestBody Map<String, Object> body);

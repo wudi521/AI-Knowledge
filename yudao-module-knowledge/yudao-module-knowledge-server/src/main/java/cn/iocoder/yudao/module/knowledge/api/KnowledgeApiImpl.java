@@ -6,6 +6,7 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
+import cn.iocoder.yudao.module.knowledge.api.dto.DocumentVisibilityReqDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.IntentDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgePublishedChunkDTO;
@@ -20,6 +21,7 @@ import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiKnowledgeBaseSlotDO;
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.version.AiDocVersionDO;
+import cn.iocoder.yudao.module.knowledge.enums.version.VersionStatusEnum;
 import cn.iocoder.yudao.module.knowledge.dal.mysql.knowledge.AiKnowledgeBaseMapper;
 import cn.iocoder.yudao.module.knowledge.service.common.PublishedContentCollector;
 import cn.iocoder.yudao.module.knowledge.service.intent.IntentService;
@@ -32,6 +34,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -142,6 +145,52 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         }
         List<AiKnowledgeBaseDO> visible = knowledgePermissionHelper.filterVisibleKbs(userId, aiKnowledgeBaseMapper.selectList());
         return success(visible.stream().map(AiKnowledgeBaseDO::getId).collect(Collectors.toSet()));
+    }
+
+    @Override
+    public CommonResult<Map<Long, String>> getDocumentVisibility(DocumentVisibilityReqDTO req) {
+        Map<Long, String> result = new HashMap<>();
+        if (req == null || CollUtil.isEmpty(req.getDocumentIds())) {
+            return success(result);
+        }
+        List<Long> ids = req.getDocumentIds().stream().distinct().toList();
+        Map<Long, AiDocumentDO> docs = aiDocumentMapper.selectBatchIds(ids).stream()
+                .collect(Collectors.toMap(AiDocumentDO::getId, d -> d));
+        Set<Long> visibleKbIds = getVisibleKbIds(req.getUserId()).getCheckedData();
+        for (Long docId : ids) {
+            AiDocumentDO doc = docs.get(docId);
+            if (doc == null || visibleKbIds == null || !visibleKbIds.contains(doc.getKbId())) {
+                // 文档不存在或所属知识库对当前用户不可见(文档级 ACL 继承 KB ACL)
+                result.put(docId, "PERMISSION_CHANGED");
+                continue;
+            }
+            if (!hasValidPublishedVersion(doc)) {
+                result.put(docId, "STALE_RESULT_SET");
+                continue;
+            }
+            result.put(docId, "VISIBLE");
+        }
+        return success(result);
+    }
+
+    /** 文档当前发布版本有效: 版本存在 + PUBLISHED + 处于生效区间 */
+    private boolean hasValidPublishedVersion(AiDocumentDO doc) {
+        Long versionId = doc.getVersionId();
+        if (versionId == null) {
+            return false;
+        }
+        AiDocVersionDO version = aiDocVersionMapper.selectById(versionId);
+        if (version == null || !VersionStatusEnum.PUBLISHED.getStatus().equals(version.getStatus())) {
+            return false;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (version.getEffectiveFrom() != null && version.getEffectiveFrom().isAfter(now)) {
+            return false;
+        }
+        if (version.getEffectiveTo() != null && version.getEffectiveTo().isBefore(now)) {
+            return false;
+        }
+        return true;
     }
 
     @Override

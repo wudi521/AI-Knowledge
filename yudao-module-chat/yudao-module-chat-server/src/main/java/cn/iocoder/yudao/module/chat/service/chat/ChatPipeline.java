@@ -235,7 +235,7 @@ public class ChatPipeline {
         // 6. 证据判定(P0-09: 透传统一主 traceId; CQ-04~10: chat 侧多轮上下文 resolution 透传)。
         tRpc0 = System.currentTimeMillis();
         String contextResolutionJson = null;
-        QueryContextResolution qr = resolveContext(message, conversationId, knowledgeContext);
+        QueryContextResolution qr = resolveContext(message, conversationId, knowledgeContext, userId);
         if (qr != null && qr.isClarifyRequired()) {
             // CQ-05/08: 数量不一致/范围歧义 → 直接反问(不走证据链路)
             AiMessageDO aiMsg = messageService.addMessage(conversationId, "AI", qr.getClarifyQuestion(),
@@ -741,11 +741,12 @@ public class ChatPipeline {
     /** 返回前输出 done 事件(仅流式路径; 同步路径直接返回) */
     // ==================== CQ-04~10 多轮上下文 ====================
 
-    /** 解析当前问题对历史上下文的引用(指代/子集/数量; CQ-04~08) */
-    private QueryContextResolution resolveContext(String message, Long conversationId, KnowledgeContext kc) {
+    /** 解析当前问题对历史上下文的引用(指代/子集/数量; CQ-04~08; 引用时重校验 CQ-38) */
+    private QueryContextResolution resolveContext(String message, Long conversationId, KnowledgeContext kc,
+                                                  Long userId) {
         String entityTypeHint = "PATENT".equals(kc.domainCode()) ? "PATENT_DOCUMENT" : null;
         List<ContextFrame> frames = resultSetService.getRecentFrames(conversationId);
-        return referenceResolver.resolve(message, frames, entityTypeHint);
+        return referenceResolver.resolve(message, frames, entityTypeHint, userId, kc.kbId(), kc.domainCode());
     }
 
     /** 数量不一致/范围歧义的反问结果(CQ-05/08: 禁止猜) */
@@ -784,6 +785,8 @@ public class ChatPipeline {
                     .resultSetId(resultSetId)
                     .queryId(traceId)
                     .conversationId(conversationId)
+                    .kbId(kc.kbId())
+                    .domainCode(kc.domainCode())
                     .entityType(sr.getEntityType() != null ? sr.getEntityType() : "PATENT_DOCUMENT")
                     .entityCount(sr.getEntityCount())
                     .orderedEntityIds(sr.getEntityIds())

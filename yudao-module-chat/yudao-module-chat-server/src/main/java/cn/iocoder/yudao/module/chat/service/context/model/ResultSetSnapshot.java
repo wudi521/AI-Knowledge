@@ -32,6 +32,12 @@ public class ResultSetSnapshot {
     /** 会话编号 */
     private Long conversationId;
 
+    /** 知识库编号(产生该结果集的知识库; 引用重校验用, CQ-38) */
+    private Long kbId;
+
+    /** 知识领域编码(如 PATENT; 引用重校验用, CQ-38) */
+    private String domainCode;
+
     /** 实体类型(如 PATENT_DOCUMENT) */
     private String entityType;
 
@@ -77,6 +83,8 @@ public class ResultSetSnapshot {
                 .resultSetId(row.getResultSetId())
                 .queryId(row.getQueryId())
                 .conversationId(row.getConversationId())
+                .kbId(row.getKbId())
+                .domainCode(row.getDomainCode())
                 .entityType(row.getEntityType())
                 .entityCount(row.getEntityCount())
                 .storageMode(row.getStorageMode())
@@ -96,6 +104,8 @@ public class ResultSetSnapshot {
         row.setResultSetId(resultSetId);
         row.setQueryId(queryId);
         row.setConversationId(conversationId);
+        row.setKbId(kbId);
+        row.setDomainCode(domainCode);
         row.setEntityType(entityType);
         row.setEntityCount(entityCount);
         row.setStorageMode(storageMode);

@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.chat.service.context;
 import cn.iocoder.yudao.module.chat.service.context.model.ContextFrame;
 import cn.iocoder.yudao.module.chat.service.context.model.QueryContextResolution;
 import cn.iocoder.yudao.module.chat.service.context.model.ResultSetSnapshot;
+import cn.iocoder.yudao.module.chat.service.context.model.RevalidationResult;
 import cn.iocoder.yudao.module.chat.service.context.model.SubsetExpression;
 import cn.iocoder.yudao.module.chat.service.context.model.SubsetExpression.Type;
 import jakarta.annotation.Resource;
@@ -34,6 +35,18 @@ public class ReferenceResolver {
      * @param entityTypeHint 期望的实体类型(由调用方从 Domain 判断; 可空则用最近帧)
      */
     public QueryContextResolution resolve(String query, List<ContextFrame> frames, String entityTypeHint) {
+        return resolve(query, frames, entityTypeHint, null, null, null);
+    }
+
+    /**
+     * 带上下文重校验的引用解析(CQ-38): 引用结果集前校验 tenant/kb/domain 一致 + 文档 ACL 可见 + 发布版本有效。
+     *
+     * @param userId   当前用户编号(null 时跳过 ACL/版本逐实体校验)
+     * @param kbId     当前知识库编号(与结果集归属一致性校验)
+     * @param domainCode 当前领域编码(与结果集归属一致性校验)
+     */
+    public QueryContextResolution resolve(String query, List<ContextFrame> frames, String entityTypeHint,
+                                          Long userId, Long kbId, String domainCode) {
         // CQ-07: 明确实体永远优先于历史上下文
         if (hasExplicitEntity(query)) {
             return QueryContextResolution.explicitEntity();
@@ -50,12 +63,20 @@ public class ReferenceResolver {
         if (rs == null || ResultSetSnapshot.STATUS_STALE.equals(rs.getStatus())) {
             return QueryContextResolution.clarify("上一轮的结果已不可用，请重新查询。", "STALE_RESULT_SET");
         }
-        List<Long> applied = subset.apply(resultSetService.materialize(rs));
+        // CQ-38: 引用前重校验(权限/版本变化 → 剔除失效或反问)
+        RevalidationResult reval = resultSetService.revalidate(rs.getResultSetId(), userId, kbId, domainCode);
+        if (!reval.isValid() && (reval.getRemainingIds() == null || reval.getRemainingIds().isEmpty())) {
+            return QueryContextResolution.clarify(clarifyText(reval.getReasonCode()), reval.getReasonCode());
+        }
+        List<Long> baseIds = (reval.isValid() || reval.getRemainingIds() == null)
+                ? resultSetService.materialize(rs) : reval.getRemainingIds();
+        List<Long> applied = subset.apply(baseIds);
         if (applied == null) {
             // CQ-05: 数量与引用集合不一致且无明确子集 → CLARIFY
             int count = subset.getCount() == null ? 0 : subset.getCount();
             return QueryContextResolution.clarify(
-                    "上一轮共有 " + rs.getEntityCount() + " 个" + label(rs.getEntityType())
+                    "上一轮共有 " + (reval.isValid() ? rs.getEntityCount() : baseIds.size())
+                            + " 个" + label(rs.getEntityType())
                             + "，请明确是哪 " + count + " 个？", "AMBIGUOUS_SCOPE");
         }
         return QueryContextResolution.builder()
@@ -64,7 +85,22 @@ public class ReferenceResolver {
                 .entityType(rs.getEntityType())
                 .subset(subset)
                 .explicitEntityIds(applied)
+                .contextChanged(!reval.isValid())
                 .build();
+    }
+
+    /** CQ-38: 失效原因 → 用户可理解的反问文案 */
+    private String clarifyText(String reasonCode) {
+        if ("PERMISSION_CHANGED".equals(reasonCode)) {
+            return "上一轮引用的内容访问权限已变化，请重新查询。";
+        }
+        if ("DOMAIN_MISMATCH".equals(reasonCode)) {
+            return "上一轮的查询范围已变化，请重新查询。";
+        }
+        if ("AMBIGUOUS_SCOPE".equals(reasonCode)) {
+            return "上一轮的结果范围已不可用，请重新查询。";
+        }
+        return "上一轮的结果已过期，请重新查询。";
     }
 
     /** 从帧栈最近→远找可引用帧: 优先 entityType 匹配且带 resultSetId; 否则最近带 resultSetId */

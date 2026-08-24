@@ -118,7 +118,7 @@ class ChatMultiTurnContextTest {
         resp.setStructuredResult(sr);
         when(evidenceRpcAdapter.evaluate(any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(resp);
-        when(referenceResolver.resolve(any(), any(), any()))
+        when(referenceResolver.resolve(any(), any(), any(), any(), any(), any()))
                 .thenReturn(cn.iocoder.yudao.module.chat.service.context.model.QueryContextResolution.noReference());
         when(resultSetService.getRecentFrames(100L)).thenReturn(List.of());
         when(resultSetService.existsByQueryId("q-test123456")).thenReturn(false);
@@ -173,7 +173,7 @@ class ChatMultiTurnContextTest {
         resp.setStructuredResult(sr);
         when(evidenceRpcAdapter.evaluate(any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(resp);
-        when(referenceResolver.resolve(any(), any(), any()))
+        when(referenceResolver.resolve(any(), any(), any(), any(), any(), any()))
                 .thenReturn(cn.iocoder.yudao.module.chat.service.context.model.QueryContextResolution.builder()
                         .scopeType("PREVIOUS_RESULT_SET")
                         .explicitEntityIds(List.of(101L, 102L))
