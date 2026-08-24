@@ -1,7 +1,9 @@
 package cn.iocoder.yudao.module.evidence.service.planner.v3;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -14,6 +16,8 @@ import java.util.List;
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class QueryIntentV3 {
 
     private String version;
@@ -55,6 +59,8 @@ public class QueryIntentV3 {
 
     @Data
     @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
     public static class Selection {
         private SelectionType type;
         /** SEMANTIC / EXACT_TEXT 使用。 */
@@ -75,6 +81,8 @@ public class QueryIntentV3 {
 
     @Data
     @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
     public static class Action {
         private ActionType type;
         @Builder.Default
