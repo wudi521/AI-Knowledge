@@ -9,9 +9,7 @@ import java.util.regex.Pattern;
 
 /**
  * 0 LLM 的保守 Filter Resolver。
- * <p>
  * 只解析带明确字段别名 + 明确运算词 + 明确值的条件；解析不了就不生成 filter，禁止猜。
- * 当前支持：字段=值、字段包含值、字段以值开头；多条件显式“或/或者”→OR，否则 AND。
  */
 public final class SimpleStructuredFilterResolver {
 
@@ -39,15 +37,15 @@ public final class SimpleStructuredFilterResolver {
 
     private static FilterExpression parseCondition(String query, String alias, String fieldCode) {
         String q = Pattern.quote(alias);
-        Match contains = match(query, q + "\\s*(?:包含|含有|含)\\s*[“\"']?([^，,。；;？?且或]{1,80})[”\"']?");
+        Match contains = match(query, q + "\\s*(?:包含|含有|含)\\s*[“\"']?([^，,。；;？?且或的]{1,80})[”\"']?");
         if (contains != null) {
             return FilterExpression.condition(fieldCode, FilterOperator.CONTAINS, List.of(clean(contains.value())));
         }
-        Match starts = match(query, q + "\\s*(?:以)\\s*[“\"']?([^，,。；;？?]{1,80})[”\"']?\\s*(?:开头|起始)");
+        Match starts = match(query, q + "\\s*(?:以)\\s*[“\"']?([^，,。；;？?的]{1,80})[”\"']?\\s*(?:开头|起始)");
         if (starts != null) {
             return FilterExpression.condition(fieldCode, FilterOperator.STARTS_WITH, List.of(clean(starts.value())));
         }
-        Match eq = match(query, q + "\\s*(?:为|是|等于|=)\\s*[“\"']?([^，,。；;？?且或]{1,80})[”\"']?");
+        Match eq = match(query, q + "\\s*(?:为|是|等于|=)\\s*[“\"']?([^，,。；;？?且或的]{1,80})[”\"']?");
         if (eq != null) {
             return FilterExpression.condition(fieldCode, FilterOperator.EQ, List.of(clean(eq.value())));
         }
