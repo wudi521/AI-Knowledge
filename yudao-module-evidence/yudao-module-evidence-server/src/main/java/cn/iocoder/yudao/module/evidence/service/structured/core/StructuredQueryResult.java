@@ -3,9 +3,11 @@ package cn.iocoder.yudao.module.evidence.service.structured.core;
 import lombok.Builder;
 import lombok.Data;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** Structured Query 结果(Platform Core 领域无关)。 */
 @Data
@@ -21,6 +23,9 @@ public class StructuredQueryResult {
     private Integer validValueCount;
     private Integer missingValueCount;
     private Boolean conflict;
+    /** 同一逻辑实体的重复物理记录在这些字段上出现不一致。 */
+    @Builder.Default
+    private Set<String> conflictFields = Collections.emptySet();
     private Boolean hasMore;
     private boolean truncated;
     private boolean unsupported;
