@@ -5,14 +5,21 @@ import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import java.util.List;
 
 /**
- * 能力输出进入 Agent 主循环的统一适配协议。
- * 新增能力只实现本接口，不需要修改 AgenticQueryEngine 的业务分支。
+ * 能力输出进入公共 Runtime 的统一事实协议。
+ * 新增能力只实现本接口，不需要在 Runtime 增加业务场景分支。
  */
 public interface AgentCapabilityOutput {
     String summary();
     String progressHash();
 
     default List<Evidence> evidences() {
+        return List.of();
+    }
+
+    /**
+     * 检索/全文搜索等候选集合。候选实体可以参加 DAG 集合组合，但绝不能自动进入 trusted scope。
+     */
+    default List<Long> candidateEntityIds() {
         return List.of();
     }
 
