@@ -57,6 +57,11 @@ public class EvidenceQueryEngineV3Facade {
         return resp;
     }
 
+    /** Agent → V3 fallback 合并完 stages 后，只覆盖 trace stage，不重复写 eval/evidence。 */
+    public void recordStages(EvidenceEvaluateRespVO resp) {
+        recorder.recordStages(resp);
+    }
+
     private EvidenceEvaluateRespVO toResponse(String query, List<Long> kbIds, String domainCode,
                                               List<ChatTurnDTO> history, String traceId,
                                               QueryEngineV3.Result result) {
