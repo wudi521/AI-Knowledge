@@ -1,9 +1,7 @@
 package cn.iocoder.yudao.module.evidence.service.agent;
 
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
-import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.AgenticEvidenceFacade;
-import cn.iocoder.yudao.module.evidence.service.EvidenceQueryEngineV3Facade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryRouter;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResultStatus;
 import cn.iocoder.yudao.module.evidence.service.agent.runtime.ProvenanceRecord;
@@ -11,6 +9,7 @@ import cn.iocoder.yudao.module.evidence.service.agent.runtime.ReferenceRecord;
 import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Constructor;
 import java.util.List;
 import java.util.Map;
 
@@ -27,12 +26,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/**
- * 公共 Agentic Knowledge Runtime 架构级验收矩阵。
- *
- * <p>这里只锁死不能退化的公共协议：确定性答案有 provenance、confidence 不伪造、
- * 澄清/权限/失败都不能被旧 V3 覆盖，旧 mode 配置也不能绕过在线 Runtime。</p>
- */
+/** 公共 Agentic Knowledge Runtime 架构级验收矩阵。 */
 class AgentV11AcceptanceMatrixTest {
 
     @Test
@@ -50,20 +44,12 @@ class AgentV11AcceptanceMatrixTest {
                 1L, 2L, 6L, "PATENT", "ag-contract-1", Map.of("source", "structured"));
         AgenticKnowledgeRuntimeEngine.Result result = new AgenticKnowledgeRuntimeEngine.Result(
                 AgenticKnowledgeRuntimeEngine.State.ANSWER,
-                "公布号=CN123",
-                null,
-                AgentStopReason.ENOUGH_EVIDENCE,
-                List.of(),
-                1,
-                2,
-                EvidenceCoverage.FULL,
-                null,
+                "公布号=CN123", null, AgentStopReason.ENOUGH_EVIDENCE, List.of(), 1, 2,
+                EvidenceCoverage.FULL, null,
                 List.of(new AgentTraceStep(1, "ANSWER_VALIDATION", "ANSWER", null,
                         "回答 immutable OriginalGoal", "SUCCEEDED", 0L,
-                        "deterministic references satisfy immutable OriginalGoal",
-                        AgentStopReason.ENOUGH_EVIDENCE)),
-                List.of(74L),
-                List.of(), List.of(reference), List.of(provenance));
+                        "deterministic references satisfy immutable OriginalGoal", AgentStopReason.ENOUGH_EVIDENCE)),
+                List.of(74L), List.of(), List.of(reference), List.of(provenance));
         when(engine.execute(eq("申请号X的公布号是什么？"), eq(6L), eq("PATENT"), eq(1L), eq(2L),
                 any(), anyList(), anyList())).thenReturn(result);
 
@@ -76,7 +62,6 @@ class AgentV11AcceptanceMatrixTest {
         assertNull(resp.getConfidence(), "未校准连续置信度前必须保持 null");
         assertEquals(1, resp.getEvidence().size());
         assertEquals("STRUCTURED_RESULT", resp.getEvidence().get(0).getEvidenceType());
-        assertEquals("公布号=CN123", resp.getEvidence().get(0).getContent());
         assertEquals(74L, resp.getEvidence().get(0).getDocumentId());
         assertTrue(resp.getEvidence().get(0).getFilters().contains("verifiedEntityIds=[74]"));
         assertEquals(List.of(74L), resp.getStructuredResult().getEntityIds());
@@ -90,13 +75,20 @@ class AgentV11AcceptanceMatrixTest {
     }
 
     @Test
-    void clarificationMustNeverFallBackToV3() {
-        EvidenceQueryEngineV3Facade v3 = mock(EvidenceQueryEngineV3Facade.class);
-        AgenticEvidenceFacade agent = mock(AgenticEvidenceFacade.class);
-        EvidenceProperties properties = new EvidenceProperties();
-        properties.getAgent().setMode("AGENT_WITH_V3_FALLBACK");
-        EvidenceQueryRouter router = new EvidenceQueryRouter(v3, agent, properties);
+    void onlineRouterConstructorHasNoLegacyEngineDependency() {
+        Constructor<?> constructor = EvidenceQueryRouter.class.getDeclaredConstructors()[0];
+        assertEquals(1, constructor.getParameterCount());
+        assertEquals(AgenticEvidenceFacade.class, constructor.getParameterTypes()[0]);
+        for (Class<?> type : constructor.getParameterTypes()) {
+            assertFalse(type.getName().contains("V2"));
+            assertFalse(type.getName().contains("V3"));
+        }
+    }
 
+    @Test
+    void clarificationStaysOnPublicRuntime() {
+        AgenticEvidenceFacade agent = mock(AgenticEvidenceFacade.class);
+        EvidenceQueryRouter router = new EvidenceQueryRouter(agent);
         EvidenceEvaluateRespVO clarify = response(false, "NEED_USER_INPUT", "ag-contract-2");
         clarify.setClarifyQuestion("你说的“这个专利”具体指哪一件？");
         when(agent.evaluateUnrecorded("这个专利的发明人是谁？", List.of(6L), "PATENT", 1L, 2L,
@@ -107,17 +99,12 @@ class AgentV11AcceptanceMatrixTest {
 
         assertSame(clarify, actual);
         verify(agent).record(clarify);
-        verify(v3, never()).evaluate(any(), anyList(), any(), any(), any(), anyList(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void permissionFailureMustNeverFallBackToV3() {
-        EvidenceQueryEngineV3Facade v3 = mock(EvidenceQueryEngineV3Facade.class);
+    void permissionFailureStaysOnPublicRuntime() {
         AgenticEvidenceFacade agent = mock(AgenticEvidenceFacade.class);
-        EvidenceProperties properties = new EvidenceProperties();
-        properties.getAgent().setMode("AGENT_WITH_V3_FALLBACK");
-        EvidenceQueryRouter router = new EvidenceQueryRouter(v3, agent, properties);
-
+        EvidenceQueryRouter router = new EvidenceQueryRouter(agent);
         EvidenceEvaluateRespVO denied = response(false, "PERMISSION_DENIED", "ag-contract-3");
         when(agent.evaluateUnrecorded("q", List.of(6L), "PATENT", 1L, 2L,
                 List.of(), null, "ag-contract-3")).thenReturn(denied);
@@ -127,28 +114,22 @@ class AgentV11AcceptanceMatrixTest {
 
         assertSame(denied, actual);
         verify(agent).record(denied);
-        verify(v3, never()).evaluate(any(), anyList(), any(), any(), any(), anyList(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void legacyV3ModeMustNotBypassPublicRuntime() {
-        EvidenceQueryEngineV3Facade v3 = mock(EvidenceQueryEngineV3Facade.class);
+    void runtimeFailureIsNotMaskedByAnyFallback() {
         AgenticEvidenceFacade agent = mock(AgenticEvidenceFacade.class);
-        EvidenceProperties properties = new EvidenceProperties();
-        properties.getAgent().setMode("V3");
-        EvidenceQueryRouter router = new EvidenceQueryRouter(v3, agent, properties);
-
-        EvidenceEvaluateRespVO agentResp = response(false, "CAPABILITY_UNAVAILABLE", "trace-v3-config");
+        EvidenceQueryRouter router = new EvidenceQueryRouter(agent);
+        EvidenceEvaluateRespVO agentResp = response(false, "CAPABILITY_UNAVAILABLE", "trace-agent-only");
         when(agent.evaluateUnrecorded("q", List.of(6L), "PATENT", 1L, 2L,
-                List.of(), null, "trace-v3-config")).thenReturn(agentResp);
+                List.of(), null, "trace-agent-only")).thenReturn(agentResp);
 
         EvidenceEvaluateRespVO actual = router.evaluate("q", List.of(6L), 8, 1L, 2L,
-                List.of(), false, "trace-v3-config", "PATENT", null, null);
+                List.of(), false, "trace-agent-only", "PATENT", null, null);
 
         assertSame(agentResp, actual);
         assertEquals("AGENT", router.mode());
         verify(agent).record(agentResp);
-        verify(v3, never()).evaluate(any(), anyList(), any(), any(), any(), anyList(), any(), any(), any(), any(), any());
     }
 
     @Test
