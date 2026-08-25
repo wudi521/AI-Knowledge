@@ -79,14 +79,17 @@ public class StructuredPipelineCapabilityDelegate {
         plan.setScope(QueryScope.currentKb(context.kbId()));
         StructuredPipelineResult result = executor.execute(plan);
         if (!result.success()) {
-            // Pipeline validation/combination errors are repairable; source completeness/data errors are not.
+            // Pipeline validation/combination errors are repairable；源完整性/数据质量错误不可绕过。
             String message = StrUtil.blankToDefault(result.message(), "structured pipeline failed");
+            Map<String, Object> diagnostics = new LinkedHashMap<>();
+            if (result.metadata() != null) diagnostics.putAll(result.metadata());
+            diagnostics.put("normalizedPlan", summarizePlan(plan));
             if (isContractError(message)) {
-                return CapabilityResult.recoverableFailure(message, Map.of(
-                        "errorKind", "PIPELINE_CONTRACT",
-                        "normalizedPlan", summarizePlan(plan)));
+                diagnostics.put("errorKind", "PIPELINE_CONTRACT");
+                return CapabilityResult.recoverableFailure(message, diagnostics);
             }
-            return CapabilityResult.failure(AgentStopReason.NO_RELIABLE_EVIDENCE, message);
+            diagnostics.putIfAbsent("errorKind", "STRUCTURED_DATA_INCOMPLETE");
+            return CapabilityResult.failure(AgentStopReason.NO_RELIABLE_EVIDENCE, message, diagnostics);
         }
 
         String shape = result.scalarValue() != null ? "SCALAR"
@@ -101,10 +104,12 @@ public class StructuredPipelineCapabilityDelegate {
                 rowSummary, result.authoritativeEmpty(), summarizePlan(plan));
         int outputCount = "ROWS".equals(shape) || "GROUP".equals(shape) ? result.rows().size() : 1;
         Map<String, Object> metadata = new LinkedHashMap<>();
+        if (result.metadata() != null) metadata.putAll(result.metadata());
         metadata.put("outputCount", outputCount);
         metadata.put("sourceRowCount", result.sourceEntityCount());
         metadata.put("entityCount", verifiedIds.size());
         metadata.put("completeDataset", result.completeDataset());
+        metadata.putIfAbsent("outputComplete", true);
         metadata.put("authoritativeEmpty", result.authoritativeEmpty());
         metadata.put("missingValueCount", result.missingValueCount());
         metadata.put("task", "SCALAR".equals(shape) || "GROUP".equals(shape) ? "AGGREGATE" : "PROJECT");
