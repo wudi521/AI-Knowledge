@@ -26,7 +26,7 @@ import java.util.Set;
  *
  * <p>它不认识“专利名称”这类业务 Intent，只消费 DomainFieldRegistry 已注册的 STRING 字段。
  * 因而标题、产品名、合同名、知识标题等领域字段都可复用。全集结论只在 Structured Executor
- * 明确返回完整数据集时产生；数据源截断时 fail-closed。</p>
+ * 明确返回完整数据集且目标字段对全集均有值时产生；数据源截断或字段缺失时 fail-closed。</p>
  */
 @Component
 public class SimilarFieldValuesCapability implements KnowledgeCapability {
@@ -50,7 +50,7 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
     @Override
     public CapabilityDefinition definition() {
         return new CapabilityDefinition(NAME, "1",
-                "在当前知识库完整实体范围内，对一个已注册文本字段寻找值彼此相近的对象组合。field 可传字段 code 或自然语言别名（如 标题/名称）；适合回答‘库里有没有名称相近的对象’这类集合关系问题。",
+                "在当前知识库完整实体范围内，对一个已注册文本字段寻找值彼此相近的对象组合。field 可传字段 code 或自然语言别名（如 标题/专利名称）；适合回答‘库里有没有名称相近的对象’这类集合关系问题。",
                 Set.of("field"), true, 8_000L, 50);
     }
 
@@ -104,6 +104,14 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
                             + ", use an indexed similarity capability for this scale");
         }
 
+        long missingValueCount = rows.stream().filter(row -> row == null || row.getFields() == null
+                || StrUtil.isBlank(row.getFields().get(field.getFieldCode()))).count();
+        if (missingValueCount > 0) {
+            return CapabilityResult.failure(AgentStopReason.NO_RELIABLE_EVIDENCE,
+                    "field data is incomplete: " + field.getFieldCode() + " missing on " + missingValueCount
+                            + " of " + rows.size() + " entities; cannot prove a collection-wide similarity conclusion");
+        }
+
         double threshold = threshold(arguments.get("threshold"));
         int topN = topN(arguments.get("topN"));
         List<Item> items = toItems(rows, field.getFieldCode());
@@ -114,7 +122,8 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
                 "entityCount", items.size(),
                 "pairCount", pairs.size(),
                 "threshold", threshold,
-                "completeDataset", true
+                "completeDataset", true,
+                "missingValueCount", 0
         ));
     }
 
@@ -143,7 +152,7 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
             String raw = row.getFields() == null ? null : row.getFields().get(fieldCode);
             if (StrUtil.isBlank(raw)) continue;
             String normalized = normalize(raw);
-            if (normalized.length() < 2) continue;
+            if (normalized.isEmpty()) continue;
             out.add(new Item(row.getEntityId(), row.getEntityName(), raw.trim(), normalized, grams(normalized)));
         }
         return out;
