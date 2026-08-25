@@ -14,10 +14,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RelationTraversalCapabilityTest {
 
     @Test
-    void registeredDomainProviderExecutesThroughGenericRelationTool() {
+    void registeredDomainProviderExecutesThroughGenericRelationToolAndPublishesTypedContract() {
         DomainRelationProvider provider = new DomainRelationProvider() {
             @Override public String domainCode() { return "PATENT"; }
-            @Override public Set<String> relationTypes() { return Set.of("CITES"); }
+            @Override public Set<String> relationTypes() { return Set.of("CITES", "PRIORITY"); }
             @Override
             public RelationResult traverse(RelationRequest request) {
                 assertEquals(List.of(1L, 2L), request.sourceEntityIds());
@@ -27,6 +27,10 @@ class RelationTraversalCapabilityTest {
         };
         RelationTraversalCapability capability = new RelationTraversalCapability(List.of(provider));
         CapabilityInvocationContext context = new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-rel");
+
+        CapabilityDefinition plannerDefinition = capability.plannerDefinition(context);
+        assertTrue(plannerDefinition.argumentSchema().get("relationType").contains("CITES"));
+        assertTrue(plannerDefinition.argumentSchema().get("relationType").contains("PRIORITY"));
 
         CapabilityResult result = capability.execute(context, Map.of(
                 "sourceEntityIds", List.of(1L, 2L),
