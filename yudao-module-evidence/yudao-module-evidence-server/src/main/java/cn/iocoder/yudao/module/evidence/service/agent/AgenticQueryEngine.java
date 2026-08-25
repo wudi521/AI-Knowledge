@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.evidence.service.agent;
 
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
@@ -16,11 +17,14 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** V1.1 有界执行循环；能力通过统一输出协议接入，主循环不按业务能力增加分支。 */
 @Component
 public class AgenticQueryEngine {
+    private static final int MAX_RECOVERABLE_CAPABILITY_ERRORS = 2;
+
     private final AgentPlanner planner;
     private final CapabilityInvoker capabilityInvoker;
     private final AnswerPipeline answerPipeline;
@@ -51,7 +55,7 @@ public class AgenticQueryEngine {
         try {
             state = new AgentExecutionState(query);
         } catch (IllegalArgumentException e) {
-            traceSteps.add(trace(traceSteps, "GUARD", null, null, null, "FAILED", 0L,
+            traceSteps.add(trace(traceSteps, "GUARD", null, null, null, null, "FAILED", 0L,
                     "evidenceCount=0; original goal is blank", AgentStopReason.INVALID_CAPABILITY_CALL));
             return Result.stopped(AgentStopReason.INVALID_CAPABILITY_CALL, "查询不能为空。", List.of(),
                     0, 0, traceSteps, List.of());
@@ -72,12 +76,13 @@ public class AgenticQueryEngine {
         List<AgentObservation> observations = new ArrayList<>();
         List<Evidence> gatheredEvidence = new ArrayList<>();
         List<String> deterministicAnswers = new ArrayList<>();
+        int recoverableErrors = 0;
 
         while (!state.isStopped()) {
             AgentExecutionGuard.GuardResult plannerGuard = guard.beforePlannerCall(state);
             if (!plannerGuard.allowed()) {
                 state.stop(plannerGuard.stopReason());
-                traceSteps.add(trace(traceSteps, "GUARD", null, null, state.getCurrentSubGoal(), "STOPPED", 0L,
+                traceSteps.add(trace(traceSteps, "GUARD", null, null, state.getCurrentSubGoal(), null, "STOPPED", 0L,
                         "evidenceCount=" + gatheredEvidence.size() + "; planner call rejected by execution guard",
                         plannerGuard.stopReason()));
                 break;
@@ -89,13 +94,14 @@ public class AgenticQueryEngine {
             long plannerElapsed = System.currentTimeMillis() - plannerStart;
             if (decision == null) {
                 state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
-                traceSteps.add(trace(traceSteps, "PLANNER", null, null, state.getCurrentSubGoal(), "FAILED",
+                traceSteps.add(trace(traceSteps, "PLANNER", null, null, state.getCurrentSubGoal(), null, "FAILED",
                         plannerElapsed, "evidenceCount=" + gatheredEvidence.size() + "; planner returned null decision",
                         AgentStopReason.NO_RELIABLE_EVIDENCE));
                 break;
             }
+            String decisionArgs = argumentsSummary(decision.arguments());
             traceSteps.add(trace(traceSteps, "PLANNER", decision.action().name(), decision.capability(),
-                    decision.purpose(), "SUCCEEDED", plannerElapsed,
+                    decision.purpose(), decisionArgs, "SUCCEEDED", plannerElapsed,
                     StrUtil.maxLength(StrUtil.blankToDefault(decision.message(), "decision produced"), 300), null));
 
             switch (decision.action()) {
@@ -104,17 +110,18 @@ public class AgenticQueryEngine {
                     if (!call.accepted()) {
                         state.stop(call.stopReason());
                         traceSteps.add(trace(traceSteps, "CAPABILITY_PREPARE", decision.action().name(), decision.capability(),
-                                decision.purpose(), "FAILED", 0L,
+                                decision.purpose(), decisionArgs, "FAILED", 0L,
                                 "evidenceCount=" + gatheredEvidence.size() + "; " + StrUtil.maxLength(call.message(), 260),
                                 call.stopReason()));
                         return Result.stopped(call.stopReason(), call.message(), gatheredEvidence,
                                 state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
                     }
+                    String safeArgs = argumentsSummary(call.arguments());
                     AgentExecutionGuard.GuardResult callGuard = guard.beforeCapabilityCall(state, call.fingerprint());
                     if (!callGuard.allowed()) {
                         state.stop(callGuard.stopReason());
                         traceSteps.add(trace(traceSteps, "GUARD", decision.action().name(), decision.capability(),
-                                decision.purpose(), "STOPPED", 0L,
+                                decision.purpose(), safeArgs, "STOPPED", 0L,
                                 "evidenceCount=" + gatheredEvidence.size() + "; capability call rejected by execution guard",
                                 callGuard.stopReason()));
                         return Result.stopped(callGuard.stopReason(), "执行预算或重复调用保护触发。",
@@ -130,23 +137,41 @@ public class AgenticQueryEngine {
                     if (!capabilityResult.success()) {
                         AgentStopReason reason = capabilityResult.stopReason() == null
                                 ? AgentStopReason.NO_RELIABLE_EVIDENCE : capabilityResult.stopReason();
+                        if (capabilityResult.recoverable() && recoverableErrors < MAX_RECOVERABLE_CAPABILITY_ERRORS) {
+                            recoverableErrors++;
+                            String progress = "RECOVERABLE_ERROR:" + decision.capability() + ":"
+                                    + Integer.toHexString((String.valueOf(capabilityResult.message())
+                                    + capabilityResult.metadata()).hashCode());
+                            state.markProgress(progress);
+                            AgentObservation errorObservation = AgentObservation.recoverableError(
+                                    decision.capability(), decision.purpose(),
+                                    StrUtil.maxLength(capabilityResult.message(), 800), progress, reason,
+                                    capabilityResult.metadata());
+                            observations.add(errorObservation);
+                            traceSteps.add(trace(traceSteps, "CAPABILITY", decision.action().name(), decision.capability(),
+                                    decision.purpose(), safeArgs, "RETRYABLE", capabilityElapsed,
+                                    "evidenceCount=0; recoverableError=" + recoverableErrors + "/"
+                                            + MAX_RECOVERABLE_CAPABILITY_ERRORS + "; "
+                                            + StrUtil.maxLength(capabilityResult.message(), 320), reason));
+                            continue;
+                        }
                         state.stop(reason);
                         traceSteps.add(trace(traceSteps, "CAPABILITY", decision.action().name(), decision.capability(),
-                                decision.purpose(), "FAILED", capabilityElapsed,
+                                decision.purpose(), safeArgs, "FAILED", capabilityElapsed,
                                 "evidenceCount=0; " + StrUtil.maxLength(capabilityResult.message(), 260), reason));
                         return Result.stopped(reason, capabilityResult.message(), gatheredEvidence,
                                 state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
                     }
                     ObservationMaterial material = materialize(decision, capabilityResult);
                     traceSteps.add(trace(traceSteps, "CAPABILITY", decision.action().name(), decision.capability(),
-                            decision.purpose(), "SUCCEEDED", capabilityElapsed,
+                            decision.purpose(), safeArgs, "SUCCEEDED", capabilityElapsed,
                             "evidenceCount=" + material.evidences().size()
                                     + "; verifiedEntityCount=" + material.verifiedEntityIds().size()
                                     + "; " + StrUtil.maxLength(material.observation().summary(), 400), null));
                     if (!state.markProgress(material.progressHash())) {
                         state.stop(AgentStopReason.NO_PROGRESS);
                         traceSteps.add(trace(traceSteps, "GUARD", decision.action().name(), decision.capability(),
-                                decision.purpose(), "STOPPED", 0L,
+                                decision.purpose(), safeArgs, "STOPPED", 0L,
                                 "evidenceCount=" + gatheredEvidence.size() + "; capability produced no new progress",
                                 AgentStopReason.NO_PROGRESS));
                         return Result.stopped(AgentStopReason.NO_PROGRESS, "连续能力调用没有产生新的有效信息。",
@@ -165,7 +190,7 @@ public class AgenticQueryEngine {
                         if (changed) {
                             context = context.withContextEntityIds(trusted(trustedEntityIds));
                             traceSteps.add(trace(traceSteps, "TRUSTED_SCOPE", decision.action().name(), decision.capability(),
-                                    decision.purpose(), "SUCCEEDED", 0L,
+                                    decision.purpose(), safeArgs, "SUCCEEDED", 0L,
                                     "evidenceCount=" + gatheredEvidence.size() + "; verifiedEntityIds=" + trustedEntityIds, null));
                         }
                     }
@@ -176,7 +201,7 @@ public class AgenticQueryEngine {
                             state.setEvidenceCoverage(EvidenceCoverage.FULL);
                             state.stop(AgentStopReason.ENOUGH_EVIDENCE);
                             traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
-                                    decision.purpose(), "SUCCEEDED", 0L,
+                                    decision.purpose(), decisionArgs, "SUCCEEDED", 0L,
                                     "evidenceCount=0; verifiedEntityCount=" + trustedEntityIds.size()
                                             + "; deterministic capability result answered original goal",
                                     AgentStopReason.ENOUGH_EVIDENCE));
@@ -186,14 +211,13 @@ public class AgenticQueryEngine {
                         }
                         state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
                         traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
-                                decision.purpose(), "FAILED", 0L, "evidenceCount=0; no reliable evidence to answer",
+                                decision.purpose(), decisionArgs, "FAILED", 0L, "evidenceCount=0; no reliable evidence to answer",
                                 AgentStopReason.NO_RELIABLE_EVIDENCE));
                         return Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE, "没有可靠证据支持回答。",
                                 List.of(), state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
                     }
 
-                    // V1.1 硬约束：currentSubGoal 只用于规划下一步能力，最终生成永远回答 immutable originalGoal。
-                    // 即使前面已产生确定性字段答案，也不能把最后一次检索 purpose 升级为最终问题。
+                    // currentSubGoal 只用于规划；最终生成永远回答 immutable originalGoal。
                     String generationQuery = state.getOriginalGoal();
                     long answerStart = System.currentTimeMillis();
                     GenerationResult generation = answerPipeline.generateWithClaims(generationQuery, gatheredEvidence, history);
@@ -201,7 +225,7 @@ public class AgenticQueryEngine {
                     if (generation == null || StrUtil.isBlank(generation.getAnswer()) || generation.isClaimFail()) {
                         state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
                         traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
-                                decision.purpose(), "FAILED", answerElapsed,
+                                decision.purpose(), decisionArgs, "FAILED", answerElapsed,
                                 "evidenceCount=" + gatheredEvidence.size() + "; answer failed evidence/claim validation",
                                 AgentStopReason.NO_RELIABLE_EVIDENCE));
                         return Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE, "最终回答未通过证据验证。",
@@ -213,7 +237,7 @@ public class AgenticQueryEngine {
                     state.setEvidenceCoverage(EvidenceCoverage.FULL);
                     state.stop(AgentStopReason.ENOUGH_EVIDENCE);
                     traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
-                            decision.purpose(), "SUCCEEDED", answerElapsed,
+                            decision.purpose(), decisionArgs, "SUCCEEDED", answerElapsed,
                             "evidenceCount=" + gatheredEvidence.size() + "; "
                                     + (deterministicAnswers.isEmpty()
                                     ? "grounded answer passed claim validation for originalGoal"
@@ -226,7 +250,7 @@ public class AgenticQueryEngine {
                 case NEED_MORE_INFO -> {
                     state.stop(AgentStopReason.NEED_USER_INPUT);
                     traceSteps.add(trace(traceSteps, "STOP", decision.action().name(), null,
-                            decision.purpose(), "STOPPED", 0L,
+                            decision.purpose(), decisionArgs, "STOPPED", 0L,
                             "evidenceCount=" + gatheredEvidence.size() + "; " + StrUtil.maxLength(decision.message(), 260),
                             AgentStopReason.NEED_USER_INPUT));
                     return new Result(State.CLARIFY, null,
@@ -237,7 +261,7 @@ public class AgenticQueryEngine {
                 case STOP -> {
                     state.stop(AgentStopReason.CAPABILITY_UNAVAILABLE);
                     traceSteps.add(trace(traceSteps, "STOP", decision.action().name(), null,
-                            decision.purpose(), "STOPPED", 0L,
+                            decision.purpose(), decisionArgs, "STOPPED", 0L,
                             "evidenceCount=" + gatheredEvidence.size() + "; " + StrUtil.maxLength(decision.message(), 260),
                             AgentStopReason.CAPABILITY_UNAVAILABLE));
                     return Result.stopped(AgentStopReason.CAPABILITY_UNAVAILABLE,
@@ -252,11 +276,17 @@ public class AgenticQueryEngine {
     }
 
     private AgentTraceStep trace(List<AgentTraceStep> current, String phase, String action, String capability,
-                                 String purpose, String status, long elapsedMs, String summary,
+                                 String purpose, String argumentsSummary, String status, long elapsedMs, String summary,
                                  AgentStopReason stopReason) {
         return new AgentTraceStep(current.size() + 1, phase, action, capability,
-                StrUtil.maxLength(purpose, 300), status, Math.max(0L, elapsedMs),
-                StrUtil.maxLength(summary, 500), stopReason);
+                StrUtil.maxLength(purpose, 300), StrUtil.maxLength(argumentsSummary, 700),
+                status, Math.max(0L, elapsedMs), StrUtil.maxLength(summary, 500), stopReason);
+    }
+
+    private String argumentsSummary(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) return null;
+        try { return StrUtil.maxLength(JSONUtil.toJsonStr(arguments), 700); }
+        catch (Exception e) { return StrUtil.maxLength(String.valueOf(arguments), 700); }
     }
 
     private ObservationMaterial materialize(AgentDecision decision, CapabilityResult result) {
@@ -266,20 +296,19 @@ public class AgenticQueryEngine {
             List<Long> verified = sanitizeVerifiedEntityIds(output.verifiedEntityIds(), result);
             String progress = decision.capability() + ":" + StrUtil.blankToDefault(output.progressHash(), "EMPTY");
             String summary = StrUtil.maxLength(StrUtil.blankToDefault(output.summary(), String.valueOf(result.metadata())), 1200);
-            AgentObservation observation = new AgentObservation(decision.capability(), decision.purpose(), summary, progress);
+            AgentObservation observation = AgentObservation.success(decision.capability(), decision.purpose(), summary,
+                    progress, result.metadata());
             return new ObservationMaterial(observation, evidences, progress, output.deterministicAnswer(), verified);
         }
         String summary = StrUtil.maxLength(String.valueOf(result.metadata()), 1200);
         String progress = decision.capability() + ":" + Integer.toHexString((String.valueOf(data) + summary).hashCode());
-        return new ObservationMaterial(new AgentObservation(decision.capability(), decision.purpose(), summary, progress),
-                List.of(), progress, null, List.of());
+        return new ObservationMaterial(AgentObservation.success(decision.capability(), decision.purpose(), summary,
+                progress, result.metadata()), List.of(), progress, null, List.of());
     }
 
     /**
      * trusted scope 的最后一道通用防线。
      * 聚合/计数事实只能作为 provenance，不能把参与统计的整批实体升级成后续“它/这些”的指代范围。
-     * 当能力声明的 outputCount 与 verifiedEntityIds 数量不一致时同样 fail-closed，避免“只展示前 N 条，
-     * 却把全集实体偷偷塞进上下文”的 scope 污染。
      */
     private List<Long> sanitizeVerifiedEntityIds(List<Long> rawIds, CapabilityResult result) {
         if (rawIds == null || rawIds.isEmpty()) return List.of();
@@ -287,7 +316,8 @@ public class AgenticQueryEngine {
         if (ids.isEmpty()) return List.of();
         Object taskRaw = result == null ? null : result.metadata().get("task");
         String task = taskRaw == null ? "" : String.valueOf(taskRaw).trim();
-        if ("COUNT".equalsIgnoreCase(task) || "AGGREGATE".equalsIgnoreCase(task)) return List.of();
+        if ("COUNT".equalsIgnoreCase(task) || "AGGREGATE".equalsIgnoreCase(task)
+                || "GROUP".equalsIgnoreCase(task)) return List.of();
         Integer outputCount = metadataCount(result == null ? null : result.metadata().get("outputCount"));
         if (outputCount != null && outputCount >= 0 && outputCount != ids.size()) return List.of();
         return ids;
