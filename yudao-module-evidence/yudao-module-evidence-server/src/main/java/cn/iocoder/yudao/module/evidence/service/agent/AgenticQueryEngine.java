@@ -131,7 +131,8 @@ public class AgenticQueryEngine {
                         traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null, decision.purpose(),
                                 "SUCCEEDED", 0L, "deterministic capability result answered original goal", AgentStopReason.ENOUGH_EVIDENCE));
                         return new Result(State.ANSWER, String.join("\n", deterministicAnswers), null, AgentStopReason.ENOUGH_EVIDENCE,
-                                List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), List.copyOf(traceSteps));
+                                List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), null,
+                                List.copyOf(traceSteps));
                     }
                     if (gatheredEvidence.isEmpty()) {
                         state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
@@ -154,7 +155,8 @@ public class AgenticQueryEngine {
                     traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null, decision.purpose(),
                             "SUCCEEDED", answerElapsed, "grounded answer passed claim validation", AgentStopReason.ENOUGH_EVIDENCE));
                     return new Result(State.ANSWER, generation.getAnswer(), null, AgentStopReason.ENOUGH_EVIDENCE,
-                            List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), List.copyOf(traceSteps));
+                            List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), generation,
+                            List.copyOf(traceSteps));
                 }
                 case NEED_MORE_INFO -> {
                     state.stop(AgentStopReason.NEED_USER_INPUT);
@@ -162,7 +164,7 @@ public class AgenticQueryEngine {
                             "STOPPED", 0L, StrUtil.maxLength(decision.message(), 300), AgentStopReason.NEED_USER_INPUT));
                     return new Result(State.CLARIFY, null, StrUtil.blankToDefault(decision.message(), "请补充完成该查询所需的信息。"),
                             AgentStopReason.NEED_USER_INPUT, List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(),
-                            state.getEvidenceCoverage(), List.copyOf(traceSteps));
+                            state.getEvidenceCoverage(), null, List.copyOf(traceSteps));
                 }
                 case STOP -> {
                     state.stop(AgentStopReason.CAPABILITY_UNAVAILABLE);
@@ -205,11 +207,11 @@ public class AgenticQueryEngine {
 
     public record Result(State state, String answer, String clarificationQuestion, AgentStopReason stopReason,
                          List<Evidence> evidences, int steps, int llmCalls, EvidenceCoverage evidenceCoverage,
-                         List<AgentTraceStep> traceSteps) {
+                         GenerationResult generation, List<AgentTraceStep> traceSteps) {
         static Result stopped(AgentStopReason reason, String message, List<Evidence> evidences, int steps, int llmCalls,
                               List<AgentTraceStep> traceSteps) {
             return new Result(State.STOPPED, null, message, reason, evidences == null ? List.of() : List.copyOf(evidences),
-                    steps, llmCalls, EvidenceCoverage.NONE, traceSteps == null ? List.of() : List.copyOf(traceSteps));
+                    steps, llmCalls, EvidenceCoverage.NONE, null, traceSteps == null ? List.of() : List.copyOf(traceSteps));
         }
     }
 }

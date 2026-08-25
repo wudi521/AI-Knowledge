@@ -11,7 +11,7 @@ spring:
       config: # 【配置中心】配置项
         namespace: dev
         group: DEFAULT_GROUP
-    openfeign: # Feign 客户端超时(证据评估链路含多次 LLM 调用, CPU 推理 20~100s, 读超时放宽到 5 分钟, 对齐 knowledge 模块)
+    openfeign:
       client:
         config:
           model-server:
@@ -20,7 +20,7 @@ spring:
           retrieval-server:
             connect-timeout: 10000
             read-timeout: 300000
-  datasource: # 数据库: MySQL 8 / 库 ruoyi-vue-pro / root-123456
+  datasource:
     druid:
       initial-size: 1
       min-idle: 1
@@ -34,46 +34,51 @@ spring:
           url: jdbc:mysql://127.0.0.1:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true
           username: root
           password: 123456
-        slave: # 开发环境从库指向同一实例
+        slave:
           name: ruoyi-vue-pro
           lazy: true
           url: jdbc:mysql://127.0.0.1:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true
           username: root
           password: 123456
-  redis: # Redis 7.0 :6379
+  redis:
     host: 127.0.0.1
     port: 6379
     database: 0
 
-
-# 定时任务(本地环境关闭 xxl-job 调度中心, 对齐芋道)
 xxl:
   job:
-    enabled: false # 是否开启调度中心，默认为 true 开启
+    enabled: false
     admin:
-      addresses: http://127.0.0.1:9090/xxl-job-admin # 调度中心部署跟地址
+      addresses: http://127.0.0.1:9090/xxl-job-admin
 
-# 证据平台业务配置(接线任务 T1 落盘, 供后续任务读取)
 yudao:
   security:
-    internal-auth: # 内部 RPC 认证(login-user 防伪造): 启用后带 login-user 头的请求必须附有效内部签名
+    internal-auth:
       enabled: true
-      secret-key: ${YUDAO_INTERNAL_AUTH_SECRET:dev-internal-secret-2026} # 生产必须环境变量覆盖
+      secret-key: ${YUDAO_INTERNAL_AUTH_SECRET:dev-internal-secret-2026}
       timestamp-window-seconds: 300
   evidence:
+    agent:
+      mode: AGENT_WITH_V3_FALLBACK
+      max-steps: 6
+      max-llm-calls: 6
+      max-elapsed-ms: 15000
+      capability-timeout-threads: 8
+      environment: local
+      write-allowed: false
     sufficiency:
-      answer-threshold: 0.75 # 可作答判定: 证据充分度得分阈值(得分在 0~1)
-      consult-threshold: 0.5  # 需转人工咨询: 得分阈值
-      min-evidence-count: 2   # 最少证据条数
-      entity-consistency: true # 实体一致性校验开关
-      conflict-block: true     # 冲突时阻断作答
+      answer-threshold: 0.75
+      consult-threshold: 0.5
+      min-evidence-count: 2
+      entity-consistency: true
+      conflict-block: true
       weights:
-        top-score: 0.5        # 权重: 最高证据分
-        evidence-count: 0.3   # 权重: 证据条数
-        entity-coverage: 0.2  # 权重: 实体覆盖率
+        top-score: 0.5
+        evidence-count: 0.3
+        entity-coverage: 0.2
     dedup:
-      similarity-threshold: 0.85 # 证据去重相似度阈值
+      similarity-threshold: 0.85
     claim:
-      max-retry: 2              # Claim 验证最大重试次数
+      max-retry: 2
     slot:
-      enabled: true # 槽位检测总开关(缺必填槽位 → 反问)
+      enabled: true
