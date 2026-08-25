@@ -108,6 +108,22 @@ public class AgenticQueryEngine {
                 case CALL_CAPABILITY -> {
                     CapabilityInvoker.PreparedCall call = capabilityInvoker.prepare(decision.capability(), decision.arguments(), context);
                     if (!call.accepted()) {
+                        if (call.recoverable() && recoverableErrors < MAX_RECOVERABLE_CAPABILITY_ERRORS) {
+                            recoverableErrors++;
+                            String progress = "RECOVERABLE_PREPARE_ERROR:" + decision.capability() + ":"
+                                    + Integer.toHexString((String.valueOf(call.message()) + decisionArgs).hashCode());
+                            state.markProgress(progress);
+                            observations.add(AgentObservation.recoverableError(
+                                    decision.capability(), decision.purpose(),
+                                    StrUtil.maxLength(call.message(), 800), progress,
+                                    call.stopReason(), Map.of("errorKind", "PREPARE_CONTRACT")));
+                            traceSteps.add(trace(traceSteps, "CAPABILITY_PREPARE", decision.action().name(), decision.capability(),
+                                    decision.purpose(), decisionArgs, "RETRYABLE", 0L,
+                                    "evidenceCount=0; recoverableError=" + recoverableErrors + "/"
+                                            + MAX_RECOVERABLE_CAPABILITY_ERRORS + "; "
+                                            + StrUtil.maxLength(call.message(), 320), call.stopReason()));
+                            continue;
+                        }
                         state.stop(call.stopReason());
                         traceSteps.add(trace(traceSteps, "CAPABILITY_PREPARE", decision.action().name(), decision.capability(),
                                 decision.purpose(), decisionArgs, "FAILED", 0L,
