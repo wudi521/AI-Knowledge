@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.evidence.service.agent;
 
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
+import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.AgentCapabilityOutput;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityDefinition;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvocationContext;
@@ -8,6 +9,7 @@ import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvok
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityRegistry;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResult;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.KnowledgeCapability;
+import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -17,6 +19,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class AgenticQueryEngineTrustedScopeTest {
 
@@ -71,6 +77,44 @@ class AgenticQueryEngineTrustedScopeTest {
                     "trace-candidate", List.of());
             assertEquals(AgenticQueryEngine.State.CLARIFY, result.state());
             assertTrue(result.verifiedEntityIds().isEmpty());
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
+    void deterministicFactsAndSemanticEvidenceMustComposeOneCompleteAnswer() {
+        AtomicInteger plannerCalls = new AtomicInteger();
+        AgentPlanner planner = (state, context, observations, history) -> {
+            int call = plannerCalls.getAndIncrement();
+            if (call == 0) {
+                return new AgentDecision(AgentActionType.CALL_CAPABILITY, "trusted-entity",
+                        Map.of("query", "申请号X"), "取得公布号", null);
+            }
+            if (call == 1) {
+                assertEquals(List.of(74L), context.contextEntityIds());
+                return new AgentDecision(AgentActionType.CALL_CAPABILITY, "candidate-only",
+                        Map.of("query", "技术方案", "scope", "CONTEXT"), "解释技术方案", null);
+            }
+            return new AgentDecision(AgentActionType.ANSWER, null, Map.of(), "合并完整答案", null);
+        };
+
+        AnswerPipeline answerPipeline = mock(AnswerPipeline.class);
+        GenerationResult generation = mock(GenerationResult.class);
+        when(generation.getAnswer()).thenReturn("技术方案=通过可信对象范围内证据生成");
+        when(generation.isClaimFail()).thenReturn(false);
+        when(answerPipeline.generateWithClaims(eq("解释技术方案"), anyList(), anyList())).thenReturn(generation);
+
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
+                List.of(new TrustedEntityCapability(), new CandidateOnlyCapability()), List.of()));
+        try {
+            AgenticQueryEngine engine = new AgenticQueryEngine(planner, invoker, answerPipeline);
+            AgenticQueryEngine.Result result = engine.execute(
+                    "申请号X的公布号是什么，并说明它的技术方案？",
+                    6L, "PATENT", 1L, 2L, "trace-composite", List.of());
+            assertEquals(AgenticQueryEngine.State.ANSWER, result.state());
+            assertEquals("公布号=CN123\n技术方案=通过可信对象范围内证据生成", result.answer());
+            assertEquals(List.of(74L), result.verifiedEntityIds());
         } finally {
             invoker.shutdown();
         }
