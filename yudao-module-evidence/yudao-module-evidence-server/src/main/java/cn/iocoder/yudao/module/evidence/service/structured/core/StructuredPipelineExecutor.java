@@ -22,6 +22,7 @@ import java.util.Set;
 public class StructuredPipelineExecutor {
     private static final int MAX_GROUP_COMBINATIONS_PER_ENTITY = 256;
     private static final int MAX_GROUP_BUCKETS = 5_000;
+    private static final int MAX_PROJECTION_COMBINATIONS_PER_ENTITY = 256;
 
     private final DomainFieldRegistry fieldRegistry;
     private final DomainMetricRegistry metricRegistry;
@@ -111,18 +112,29 @@ public class StructuredPipelineExecutor {
 
         SortRows sorted = sortRows(plan.getDomainCode(), rows, plan.getOrderBy());
         if (!sorted.success()) return StructuredPipelineResult.failure(sorted.message());
-        List<StructuredQueryResult.Row> working = sorted.rows();
-        if (plan.isDistinct()) working = distinctRows(plan.getDomainCode(), working, plan.getSelect());
-        if (plan.getLimit() != null && plan.getLimit() > 0 && working.size() > plan.getLimit()) {
-            working = new ArrayList<>(working.subList(0, plan.getLimit()));
-        }
-        Projection projection = project(plan.getDomainCode(), working, plan.getSelect());
+
+        // 投影先真正执行 explode/transform，DISTINCT 才能作用于派生后的值，而不是作用于物理实体行。
+        Projection projection = project(plan.getDomainCode(), sorted.rows(), plan.getSelect());
         if (!projection.success()) return StructuredPipelineResult.failure(projection.message());
-        return new StructuredPipelineResult(true, null, projection.rows(), null, true,
-                working.isEmpty(), sourceEntityCount, projection.missing(), Map.of(
+        if (projection.missing() > 0) {
+            return new StructuredPipelineResult(true, null, projection.rows(), null, true,
+                    projection.rows().isEmpty(), sourceEntityCount, projection.missing(), Map.of(
+                    "completeDataset", true,
+                    "authoritativeEmpty", projection.rows().isEmpty(),
+                    "outputCount", projection.rows().size()));
+        }
+
+        List<StructuredPipelineResult.Row> output = projection.rows();
+        if (plan.isDistinct()) output = distinctProjectedRows(output, plan.getSelect());
+        if (plan.getLimit() != null && plan.getLimit() > 0 && output.size() > plan.getLimit()) {
+            output = new ArrayList<>(output.subList(0, plan.getLimit()));
+        }
+        return new StructuredPipelineResult(true, null, output, null, true,
+                output.isEmpty(), sourceEntityCount, 0, Map.of(
                 "completeDataset", true,
-                "authoritativeEmpty", working.isEmpty(),
-                "outputCount", projection.rows().size()));
+                "authoritativeEmpty", output.isEmpty(),
+                "outputCount", output.size(),
+                "valueProjection", hasExplodedProjection(plan.getSelect()) || plan.isDistinct()));
     }
 
     private StructuredPipelineResult executeGrouped(StructuredPipelinePlan plan,
@@ -328,37 +340,63 @@ public class StructuredPipelineExecutor {
         List<StructuredPipelineResult.Row> out = new ArrayList<>();
         int missing = 0;
         for (StructuredQueryResult.Row row : rows) {
-            Map<String, String> fields = new LinkedHashMap<>();
             if (select == null || select.isEmpty()) {
-                fields.putAll(row.getFields() == null ? Map.of() : row.getFields());
-            } else {
-                for (StructuredValueExpression expression : select) {
-                    List<String> result = values.values(domainCode, row, expression);
-                    if (result.isEmpty()) { missing++; fields.put(expressionKey(expression), null); }
-                    else fields.put(expressionKey(expression), String.join("、", result));
-                }
+                out.add(new StructuredPipelineResult.Row(row.getEntityId(), row.getEntityName(),
+                        row.getFields() == null ? Map.of() : row.getFields(), row.getValue(), null));
+                continue;
             }
-            out.add(new StructuredPipelineResult.Row(row.getEntityId(), row.getEntityName(), fields,
-                    row.getValue(), null));
+
+            List<List<String>> dimensions = new ArrayList<>();
+            boolean rowMissing = false;
+            long combinations = 1L;
+            for (StructuredValueExpression expression : select) {
+                List<String> result = values.values(domainCode, row, expression);
+                if (result.isEmpty()) {
+                    missing++;
+                    rowMissing = true;
+                    break;
+                }
+                if (combinations > MAX_PROJECTION_COMBINATIONS_PER_ENTITY / Math.max(1, result.size())) {
+                    return Projection.failure("projection expansion exceeds per-entity safety limit: "
+                            + MAX_PROJECTION_COMBINATIONS_PER_ENTITY);
+                }
+                combinations *= result.size();
+                dimensions.add(result);
+            }
+            if (rowMissing) continue;
+
+            for (List<String> tuple : cartesian(dimensions)) {
+                Map<String, String> fields = new LinkedHashMap<>();
+                for (int i = 0; i < select.size(); i++) fields.put(expressionKey(select.get(i)), tuple.get(i));
+                out.add(new StructuredPipelineResult.Row(row.getEntityId(), row.getEntityName(), fields,
+                        row.getValue(), null));
+            }
         }
         return Projection.success(out, missing);
     }
 
-    private List<StructuredQueryResult.Row> distinctRows(String domainCode,
-                                                         List<StructuredQueryResult.Row> rows,
-                                                         List<StructuredValueExpression> select) {
-        Map<String, StructuredQueryResult.Row> unique = new LinkedHashMap<>();
-        for (StructuredQueryResult.Row row : rows) {
+    private List<StructuredPipelineResult.Row> distinctProjectedRows(List<StructuredPipelineResult.Row> rows,
+                                                                     List<StructuredValueExpression> select) {
+        Map<String, StructuredPipelineResult.Row> unique = new LinkedHashMap<>();
+        for (StructuredPipelineResult.Row row : rows) {
             String key;
-            if (select == null || select.isEmpty()) key = String.valueOf(row.getEntityId());
-            else {
+            if (select == null || select.isEmpty()) {
+                key = String.valueOf(row.entityId());
+            } else {
                 List<String> tuple = new ArrayList<>();
-                for (StructuredValueExpression expression : select) tuple.add(String.join("、", values.values(domainCode, row, expression)));
+                for (StructuredValueExpression expression : select) {
+                    tuple.add(StrUtil.nullToEmpty(row.fields().get(expressionKey(expression))));
+                }
                 key = String.join("\u001f", tuple);
             }
             unique.putIfAbsent(key, row);
         }
         return new ArrayList<>(unique.values());
+    }
+
+    private boolean hasExplodedProjection(List<StructuredValueExpression> select) {
+        if (select == null) return false;
+        return select.stream().anyMatch(StructuredValueExpression::explode);
     }
 
     private boolean matches(String domainCode, StructuredQueryResult.Row row, StructuredPredicateNode node) {
@@ -420,6 +458,9 @@ public class StructuredPipelineExecutor {
             if (order.value() != null) {
                 FieldDefinition field = fieldRegistry.byCode(plan.getDomainCode(), order.value().fieldCode()).orElse(null);
                 if (field == null || !field.isSortable()) return "field is not sortable: " + order.value().fieldCode();
+                if ((plan.getGroupBy() == null || plan.getGroupBy().isEmpty()) && order.value().explode()) {
+                    return "flat order-by expression cannot explode multiple values; use GROUP BY for element-level ordering";
+                }
             } else if (StrUtil.isNotBlank(order.metricCode())) {
                 if (metricRegistry.lookup(plan.getDomainCode(), order.metricCode()).isEmpty()) return "metric is not registered: " + order.metricCode();
             } else return "order-by source is missing";
