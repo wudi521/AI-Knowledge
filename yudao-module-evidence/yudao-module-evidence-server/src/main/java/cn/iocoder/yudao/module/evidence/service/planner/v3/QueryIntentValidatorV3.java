@@ -47,7 +47,11 @@ public class QueryIntentValidatorV3 {
             if (StrUtil.isBlank(selection.getField()) || !allowedFields.contains(selection.getField().toUpperCase())) {
                 return Validation.failure("INVALID_SELECTION_FIELD");
             }
-            // EXACT_ENTITY 已经表达“精确相等”的业务语义，运算符由系统固定为 EQ，不能要求模型决定。
+            // EXACT_ENTITY 的业务语义固定为精确相等。Planner 负责写入 EQ，Validator 再强制校验，
+            // 防止其他内部调用绕过 Planner 后把非精确运算符带入执行层。
+            if (!"EQ".equalsIgnoreCase(selection.getOperator())) {
+                return Validation.failure("INVALID_EXACT_OPERATOR");
+            }
             if (selection.getValues() == null || selection.getValues().isEmpty()) {
                 return Validation.failure("MISSING_EXACT_VALUE");
             }
