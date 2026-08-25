@@ -25,7 +25,10 @@ import java.util.regex.Pattern;
  * Query Engine V3 唯一自然语言语义编译器。
  *
  * <p>所有用户自然语言先由这里编译成 Selection + Actions。下游 Structured/Retrieval Executor
- * 只执行 typed intent，不再依据关键词重新判断用户意图。</p>
+ * 只执行类型化意图，不再依据关键词重新判断用户意图。</p>
+ *
+ * <p>职责边界：LLM 负责理解自然语言；申请号、公布号、引号文本等可确定的字面事实由程序抽取并校正；
+ * 运算符等执行协议字段必须归一化后才能进入执行层。</p>
  */
 @Slf4j
 @Component
@@ -45,7 +48,7 @@ public class QueryPlannerV3 {
             selection.type 只能是：
             CURRENT_SCOPE：当前知识库全部实体；
             RESULT_SET：上一轮明确实体集合；
-            EXACT_ENTITY：通过已注册结构化字段精确定位对象；
+            EXACT_ENTITY：通过已注册结构化字段精确定位对象；EXACT_ENTITY 不需要自行发明运算符，系统固定按精确相等执行；
             STRUCTURED_FILTER：通过已注册字段和白名单操作符过滤对象；
             SEMANTIC：条件属于“相关/涉及/采用/解决/类似/关于”等语义概念，不能可靠映射为结构化字段；
             EXACT_TEXT：用户明确要求原文逐字出现/包含某词或短语。
@@ -54,16 +57,19 @@ public class QueryPlannerV3 {
             PROJECT_FIELDS 必须填写 fields；AGGREGATE 填 metric/operation；COMPARE 可填 compareType；
             SUMMARIZE/ANSWER/COMPARE 可填写 action.query 作为后续证据检索焦点。
 
+            STRUCTURED_FILTER 的 operator 只能使用：EQ/NE/CONTAINS/STARTS_WITH/IN/EXISTS。
+
             重要规则：
             1. “发明人/申请号/公布号”等字段只是 Action 或结构化条件，不能仅因为出现这些词就把整句当成结构化查询。
             2. “视频技术相关专利的发明人是谁”应是 selection=SEMANTIC(query=视频技术)，action=PROJECT_FIELDS(INVENTOR)。
             3. “标题包含磁涌的专利发明人”应是 selection=STRUCTURED_FILTER(field=TITLE,operator=CONTAINS,value=磁涌)，action=PROJECT_FIELDS(INVENTOR)。
             4. “当前知识库有几个专利”应是 CURRENT_SCOPE + COUNT。
-            5. “CN xxx 的发明人”应是 EXACT_ENTITY(PUBLICATION_NO=xxx) + PROJECT_FIELDS(INVENTOR)。
-            6. “原文包含磁涌的专利有哪些”应是 EXACT_TEXT(query=磁涌) + LIST。
-            7. 不能创造 allowedFields/allowedMetrics 之外的字段或指标；语义概念不是字段时必须用 SEMANTIC。
-            8. queryVariants 只给 SEMANTIC 第一轮召回使用，最多 5 个，必须保持原意，不能编造领域事实。
-            9. 如果用户意图确实缺必要条件，requiresClarification=true 并给 clarificationQuestion。
+            5. “CN xxx 的发明人”应是 EXACT_ENTITY(field=PUBLICATION_NO,values=[xxx]) + PROJECT_FIELDS(INVENTOR)。
+            6. “申请号 xxx 的公布号”应是 EXACT_ENTITY(field=APPLICATION_NO,values=[xxx]) + PROJECT_FIELDS(PUBLICATION_NO)。
+            7. “原文包含磁涌的专利有哪些”应是 EXACT_TEXT(query=磁涌) + LIST。
+            8. 不能创造 allowedFields/allowedMetrics 之外的字段或指标；语义概念不是字段时必须用 SEMANTIC。
+            9. queryVariants 只给 SEMANTIC 第一轮召回使用，最多 5 个，必须保持原意，不能编造领域事实。
+            10. 如果用户意图确实缺必要条件，requiresClarification=true 并给 clarificationQuestion。
 
             输出格式：
             {
@@ -115,16 +121,16 @@ public class QueryPlannerV3 {
             long elapsed = System.currentTimeMillis() - start;
             if (json == null) return unavailable(domainCode, "PLANNER_PARSE_FAILED", elapsed);
 
-            QueryIntentV3 intent = parseIntent(json, domainCode, elapsed);
+            QueryIntentV3 intent = normalizeIntent(query, parseIntent(json, domainCode, elapsed));
             QueryIntentValidatorV3.Validation validation = validator.validate(intent);
             if (!validation.valid()) {
-                log.warn("[plan-v3][invalid intent reason={} query={}]", validation.reasonCode(), StrUtil.maxLength(query, 100));
+                log.warn("[plan-v3][意图校验失败 reason={} query={}]", validation.reasonCode(), StrUtil.maxLength(query, 100));
                 return unavailable(domainCode, validation.reasonCode(), elapsed);
             }
             return intent;
         } catch (Exception e) {
             long elapsed = System.currentTimeMillis() - start;
-            log.warn("[plan-v3][planner unavailable query={} error={}]", StrUtil.maxLength(query, 100), e.getMessage());
+            log.warn("[plan-v3][规划服务不可用 query={} error={}]", StrUtil.maxLength(query, 100), e.getMessage());
             return unavailable(domainCode, "PLANNER_UNAVAILABLE", elapsed);
         }
     }
@@ -137,8 +143,8 @@ public class QueryPlannerV3 {
                     .type(enumValue(QueryIntentV3.SelectionType.class, s.getStr("type")))
                     .query(s.getStr("query"))
                     .field(upper(s.getStr("field")))
-                    .operator(upper(s.getStr("operator")))
-                    .values(stringList(s.get("values"), 20))
+                    .operator(normalizeOperator(s.getStr("operator")))
+                    .values(selectionValues(s))
                     .queryVariants(stringList(s.get("queryVariants"), 5))
                     .build();
         }
@@ -175,6 +181,109 @@ public class QueryPlannerV3 {
                 .plannerSource("LLM")
                 .plannerElapsedMs(elapsed)
                 .build();
+    }
+
+    /**
+     * 把模型输出归一化成可执行协议。
+     * 这里只校正确定性的协议和字面事实，不重新猜测用户语义。
+     */
+    private QueryIntentV3 normalizeIntent(String query, QueryIntentV3 intent) {
+        if (intent == null || intent.getSelection() == null) return intent;
+        QueryIntentV3.Selection selection = intent.getSelection();
+
+        if (selection.getType() == QueryIntentV3.SelectionType.EXACT_ENTITY) {
+            // EXACT_ENTITY 的语义已经是“精确定位”，执行层固定使用 EQ，不允许模型改变。
+            selection.setOperator("EQ");
+            boolean lexicalAdjusted = fillExactLexicalFact(query, selection);
+            if (lexicalAdjusted) intent.setPlannerSource("LLM+LEXICAL");
+            return intent;
+        }
+
+        if (selection.getType() == QueryIntentV3.SelectionType.STRUCTURED_FILTER) {
+            selection.setOperator(normalizeOperator(selection.getOperator()));
+            // 如果模型已经明确选择申请号/公布号等唯一标识字段，并且是精确相等，则收敛为 EXACT_ENTITY。
+            if ("EQ".equals(selection.getOperator()) && isExactIdentityField(selection.getField())
+                    && fillExactLexicalFact(query, selection)) {
+                selection.setType(QueryIntentV3.SelectionType.EXACT_ENTITY);
+                selection.setOperator("EQ");
+                intent.setPlannerSource("LLM+LEXICAL");
+            }
+        }
+        return intent;
+    }
+
+    /**
+     * 仅当模型已经选择了精确实体语义或唯一标识字段时，才用正则抽取值进行校正。
+     * 不会把“与申请号 X 类似的专利”这类语义查询强行改成精确查询。
+     */
+    private boolean fillExactLexicalFact(String query, QueryIntentV3.Selection selection) {
+        if (StrUtil.isBlank(query)) return false;
+        List<String> applicationNos = extractMatches(APPLICATION_NO, query);
+        List<String> publicationNos = extractMatches(PUBLICATION_NO, query);
+        String field = upper(selection.getField());
+
+        if ("APPLICATION_NO".equals(field) && applicationNos.size() == 1) {
+            selection.setValues(List.of(applicationNos.get(0)));
+            return true;
+        }
+        if ("PUBLICATION_NO".equals(field) && publicationNos.size() == 1) {
+            selection.setValues(List.of(publicationNos.get(0)));
+            return true;
+        }
+
+        // 模型已经明确选择 EXACT_ENTITY，但漏了字段时，只有在字面事实唯一且无歧义时才补字段。
+        if (StrUtil.isBlank(field) && selection.getType() == QueryIntentV3.SelectionType.EXACT_ENTITY) {
+            if (applicationNos.size() == 1 && publicationNos.isEmpty()) {
+                selection.setField("APPLICATION_NO");
+                selection.setValues(List.of(applicationNos.get(0)));
+                return true;
+            }
+            if (publicationNos.size() == 1 && applicationNos.isEmpty()) {
+                selection.setField("PUBLICATION_NO");
+                selection.setValues(List.of(publicationNos.get(0)));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isExactIdentityField(String field) {
+        String normalized = upper(field);
+        return "APPLICATION_NO".equals(normalized) || "PUBLICATION_NO".equals(normalized);
+    }
+
+    /**
+     * 接受模型常见的等价表达，但只归一化到系统白名单运算符，不放宽执行能力。
+     */
+    private String normalizeOperator(String value) {
+        if (StrUtil.isBlank(value)) return null;
+        String normalized = value.trim().toUpperCase();
+        return switch (normalized) {
+            case "=", "==", "EQUAL", "EQUALS", "IS" -> "EQ";
+            case "!=", "<>", "NOT_EQUAL", "NOT_EQUALS", "IS_NOT" -> "NE";
+            case "CONTAIN", "CONTAINS", "LIKE", "INCLUDES" -> "CONTAINS";
+            case "START_WITH", "STARTS_WITH", "PREFIX" -> "STARTS_WITH";
+            case "IN" -> "IN";
+            case "EXIST", "EXISTS", "IS_NOT_NULL", "NOT_NULL" -> "EXISTS";
+            default -> normalized;
+        };
+    }
+
+    private List<String> selectionValues(JSONObject selection) {
+        List<String> values = stringList(selection.get("values"), 20);
+        if (!values.isEmpty()) return values;
+        String single = selection.getStr("value");
+        return StrUtil.isBlank(single) ? List.of() : List.of(single.trim());
+    }
+
+    private List<String> extractMatches(Pattern pattern, String query) {
+        List<String> values = new ArrayList<>();
+        Matcher matcher = pattern.matcher(query);
+        while (matcher.find()) {
+            String value = matcher.group().trim();
+            if (!values.contains(value)) values.add(value);
+        }
+        return values;
     }
 
     private String buildInput(String query, String domainCode, List<ChatTurnDTO> history,
@@ -277,12 +386,20 @@ public class QueryPlannerV3 {
     private Integer integerValue(Object value) {
         if (value instanceof Number n) return n.intValue();
         if (value == null) return null;
-        try { return Integer.parseInt(String.valueOf(value)); } catch (Exception e) { return null; }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private <E extends Enum<E>> E enumValue(Class<E> type, String value) {
         if (StrUtil.isBlank(value)) return null;
-        try { return Enum.valueOf(type, value.trim().toUpperCase()); } catch (Exception e) { return null; }
+        try {
+            return Enum.valueOf(type, value.trim().toUpperCase());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private String upper(String value) {
