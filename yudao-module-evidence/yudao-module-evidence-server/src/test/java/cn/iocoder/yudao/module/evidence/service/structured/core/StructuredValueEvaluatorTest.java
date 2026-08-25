@@ -31,6 +31,20 @@ class StructuredValueEvaluatorTest {
     }
 
     @Test
+    void multiValueFieldOnlyExplodesWhenExplicitlyRequested() {
+        StructuredQueryResult.Row row = row("INVENTOR", "李四,张三");
+
+        List<String> collectionValue = evaluator.values("PATENT", row,
+                new StructuredValueExpression("INVENTOR", false, List.of()));
+        List<String> exploded = evaluator.values("PATENT", row,
+                new StructuredValueExpression("INVENTOR", true, List.of()));
+
+        assertThat(collectionValue).hasSize(1);
+        assertThat(collectionValue.get(0)).contains("李四").contains("张三");
+        assertThat(exploded).containsExactly("李四", "张三");
+    }
+
+    @Test
     void multiValueSplitAndSurnameTransformAreDeterministicAcrossCommonSeparators() {
         StructuredQueryResult.Row row = row("INVENTOR", "张三，欧阳明, John Smith；李四");
         StructuredValueExpression expression = new StructuredValueExpression(
@@ -38,6 +52,18 @@ class StructuredValueEvaluatorTest {
 
         assertThat(evaluator.values("PATENT", row, expression))
                 .containsExactly("张", "欧阳", "Smith", "李");
+    }
+
+    @Test
+    void nonCountTransformOnMultiValueFieldRequiresExplode() {
+        StructuredValueExpression invalid = new StructuredValueExpression(
+                "INVENTOR", false, List.of(StructuredValueTransform.PERSON_SURNAME));
+        StructuredValueExpression count = new StructuredValueExpression(
+                "INVENTOR", false, List.of(StructuredValueTransform.VALUE_COUNT));
+
+        assertThat(evaluator.validate("PATENT", invalid).valid()).isFalse();
+        assertThat(evaluator.validate("PATENT", invalid).message()).contains("requires explode=true");
+        assertThat(evaluator.validate("PATENT", count).valid()).isTrue();
     }
 
     @Test
