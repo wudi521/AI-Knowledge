@@ -162,10 +162,11 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
                                       CapabilityInvocationContext context) {
         if (queries.size() <= 1) {
             String q = queries.get(0);
+            String traceId = context.traceId();
             PlannedEvidenceRetriever.Result result = retriever.search(q, variants, List.of(context.kbId()),
                     documentIds.isEmpty() ? null : documentIds, topK,
-                    context.tenantId(), context.userId(), childTrace(context.traceId(), 0));
-            return List.of(new QueryRun(q, childTrace(context.traceId(), 0), result));
+                    context.tenantId(), context.userId(), traceId);
+            return List.of(new QueryRun(q, traceId, result));
         }
         List<CompletableFuture<QueryRun>> futures = new ArrayList<>();
         for (int i = 0; i < queries.size(); i++) {
