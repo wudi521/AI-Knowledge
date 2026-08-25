@@ -118,18 +118,32 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                         .entityId(r.getDocumentId())
                         .entityKey(StrUtil.isNotBlank(fieldValue) && projections.size() <= 1 ? fieldValue : identity)
                         .entityName(buildEntityName(r, doc, projections.size() <= 1 ? fieldCode : null))
-                        // metric + projection 组合查询仍必须保留 metric value，例如“权利要求最多并显示标题”。
                         .value(metricRequested ? r.getValue() : null)
                         .fields(fields)
                         .build());
             }
 
             MergeResult merge = new MergeResult(rows, Set.of());
-            // PATENT_DOCUMENT 是业务逻辑实体，不是物理上传记录。除 DOCUMENT_COUNT 外统一按业务身份合并。
             if (PatentStructuredPack.ENTITY_PATENT_DOCUMENT.equals(plan.getEntityType())
                     && !PatentStructuredPack.METRIC_DOCUMENT_COUNT.equals(plan.getMetricCode())) {
                 merge = mergePatentRows(rows, plan.getMetricCode());
                 rows = merge.rows();
+            }
+
+            // 只有当前查询真正依赖的冲突字段才阻断，避免不相关脏字段把所有查询都判死。
+            if (!merge.conflictFields().isEmpty()) {
+                Set<String> required = new LinkedHashSet<>(projections);
+                if (StrUtil.isNotBlank(fieldCode)) required.add(fieldCode.toUpperCase());
+                collectFilterFields(plan.getFilterExpression(), required);
+                for (String conflict : merge.conflictFields()) {
+                    if (conflict.startsWith("@METRIC:")) {
+                        if (conflict.equalsIgnoreCase("@METRIC:" + StrUtil.blankToDefault(plan.getMetricCode(), ""))) {
+                            return StructuredQueryResult.unsupported("同一逻辑专利的重复记录在指标 " + plan.getMetricCode() + " 上存在冲突");
+                        }
+                    } else if (required.contains(conflict)) {
+                        return StructuredQueryResult.unsupported("同一逻辑专利的重复记录在字段 " + conflict + " 上存在冲突");
+                    }
+                }
             }
 
             if (referencesField(plan.getFilterExpression(), PatentStructuredPack.FIELD_TITLE)
@@ -151,6 +165,15 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             log.warn("[execute][metric({}) 数据访问失败: {}]", plan.getMetricCode(), e.getMessage());
             return StructuredQueryResult.unsupported("知识库结构化数据访问异常");
         }
+    }
+
+    private void collectFilterFields(FilterExpression expression, Set<String> out) {
+        if (expression == null || expression.getType() == null) return;
+        if (expression.getType() == FilterExpression.Type.CONDITION) {
+            if (StrUtil.isNotBlank(expression.getFieldCode())) out.add(expression.getFieldCode().toUpperCase());
+            return;
+        }
+        if (expression.getChildren() != null) for (FilterExpression child : expression.getChildren()) collectFilterFields(child, out);
     }
 
     private boolean referencesField(FilterExpression expression, String fieldCode) {
@@ -179,17 +202,12 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         return plan.getFieldCode() == null ? List.of() : List.of(plan.getFieldCode().toUpperCase());
     }
 
-    /** 内部行始终带可确定性读取的字段全集，供 V3 与 Agent Pipeline 共用。 */
     private Map<String, String> allFilterableValues(StructuredQueryRowDTO row, KnowledgeDocumentRespDTO doc) {
         Map<String, String> values = new LinkedHashMap<>();
         for (String field : EXECUTABLE_FIELDS) values.put(field, fieldValueOf(row, doc, field));
         return values;
     }
 
-    /**
-     * 同一业务专利的重复文档进行字段级合并。相同/空值安全合并；非空冲突只记录，不静默声称可信。
-     * metric 值冲突使用 @METRIC:<code> 标识。
-     */
     private MergeResult mergePatentRows(List<StructuredQueryResult.Row> rows, String metricCode) {
         Map<String, StructuredQueryResult.Row> unique = new LinkedHashMap<>();
         Set<String> conflicts = new LinkedHashSet<>();
@@ -262,14 +280,10 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             case PatentStructuredPack.FIELD_PUBLICATION_NO -> r.getPublicationNo();
             case PatentStructuredPack.FIELD_APPLICATION_NO -> r.getApplicationNo();
             case PatentStructuredPack.FIELD_TITLE -> firstNonBlank(r.getTitle(), metadataText(doc, "title"));
-            case PatentStructuredPack.FIELD_APPLICANT -> firstNonBlank(r.getApplicant(),
-                    metadataText(doc, "applicants", "applicant"));
-            case PatentStructuredPack.FIELD_INVENTOR -> firstNonBlank(r.getInventor(),
-                    metadataText(doc, "inventors", "inventor"));
-            case PatentStructuredPack.FIELD_FILING_DATE -> firstNonBlank(r.getFilingDate(),
-                    metadataText(doc, "filingDate", "applicationDate"));
-            case PatentStructuredPack.FIELD_PUBLICATION_DATE -> firstNonBlank(r.getPublicationDate(),
-                    metadataText(doc, "publicationDate", "publishDate"));
+            case PatentStructuredPack.FIELD_APPLICANT -> firstNonBlank(r.getApplicant(), metadataText(doc, "applicants", "applicant"));
+            case PatentStructuredPack.FIELD_INVENTOR -> firstNonBlank(r.getInventor(), metadataText(doc, "inventors", "inventor"));
+            case PatentStructuredPack.FIELD_FILING_DATE -> firstNonBlank(r.getFilingDate(), metadataText(doc, "filingDate", "applicationDate"));
+            case PatentStructuredPack.FIELD_PUBLICATION_DATE -> firstNonBlank(r.getPublicationDate(), metadataText(doc, "publicationDate", "publishDate"));
             default -> null;
         };
     }
@@ -312,8 +326,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
 
     private String buildEntityName(StructuredQueryRowDTO r, KnowledgeDocumentRespDTO doc, String fieldCode) {
         String name = firstNonBlank(r.getTitle(), metadataText(doc, "title"), r.getDocumentName());
-        name = StrUtil.isNotBlank(name) ? name
-                : (StrUtil.isNotBlank(r.getPublicationNo()) ? r.getPublicationNo() : "文档" + r.getDocumentId());
+        name = StrUtil.isNotBlank(name) ? name : (StrUtil.isNotBlank(r.getPublicationNo()) ? r.getPublicationNo() : "文档" + r.getDocumentId());
         String fieldValue = fieldValueOf(r, doc, fieldCode);
         return StrUtil.isBlank(fieldValue) || fieldValue.equals(name) ? name : name + " · " + fieldValue;
     }
