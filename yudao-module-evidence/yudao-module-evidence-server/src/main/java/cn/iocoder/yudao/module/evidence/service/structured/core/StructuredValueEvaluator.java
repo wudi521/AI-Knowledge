@@ -95,6 +95,13 @@ public class StructuredValueEvaluator {
         return validation.valid() ? validation.outputType() : null;
     }
 
+    /** Planner literal 在进入比较器前必须与字段/派生值类型兼容，禁止非法日期/数字退化成字符串排序。 */
+    public boolean literalsValid(String valueType, List<String> literals) {
+        if (literals == null) return true;
+        for (String literal : literals) if (!literalValid(valueType, literal)) return false;
+        return true;
+    }
+
     public int compare(String left, String right, String valueType) {
         if (left == null && right == null) return 0;
         if (left == null) return -1;
@@ -134,6 +141,20 @@ public class StructuredValueEvaluator {
         });
     }
 
+    private boolean literalValid(String valueType, String literal) {
+        if (literal == null) return false;
+        if ("INTEGER".equalsIgnoreCase(valueType)) {
+            try { new BigDecimal(literal.trim()).toBigIntegerExact(); return true; }
+            catch (Exception e) { return false; }
+        }
+        if ("DECIMAL".equalsIgnoreCase(valueType)) {
+            try { new BigDecimal(literal.trim()); return true; }
+            catch (NumberFormatException e) { return false; }
+        }
+        if ("DATE".equalsIgnoreCase(valueType)) return date(literal) != null;
+        return true;
+    }
+
     private boolean supportsInput(StructuredValueTransform transform, String type, boolean multiValue) {
         return switch (transform) {
             case LENGTH -> "STRING".equalsIgnoreCase(type);
@@ -171,17 +192,18 @@ public class StructuredValueEvaluator {
     }
 
     /**
-     * 保守姓名姓氏解析：中文连续姓名识别常见复姓，否则取首字；带空格的拉丁姓名取末 token。
-     * 无法形成稳定 token 时返回 null，由调用方的完整性规则决定是否拒答。
+     * 保守姓名姓氏解析：先去掉姓名内部空白判断中文姓名，识别常见复姓；否则对拉丁空格姓名取末 token。
+     * 无法形成稳定 token 时返回 null，由调用方完整性规则 fail-closed。
      */
     private String surname(String raw) {
         if (StrUtil.isBlank(raw)) return null;
         String value = raw.trim();
-        if (value.matches("[\\p{IsHan}·・]+")) {
-            value = value.replace("·", "").replace("・", "");
-            if (value.length() < 2) return null;
-            for (String compound : CHINESE_COMPOUND_SURNAMES) if (value.startsWith(compound)) return compound;
-            return value.substring(0, 1);
+        String compact = value.replaceAll("\\s+", "");
+        if (compact.matches("[\\p{IsHan}·・]+")) {
+            compact = compact.replace("·", "").replace("・", "");
+            if (compact.length() < 2) return null;
+            for (String compound : CHINESE_COMPOUND_SURNAMES) if (compact.startsWith(compound)) return compound;
+            return compact.substring(0, 1);
         }
         String[] tokens = value.split("\\s+");
         if (tokens.length >= 2) {
