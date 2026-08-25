@@ -8,6 +8,7 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainEntityResolver;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainStructuredDataAdapter;
 import cn.iocoder.yudao.module.evidence.service.structured.core.FilterExpression;
+import cn.iocoder.yudao.module.evidence.service.structured.core.MultiValueSupport;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
@@ -255,19 +256,15 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         return normalizeComparable(a).equals(normalizeComparable(b));
     }
 
-    /** 多值字段的元素顺序不属于业务事实；“张三、李四”和“李四,张三”应视为同一集合。 */
+    /**
+     * 多值字段的元素顺序不属于业务事实；展示、过滤、去重和重复记录冲突检测必须使用同一分隔契约。
+     */
     private Set<String> normalizeMultiValues(String value) {
-        Set<String> normalized = new LinkedHashSet<>();
-        if (StrUtil.isBlank(value)) return normalized;
-        for (String item : value.split("[、；;，,\\n\\r]+")) {
-            String v = normalizeComparable(item);
-            if (StrUtil.isNotBlank(v)) normalized.add(v);
-        }
-        return normalized;
+        return MultiValueSupport.normalizedSet(value, PatentStructuredPack.PERSON_OR_ORG_MULTI_VALUE_DELIMITER);
     }
 
     private String normalizeComparable(String value) {
-        return value == null ? "" : value.trim().replaceAll("\\s+", " ").toUpperCase();
+        return MultiValueSupport.normalizeComparable(value);
     }
 
     private String patentIdentityFromFields(StructuredQueryResult.Row row) {
