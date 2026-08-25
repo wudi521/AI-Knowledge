@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
+import cn.iocoder.yudao.module.evidence.service.agent.AgentTraceStep;
 import cn.iocoder.yudao.module.evidence.service.agent.AgenticQueryEngine;
 import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
 import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
@@ -44,7 +45,7 @@ public class AgenticEvidenceFacade {
         resp.setExecutionMode("AGENTIC_V1");
         resp.setIntent("AGENTIC_V1");
         resp.setReasonCode(result.stopReason() == null ? null : result.stopReason().name());
-        resp.setConfidence(null);
+        resp.setConfidence(null); // V1.1 不输出未经离线校准的伪精确置信度。
 
         boolean answer = result.state() == AgenticQueryEngine.State.ANSWER;
         boolean clarify = result.state() == AgenticQueryEngine.State.CLARIFY;
@@ -55,7 +56,7 @@ public class AgenticEvidenceFacade {
         resp.setRoute(answer ? "AGENTIC_ANSWER" : clarify ? "CLARIFY" : "ABSTAIN");
         List<Evidence> evidences = result.evidences() == null ? List.of() : result.evidences();
         resp.setEvidence(evidences.stream().map(e -> toEvidence(e, kbIds.get(0), domainCode)).toList());
-        resp.setStages(List.of(stage(result, System.currentTimeMillis() - start)));
+        resp.setStages(stages(result));
         resp.setElapsedMs((int) (System.currentTimeMillis() - start));
         recorder.record(resp, evidences, List.of());
         return resp;
@@ -100,16 +101,35 @@ public class AgenticEvidenceFacade {
         return vo;
     }
 
-    private QueryStageTimingDTO stage(AgenticQueryEngine.Result result, long elapsedMs) {
+    private List<QueryStageTimingDTO> stages(AgenticQueryEngine.Result result) {
+        if (result.traceSteps() == null || result.traceSteps().isEmpty()) {
+            QueryStageTimingDTO dto = new QueryStageTimingDTO();
+            dto.setStage("AGENTIC_V1_EXECUTION");
+            dto.setSeq(1);
+            dto.setStatus("SUCCEEDED");
+            dto.setSkipped(false);
+            dto.setElapsedMs(0L);
+            dto.setInputSummary("bounded capability loop");
+            dto.setOutputSummary("state=" + result.state() + "; steps=" + result.steps() + "; llmCalls=" + result.llmCalls()
+                    + "; evidenceCoverage=" + result.evidenceCoverage() + "; stopReason=" + result.stopReason());
+            return List.of(dto);
+        }
+        return result.traceSteps().stream().map(this::stage).toList();
+    }
+
+    private QueryStageTimingDTO stage(AgentTraceStep step) {
         QueryStageTimingDTO dto = new QueryStageTimingDTO();
-        dto.setStage("AGENTIC_V1_EXECUTION");
-        dto.setSeq(1);
-        dto.setStatus("SUCCEEDED");
+        dto.setStage("AGENT_" + step.phase());
+        dto.setSeq(step.seq());
+        dto.setStatus(step.status());
         dto.setSkipped(false);
-        dto.setElapsedMs(elapsedMs);
-        dto.setInputSummary("bounded capability loop");
-        dto.setOutputSummary("state=" + result.state() + "; steps=" + result.steps() + "; llmCalls=" + result.llmCalls()
-                + "; evidenceCoverage=" + result.evidenceCoverage() + "; stopReason=" + result.stopReason());
+        dto.setElapsedMs(step.elapsedMs());
+        dto.setErrorCode(step.stopReason() == null ? null : step.stopReason().name());
+        dto.setInputSummary(StrUtil.maxLength(
+                "action=" + StrUtil.nullToEmpty(step.action())
+                        + "; capability=" + StrUtil.nullToEmpty(step.capability())
+                        + "; purpose=" + StrUtil.nullToEmpty(step.purpose()), 500));
+        dto.setOutputSummary(StrUtil.maxLength(step.summary(), 500));
         return dto;
     }
 
