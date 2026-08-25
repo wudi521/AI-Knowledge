@@ -13,7 +13,6 @@ import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEva
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryEngineV3Facade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryScopeResolver;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
-import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.RestController;
@@ -29,10 +28,14 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 @Validated
 public class EvidenceApiImpl implements EvidenceApi {
 
-    @Resource
-    private EvidenceQueryEngineV3Facade queryEngineV3;
-    @Resource
-    private EvidenceQueryScopeResolver queryScopeResolver;
+    private final EvidenceQueryEngineV3Facade queryEngineV3Facade;
+    private final EvidenceQueryScopeResolver queryScopeResolver;
+
+    public EvidenceApiImpl(EvidenceQueryEngineV3Facade queryEngineV3Facade,
+                           EvidenceQueryScopeResolver queryScopeResolver) {
+        this.queryEngineV3Facade = queryEngineV3Facade;
+        this.queryScopeResolver = queryScopeResolver;
+    }
 
     @Override
     public CommonResult<EvidenceEvaluateRespDTO> evaluate(EvidenceEvaluateReqDTO req) {
@@ -43,7 +46,7 @@ public class EvidenceApiImpl implements EvidenceApi {
             return success(denied(req, scope.reasonCode(), scope.message()));
         }
 
-        EvidenceEvaluateRespVO vo = queryEngineV3.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
+        EvidenceEvaluateRespVO vo = queryEngineV3Facade.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
                 req.getTenantId(), req.getUserId(), req.getHistory(), req.getSkipSlotDetection(), req.getTraceId(),
                 scope.domainCode(), req.getContextResolutionJson(), req.getPlanBudget());
         return success(toDto(vo));
