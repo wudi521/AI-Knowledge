@@ -17,25 +17,36 @@ public record StructuredPipelineResult(boolean success,
                                        Map<String, Object> metadata) {
     public StructuredPipelineResult {
         rows = rows == null ? List.of() : List.copyOf(rows);
-        metadata = metadata == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(metadata));
+        Map<String, Object> safeMetadata = new LinkedHashMap<>(metadata == null ? Map.of() : metadata);
 
         // V1.1 当前产品策略不允许把 PARTIAL 伪装成 FULL。
         if (success && missingValueCount > 0) {
             success = false;
             completeDataset = false;
             authoritativeEmpty = false;
+            safeMetadata.put("completeDataset", false);
+            safeMetadata.put("outputComplete", false);
+            safeMetadata.put("missingValueCount", missingValueCount);
             message = "structured result is incomplete: " + missingValueCount
                     + " required value(s) are missing; refusing to present PARTIAL data as FULL";
         }
+        metadata = Collections.unmodifiableMap(safeMetadata);
     }
 
     public static StructuredPipelineResult failure(String message) {
+        return failure(message, Map.of());
+    }
+
+    public static StructuredPipelineResult failure(String message, Map<String, Object> metadata) {
         String normalized = message;
         if (normalized != null && normalized.startsWith("filter literal is not valid for ")) {
             normalized = "invalid filter literal for "
                     + normalized.substring("filter literal is not valid for ".length());
         }
-        return new StructuredPipelineResult(false, normalized, List.of(), null, false, false, 0, 0, Map.of());
+        Map<String, Object> safe = new LinkedHashMap<>(metadata == null ? Map.of() : metadata);
+        safe.put("completeDataset", false);
+        safe.put("outputComplete", false);
+        return new StructuredPipelineResult(false, normalized, List.of(), null, false, false, 0, 0, safe);
     }
 
     public record Row(Long entityId,
