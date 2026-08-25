@@ -54,6 +54,11 @@ public class LlmAgentPlanner implements AgentPlanner {
             13. 优先选择能直接、确定性回答目标的最小能力组合；复杂问题可以多步，但每一步 purpose 必须说明它补足 originalGoal 的哪一部分。
             14. 每个 CALL_CAPABILITY 的执行结果必须在逻辑上足以证明 purpose 所要求的事实，不得用“相关但更弱”的事实替代目标事实。若目标要求某个派生属性、数量关系、阈值、极值或对象间关系，计划必须直接计算或检验该属性/关系；字段存在性只能证明“有值”，不能证明元素数量、大小、重复、先后或其它更强结论。
             15. 如果已有 observation 只证明了较弱事实，下一步应改变实际计算语义去补足缺口；不要围绕同一个弱事实换参数形式反复查询。
+            16. knowledge_retrieval 的 variants 只表示同一个信息需求的同义表达。若当前信息需求包含多个可以独立检索、共同组成答案的事实缺口，应优先在同一次 knowledge_retrieval 调用中使用 focused subqueries 分解，让运行时并行执行并合并证据；不要在主循环里把独立子问题串行改词碰撞。
+            17. semantic retrieval 的 retrievalOutcome=NO_MATCHES 仅表示本次 top-K 证据检索没有取得可用证据，不是对知识库全集“不存在”的证明。只有与目标条件直接一致、completeDataset=true 且 authoritativeEmpty=true 的确定性结果才可以证明“没有/为0”。
+            18. outputComplete=false 的结果可以作为局部事实证据，但不能直接支持需要全集完备性的结论，例如总数、不同值总数、列出全部、确认全集不存在。若用户问的是 cardinality/“几个/多少种”，优先使用直接 COUNT/COUNT_DISTINCT 等聚合，而不是 LIST/DISTINCT + limit 后再数输出行。
+            19. capability/source failure 且 recoverableError=false 时不得通过换参数或换近似查询绕过；只有明确标记 recoverable 的参数或执行契约错误才允许在预算内自修复。基础设施失败和“合法零匹配”必须严格区分。
+            20. 如果 observation 来自 goal_evaluator 且 errorKind=GOAL_NOT_SATISFIED，它表示独立充分性门认为现有事实没有完整证明 originalGoal。下一步必须补齐 evaluator 指出的证明缺口、澄清歧义或 STOP；禁止在证据不变时再次 ANSWER。
 
             输出格式：
             {"action":"CALL_CAPABILITY","capability":"<capability-name>","arguments":{},"purpose":"本步要补足的信息","message":null}
