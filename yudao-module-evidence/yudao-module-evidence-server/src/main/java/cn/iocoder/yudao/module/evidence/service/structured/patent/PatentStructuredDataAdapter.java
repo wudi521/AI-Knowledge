@@ -107,6 +107,8 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                     ? Map.of() : safeDocumentMap(docIds);
 
             List<StructuredQueryResult.Row> rows = new ArrayList<>();
+            boolean metricRequested = StrUtil.isNotBlank(plan.getMetricCode())
+                    && EXECUTABLE_METRICS.contains(plan.getMetricCode().toUpperCase());
             for (StructuredQueryRowDTO r : sourceRows) {
                 KnowledgeDocumentRespDTO doc = documents.get(r.getDocumentId());
                 String fieldValue = fieldValueOf(r, doc, fieldCode);
@@ -116,22 +118,20 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                         .entityId(r.getDocumentId())
                         .entityKey(StrUtil.isNotBlank(fieldValue) && projections.size() <= 1 ? fieldValue : identity)
                         .entityName(buildEntityName(r, doc, projections.size() <= 1 ? fieldCode : null))
-                        .value(fieldCode != null ? null : r.getValue())
+                        // metric + projection 组合查询仍必须保留 metric value，例如“权利要求最多并显示标题”。
+                        .value(metricRequested ? r.getValue() : null)
                         .fields(fields)
                         .build());
             }
 
-            // PATENT_DOCUMENT 是业务上的“专利实体”，不是物理上传文档。
-            // 除非用户明确查询 DOCUMENT_COUNT，否则任何字段列表、过滤、相似关系、统计都必须
-            // 使用与 PATENT_COUNT 相同的实体身份规则（申请号优先、公布号兜底）去重。
-            // 这样重复导入的同一件专利不会在“标题相似”等集合问题里被误判为两件专利。
+            MergeResult merge = new MergeResult(rows, Set.of());
+            // PATENT_DOCUMENT 是业务逻辑实体，不是物理上传记录。除 DOCUMENT_COUNT 外统一按业务身份合并。
             if (PatentStructuredPack.ENTITY_PATENT_DOCUMENT.equals(plan.getEntityType())
                     && !PatentStructuredPack.METRIC_DOCUMENT_COUNT.equals(plan.getMetricCode())) {
-                rows = dedupePatentRows(rows);
+                merge = mergePatentRows(rows, plan.getMetricCode());
+                rows = merge.rows();
             }
 
-            // 专利标题属于发布后应完整的核心著录字段。只要当前全集中存在标题缺失，
-            // TITLE 条件的零结果就不能被证明，必须失败关闭而不是返回可信空集。
             if (referencesField(plan.getFilterExpression(), PatentStructuredPack.FIELD_TITLE)
                     && rows.stream().anyMatch(row -> row.getFields() == null
                     || StrUtil.isBlank(row.getFields().get(PatentStructuredPack.FIELD_TITLE)))) {
@@ -143,6 +143,8 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                     .operation(plan.getOperation())
                     .rows(rows)
                     .rowCount(rows.size())
+                    .conflict(!merge.conflictFields().isEmpty())
+                    .conflictFields(merge.conflictFields())
                     .truncated(data.isTruncated())
                     .build();
         } catch (Exception e) {
@@ -177,22 +179,62 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         return plan.getFieldCode() == null ? List.of() : List.of(plan.getFieldCode().toUpperCase());
     }
 
-    /** 内部行始终带可确定性读取的字段全集，供 V3 Filter/Project 共用。 */
+    /** 内部行始终带可确定性读取的字段全集，供 V3 与 Agent Pipeline 共用。 */
     private Map<String, String> allFilterableValues(StructuredQueryRowDTO row, KnowledgeDocumentRespDTO doc) {
         Map<String, String> values = new LinkedHashMap<>();
         for (String field : EXECUTABLE_FIELDS) values.put(field, fieldValueOf(row, doc, field));
         return values;
     }
 
-    private List<StructuredQueryResult.Row> dedupePatentRows(List<StructuredQueryResult.Row> rows) {
+    /**
+     * 同一业务专利的重复文档进行字段级合并。相同/空值安全合并；非空冲突只记录，不静默声称可信。
+     * metric 值冲突使用 @METRIC:<code> 标识。
+     */
+    private MergeResult mergePatentRows(List<StructuredQueryResult.Row> rows, String metricCode) {
         Map<String, StructuredQueryResult.Row> unique = new LinkedHashMap<>();
-        for (StructuredQueryResult.Row row : rows) {
-            String key = patentIdentityFromFields(row);
-            if (StrUtil.isBlank(key)) key = StrUtil.isNotBlank(row.getEntityKey()) ? normalize(row.getEntityKey())
-                    : "DOC:" + row.getEntityId();
-            unique.putIfAbsent(key, row);
+        Set<String> conflicts = new LinkedHashSet<>();
+        for (StructuredQueryResult.Row incoming : rows) {
+            String key = patentIdentityFromFields(incoming);
+            if (StrUtil.isBlank(key)) key = StrUtil.isNotBlank(incoming.getEntityKey()) ? normalize(incoming.getEntityKey())
+                    : "DOC:" + incoming.getEntityId();
+            StructuredQueryResult.Row existing = unique.get(key);
+            if (existing == null) {
+                unique.put(key, copyRow(incoming, key));
+                continue;
+            }
+            Map<String, String> merged = new LinkedHashMap<>(existing.getFields() == null ? Map.of() : existing.getFields());
+            Map<String, String> other = incoming.getFields() == null ? Map.of() : incoming.getFields();
+            for (String field : EXECUTABLE_FIELDS) {
+                String a = merged.get(field), b = other.get(field);
+                if (StrUtil.isBlank(a) && StrUtil.isNotBlank(b)) merged.put(field, b);
+                else if (StrUtil.isNotBlank(a) && StrUtil.isNotBlank(b) && !sameValue(a, b)) conflicts.add(field);
+            }
+            existing.setFields(merged);
+            if (existing.getValue() == null && incoming.getValue() != null) existing.setValue(incoming.getValue());
+            else if (existing.getValue() != null && incoming.getValue() != null
+                    && Double.compare(existing.getValue(), incoming.getValue()) != 0) {
+                conflicts.add("@METRIC:" + StrUtil.blankToDefault(metricCode, "UNKNOWN"));
+            }
         }
-        return new ArrayList<>(unique.values());
+        return new MergeResult(new ArrayList<>(unique.values()), Set.copyOf(conflicts));
+    }
+
+    private StructuredQueryResult.Row copyRow(StructuredQueryResult.Row row, String identity) {
+        return StructuredQueryResult.Row.builder()
+                .entityId(row.getEntityId())
+                .entityKey(identity)
+                .entityName(row.getEntityName())
+                .value(row.getValue())
+                .fields(new LinkedHashMap<>(row.getFields() == null ? Map.of() : row.getFields()))
+                .build();
+    }
+
+    private boolean sameValue(String a, String b) {
+        return normalizeComparable(a).equals(normalizeComparable(b));
+    }
+
+    private String normalizeComparable(String value) {
+        return value == null ? "" : value.trim().replaceAll("\\s+", " ").toUpperCase();
     }
 
     private String patentIdentityFromFields(StructuredQueryResult.Row row) {
@@ -219,7 +261,6 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         return switch (fieldCode) {
             case PatentStructuredPack.FIELD_PUBLICATION_NO -> r.getPublicationNo();
             case PatentStructuredPack.FIELD_APPLICATION_NO -> r.getApplicationNo();
-            // 上传文件名不是发明名称；标题缺失时保持 null，禁止制造“文件名不包含关键词”的假阴性。
             case PatentStructuredPack.FIELD_TITLE -> firstNonBlank(r.getTitle(), metadataText(doc, "title"));
             case PatentStructuredPack.FIELD_APPLICANT -> firstNonBlank(r.getApplicant(),
                     metadataText(doc, "applicants", "applicant"));
@@ -308,4 +349,6 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         }
         return new ArrayList<>(resolved);
     }
+
+    private record MergeResult(List<StructuredQueryResult.Row> rows, Set<String> conflictFields) { }
 }
