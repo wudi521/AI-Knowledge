@@ -117,7 +117,17 @@ public class CapabilityInvoker {
                     validation.message() == null ? "capability arguments are invalid" : validation.message());
         }
 
-        String fingerprint = fingerprint(capabilityName, safeArguments, context);
+        // 重复调用必须按“最终执行语义”识别，而不是按 LLM 原始 JSON 文本识别。
+        // 例如省略默认 explode 与显式 explode=true 可能编译成完全相同的结构化计划。
+        String canonicalKey = null;
+        try {
+            canonicalKey = capability.canonicalExecutionKey(context, Collections.unmodifiableMap(safeArguments));
+        } catch (RuntimeException e) {
+            // canonical key 只用于去重优化；真正的领域契约错误仍由 capability 执行/编译阶段返回。
+            log.debug("[agent-capability][canonical key unavailable capability={} error={}]",
+                    definition.name(), e.getMessage());
+        }
+        String fingerprint = fingerprint(capabilityName, canonicalKey, safeArguments, context);
         return PreparedCall.accepted(capability, Collections.unmodifiableMap(safeArguments), fingerprint);
     }
 
@@ -176,10 +186,13 @@ public class CapabilityInvoker {
         return 0;
     }
 
-    private String fingerprint(String capabilityName, Map<String, Object> arguments,
+    private String fingerprint(String capabilityName, String canonicalKey, Map<String, Object> arguments,
                                CapabilityInvocationContext context) {
         Map<String, Object> sorted = new TreeMap<>(arguments);
-        String raw = capabilityName + "|" + JSONUtil.toJsonStr(sorted)
+        String executionMaterial = canonicalKey == null || canonicalKey.isBlank()
+                ? "RAW:" + JSONUtil.toJsonStr(sorted)
+                : "CANONICAL:" + canonicalKey;
+        String raw = capabilityName + "|" + executionMaterial
                 + "|tenant=" + (context == null ? null : context.tenantId())
                 + "|user=" + (context == null ? null : context.userId())
                 + "|kb=" + (context == null ? null : context.kbId())
