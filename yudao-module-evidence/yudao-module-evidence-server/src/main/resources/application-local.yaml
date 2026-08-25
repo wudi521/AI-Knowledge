@@ -59,7 +59,8 @@ yudao:
       timestamp-window-seconds: 300
   evidence:
     agent:
-      mode: AGENT_WITH_V3_FALLBACK
+      # 公共 Agentic Knowledge Runtime 是唯一在线查询主链；旧 V3 mode 仅保留代码迁移兼容，不再 fallback。
+      mode: AGENT
       max-steps: 6
       max-llm-calls: 6
       max-elapsed-ms: 15000
