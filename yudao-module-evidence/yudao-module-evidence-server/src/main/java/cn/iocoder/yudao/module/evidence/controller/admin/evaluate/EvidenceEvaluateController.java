@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.security.core.LoginUser;
 import cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateReqVO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
+import cn.iocoder.yudao.module.evidence.service.AgenticEvidenceFacade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryEngineV3Facade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryScopeResolver;
 import io.swagger.v3.oas.annotations.Operation;
@@ -28,11 +29,14 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 public class EvidenceEvaluateController {
 
     private final EvidenceQueryEngineV3Facade queryEngineV3Facade;
+    private final AgenticEvidenceFacade agenticEvidenceFacade;
     private final EvidenceQueryScopeResolver queryScopeResolver;
 
     public EvidenceEvaluateController(EvidenceQueryEngineV3Facade queryEngineV3Facade,
+                                      AgenticEvidenceFacade agenticEvidenceFacade,
                                       EvidenceQueryScopeResolver queryScopeResolver) {
         this.queryEngineV3Facade = queryEngineV3Facade;
+        this.agenticEvidenceFacade = agenticEvidenceFacade;
         this.queryScopeResolver = queryScopeResolver;
     }
 
@@ -40,19 +44,29 @@ public class EvidenceEvaluateController {
     @Operation(summary = "Query Engine V3 单轮评估(Selection→bounded retrieval→EntitySet→Action→Evidence)")
     @PreAuthorize("@ss.hasPermission('evidence:evaluate')")
     public CommonResult<EvidenceEvaluateRespVO> evaluate(@Valid @RequestBody EvidenceEvaluateReqVO req) {
+        ScopeContext ctx = resolve(req);
+        if (!ctx.scope().allowed()) return success(denied(req.getQuery(), ctx.scope().reasonCode(), ctx.scope().message()));
+        return success(queryEngineV3Facade.evaluate(req.getQuery(), ctx.scope().kbIds(), req.getTopK(),
+                ctx.tenantId(), ctx.userId(), List.of(), req.getSkipSlotDetection(), null,
+                ctx.scope().domainCode(), null, null));
+    }
+
+    @PostMapping("/evaluate-agent-v1")
+    @Operation(summary = "Agentic RAG V1.1 单轮评估(独立回归入口，不替换现有 V3)")
+    @PreAuthorize("@ss.hasPermission('evidence:evaluate')")
+    public CommonResult<EvidenceEvaluateRespVO> evaluateAgentV1(@Valid @RequestBody EvidenceEvaluateReqVO req) {
+        ScopeContext ctx = resolve(req);
+        if (!ctx.scope().allowed()) return success(denied(req.getQuery(), ctx.scope().reasonCode(), ctx.scope().message()));
+        return success(agenticEvidenceFacade.evaluate(req.getQuery(), ctx.scope().kbIds(), ctx.scope().domainCode(),
+                ctx.tenantId(), ctx.userId(), List.of()));
+    }
+
+    private ScopeContext resolve(EvidenceEvaluateReqVO req) {
         LoginUser loginUser = SecurityFrameworkUtils.getLoginUser();
         Long userId = loginUser != null ? loginUser.getId() : null;
         Long tenantId = loginUser != null ? loginUser.getTenantId() : null;
-
         EvidenceQueryScopeResolver.Resolution scope = queryScopeResolver.resolve(req.getKbIds(), userId, null);
-        if (!scope.allowed()) {
-            return success(denied(req.getQuery(), scope.reasonCode(), scope.message()));
-        }
-
-        // 管理端明确为单轮；与 Chat 共用同一个 V3 Query Engine，只是不携带 history/context。
-        return success(queryEngineV3Facade.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
-                tenantId, userId, List.of(), req.getSkipSlotDetection(), null,
-                scope.domainCode(), null, null));
+        return new ScopeContext(userId, tenantId, scope);
     }
 
     private EvidenceEvaluateRespVO denied(String query, String reasonCode, String message) {
@@ -72,4 +86,6 @@ public class EvidenceEvaluateController {
         resp.setStages(List.of());
         return resp;
     }
+
+    private record ScopeContext(Long userId, Long tenantId, EvidenceQueryScopeResolver.Resolution scope) { }
 }
