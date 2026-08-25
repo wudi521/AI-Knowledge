@@ -6,31 +6,31 @@ import cn.iocoder.yudao.module.evidence.service.agent.AgentStopReason;
 import cn.iocoder.yudao.module.evidence.service.assemble.PlannedEvidenceRetriever;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/** 把现有 BM25 + Vector + Fusion + Rerank 整条检索链包装成一个 Agent 能力。 */
+/** 用户明确要求原文逐字出现/包含时使用，不把 exact-text 退化为语义近似。 */
 @Component
-public class KnowledgeRetrievalCapability implements KnowledgeCapability {
-    public static final String NAME = "knowledge_retrieval";
+public class ExactTextSearchCapability implements KnowledgeCapability {
+    public static final String NAME = "exact_text_search";
     private final PlannedEvidenceRetriever retriever;
 
-    public KnowledgeRetrievalCapability(PlannedEvidenceRetriever retriever) { this.retriever = retriever; }
+    public ExactTextSearchCapability(PlannedEvidenceRetriever retriever) {
+        this.retriever = retriever;
+    }
 
     @Override
     public CapabilityDefinition definition() {
         return new CapabilityDefinition(NAME, "1",
-                "在当前已授权知识库中检索与查询语义相关的知识证据；内部自动完成关键词/向量/融合/重排。可在已验证的上一轮对象集合内硬范围检索。",
+                "在当前授权知识库中执行逐字原文检索。仅用于用户明确要求‘原文包含/逐字出现/精确短语’的场景。",
                 Map.of(
-                        "query", "必填。保持 originalGoal 语义的检索表达，不得从候选中发明新的硬事实。",
-                        "variants", "可选。最多 5 个保持原意的同义检索表达。",
-                        "topK", "可选。1~20，默认 8。",
-                        "scope", "可选。CURRENT_KB 或 CONTEXT；只有用户明确指代上一轮对象时才用 CONTEXT。"
-                ), Set.of("query"), "EVIDENCE_LIST", true,
-                Set.of(), Set.of(), Set.of(), 8_000L, 20);
+                        "text", "必填。需要逐字匹配的原文短语。",
+                        "topK", "可选。1~50，默认 20。",
+                        "scope", "可选。CURRENT_KB 或 CONTEXT；CONTEXT 只检索上一轮已验证对象集合。"
+                ), Set.of("text"), "EXACT_TEXT_EVIDENCE", true,
+                Set.of(), Set.of(), Set.of(), 8_000L, 50);
     }
 
     @Override
@@ -38,53 +38,47 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         if (context == null || context.kbId() == null || context.userId() == null) {
             return CapabilityResult.failure(AgentStopReason.PERMISSION_DENIED, "knowledge scope is incomplete");
         }
-        String query = String.valueOf(arguments.getOrDefault("query", "")).trim();
-        if (StrUtil.isBlank(query)) return CapabilityResult.failure(AgentStopReason.INVALID_CAPABILITY_CALL, "query must not be blank");
-        List<String> variants = strings(arguments.get("variants"), 5);
-        int topK = clampTopK(arguments.get("topK"));
+        String text = String.valueOf(arguments.getOrDefault("text", "")).trim();
+        if (StrUtil.isBlank(text)) {
+            return CapabilityResult.failure(AgentStopReason.INVALID_CAPABILITY_CALL, "text must not be blank");
+        }
         List<Long> documentIds = scope(arguments.get("scope"), context);
         if (documentIds == null) {
             return CapabilityResult.failure(AgentStopReason.NEED_USER_INPUT,
                     "conversation scope was requested but no verified context entity set exists");
         }
-        PlannedEvidenceRetriever.Result result = retriever.search(query, variants, List.of(context.kbId()),
-                documentIds.isEmpty() ? null : documentIds, topK,
-                context.tenantId(), context.userId(), context.traceId());
+        int topK = intValue(arguments.get("topK"), 20, 1, 50);
+        PlannedEvidenceRetriever.Result result = retriever.exactText(text, List.of(context.kbId()), documentIds,
+                topK, context.tenantId(), context.userId(), context.traceId());
         List<Evidence> evidences = result.evidences() == null ? List.of() : result.evidences();
         Output output = new Output(evidences, result.totalHits(), result.totalHitsExact(), summary(evidences));
         return CapabilityResult.success(output, Map.of(
-                "evidenceCount", evidences.size(), "totalHits", result.totalHits() == null ? -1L : result.totalHits(),
-                "totalHitsExact", Boolean.TRUE.equals(result.totalHitsExact())));
+                "evidenceCount", evidences.size(),
+                "totalHits", result.totalHits() == null ? -1L : result.totalHits(),
+                "totalHitsExact", Boolean.TRUE.equals(result.totalHitsExact())
+        ));
     }
 
     private List<Long> scope(Object raw, CapabilityInvocationContext context) {
         String scope = raw == null ? "CURRENT_KB" : String.valueOf(raw).trim().toUpperCase();
-        if (!"CONTEXT".equals(scope)) return List.of();
+        if (!"CONTEXT".equals(scope)) return nullSafeCurrentScope();
         return context.contextEntityIds().isEmpty() ? null : context.contextEntityIds();
     }
 
-    private int clampTopK(Object raw) {
-        int value = 8;
+    /** null 表示不传 documentIds，即当前 KB 全范围。 */
+    private List<Long> nullSafeCurrentScope() { return java.util.Collections.emptyList(); }
+
+    private int intValue(Object raw, int def, int min, int max) {
+        int value = def;
         if (raw instanceof Number n) value = n.intValue();
         else if (raw != null) try { value = Integer.parseInt(String.valueOf(raw)); } catch (Exception ignore) { }
-        return Math.max(1, Math.min(20, value));
-    }
-
-    private List<String> strings(Object raw, int limit) {
-        if (!(raw instanceof Iterable<?> iterable)) return List.of();
-        List<String> out = new ArrayList<>();
-        for (Object value : iterable) {
-            String text = value == null ? null : String.valueOf(value).trim();
-            if (StrUtil.isNotBlank(text) && !out.contains(text)) out.add(text);
-            if (out.size() >= limit) break;
-        }
-        return List.copyOf(out);
+        return Math.max(min, Math.min(max, value));
     }
 
     private String summary(List<Evidence> evidences) {
         return evidences.stream().limit(8)
                 .map(e -> "doc=" + e.getDocumentId() + ",name=" + StrUtil.maxLength(StrUtil.nullToEmpty(e.getDocumentName()), 80)
-                        + ",score=" + e.getScore() + ",text=" + StrUtil.maxLength(StrUtil.nullToEmpty(e.getContent()).replace('\n', ' '), 180))
+                        + ",text=" + StrUtil.maxLength(StrUtil.nullToEmpty(e.getContent()).replace('\n', ' '), 180))
                 .collect(Collectors.joining(" | "));
     }
 
