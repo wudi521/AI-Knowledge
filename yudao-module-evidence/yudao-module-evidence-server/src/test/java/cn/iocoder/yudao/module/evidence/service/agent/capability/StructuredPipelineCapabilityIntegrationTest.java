@@ -109,6 +109,48 @@ class StructuredPipelineCapabilityIntegrationTest {
     }
 
     @Test
+    void groupsByDerivedYearAndOrdersByGroupDimension() {
+        rows(
+                row(1L, "2024专利", "202400000001.1", "CN1A", "2024-01-01", "2024-02-01", "张三", 1d),
+                row(2L, "2022专利", "202200000002.2", "CN2A", "2022-03-01", "2022-04-01", "李四", 1d),
+                row(3L, "2023专利", "202300000003.3", "CN3A", "2023-05-01", "2023-06-01", "王五", 1d)
+        );
+
+        Map<String, Object> yearExpr = Map.of("field", "FILING_DATE", "transforms", List.of("YEAR"));
+        CapabilityResult result = delegate.execute(context, Map.of(
+                "groupBy", yearExpr,
+                "aggregate", Map.of("operation", "COUNT"),
+                "orderBy", Map.of("field", "FILING_DATE", "transforms", List.of("YEAR"), "direction", "ASC")
+        ));
+
+        assertThat(result.success()).isTrue();
+        StructuredPipelineCapabilityDelegate.Output output = (StructuredPipelineCapabilityDelegate.Output) result.data();
+        int p2022 = output.answer().indexOf("2022");
+        int p2023 = output.answer().indexOf("2023");
+        int p2024 = output.answer().indexOf("2024");
+        assertThat(p2022).isGreaterThanOrEqualTo(0);
+        assertThat(p2023).isGreaterThan(p2022);
+        assertThat(p2024).isGreaterThan(p2023);
+    }
+
+    @Test
+    void failsClosedWhenFilterFieldIsMissingOnAnyLogicalEntity() {
+        rows(
+                row(1L, "有日期", "202300000001.1", "CN1A", "2024-05-03", "2024-06-01", "张三", 1d),
+                row(2L, "缺日期", "202300000002.2", "CN2A", null, "2024-06-02", "李四", 1d)
+        );
+
+        CapabilityResult result = delegate.execute(context, Map.of(
+                "filter", Map.of("field", "FILING_DATE", "operator", "GTE", "values", List.of("2024-01-01")),
+                "aggregate", Map.of("operation", "COUNT", "metric", "PATENT_COUNT")
+        ));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.recoverable()).isFalse();
+        assertThat(result.message()).contains("filter source is incomplete").contains("FILING_DATE");
+    }
+
+    @Test
     void ordersByDerivedTitleLength() {
         rows(
                 row(1L, "短标题", "202300000001.1", "CN1A", "2023-01-01", "2023-02-01", "张三", 1d),
