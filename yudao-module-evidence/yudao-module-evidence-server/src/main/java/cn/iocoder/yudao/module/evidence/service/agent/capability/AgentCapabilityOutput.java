@@ -2,7 +2,6 @@ package cn.iocoder.yudao.module.evidence.service.agent.capability;
 
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 
-import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -18,25 +17,13 @@ public interface AgentCapabilityOutput {
     }
 
     /**
-     * 检索/全文搜索等候选集合。候选实体可以参加 DAG 集合组合，但绝不能自动进入 trusted scope。
+     * 候选实体可以参加 DAG 集合组合，但绝不能自动进入 trusted scope。
      *
-     * <p>默认从 Evidence.documentId 提取真实候选实体 ID，因此任何证据型检索 Tool 都天然可参与
-     * entity_set_operation；非数字 documentId 会安全忽略，具体能力也可覆盖本方法。</p>
+     * <p>公共协议默认不从 Evidence.documentId 猜业务 entityId；Document 是知识载体，
+     * 只有 Tool 通过对应 DomainEvidenceEntityMapper 明确完成映射后才能覆盖本方法。</p>
      */
     default List<Long> candidateEntityIds() {
-        List<Evidence> source = evidences();
-        if (source == null || source.isEmpty()) return List.of();
-        LinkedHashSet<Long> out = new LinkedHashSet<>();
-        for (Evidence evidence : source) {
-            if (evidence == null || evidence.getDocumentId() == null) continue;
-            try {
-                long id = Long.parseLong(String.valueOf(evidence.getDocumentId()).trim());
-                if (id > 0) out.add(id);
-            } catch (Exception ignore) {
-                // candidate 提取失败不能把非实体标识强行当作可信 ID。
-            }
-        }
-        return List.copyOf(out);
+        return List.of();
     }
 
     /**
