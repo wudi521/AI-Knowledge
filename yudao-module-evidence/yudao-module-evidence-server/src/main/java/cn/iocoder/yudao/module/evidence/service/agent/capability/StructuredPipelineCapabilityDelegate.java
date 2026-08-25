@@ -55,6 +55,16 @@ public class StructuredPipelineCapabilityDelegate {
         this.executor = executor;
     }
 
+    /**
+     * 只编译、不访问数据。用于 Agent 在执行前按“规范化执行计划”做等价调用去重。
+     * JSON 字段顺序、默认值省略、等价别名等只要最终编译成同一 Pipeline，就必须得到同一个 key。
+     */
+    public String canonicalPlanKey(String domainCode, Map<String, Object> arguments) {
+        if (StrUtil.isBlank(domainCode)) return null;
+        CompileResult compiled = compile(domainCode, arguments == null ? Map.of() : arguments);
+        return compiled.success() ? summarizePlan(compiled.plan()) : null;
+    }
+
     public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
         if (context == null || context.kbId() == null || StrUtil.isBlank(context.domainCode())) {
             return CapabilityResult.failure(AgentStopReason.PERMISSION_DENIED, "structured scope is incomplete");
