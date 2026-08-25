@@ -55,6 +55,36 @@ class AgenticQueryEngineTrustedScopeTest {
     }
 
     @Test
+    void aggregateFactMustNotPromoteParticipatingEntitiesIntoTrustedScope() {
+        AtomicInteger plannerCalls = new AtomicInteger();
+        AgentPlanner planner = (state, context, observations, history) -> {
+            int call = plannerCalls.getAndIncrement();
+            if (call == 0) {
+                assertTrue(context.contextEntityIds().isEmpty());
+                return new AgentDecision(AgentActionType.CALL_CAPABILITY, "aggregate-count",
+                        Map.of("query", "统计"), "统计专利数量", null);
+            }
+            assertTrue(context.contextEntityIds().isEmpty(),
+                    "COUNT/AGGREGATE provenance must not become pronoun-addressable trusted entity scope");
+            return new AgentDecision(AgentActionType.ANSWER, null, Map.of(), "回答统计结果", null);
+        };
+
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
+                List.of(new AggregateCountCapability()), List.of()));
+        try {
+            AgenticQueryEngine engine = new AgenticQueryEngine(planner, invoker, null);
+            AgenticQueryEngine.Result result = engine.execute(
+                    "现在专利库有多少专利？", 6L, "PATENT", 1L, 2L,
+                    "trace-aggregate-scope", List.of());
+            assertEquals(AgenticQueryEngine.State.ANSWER, result.state());
+            assertEquals("专利数量=2", result.answer());
+            assertTrue(result.verifiedEntityIds().isEmpty());
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
     void semanticCandidateDocumentIdMustNeverBecomeTrustedScope() {
         AtomicInteger plannerCalls = new AtomicInteger();
         AgentPlanner planner = (state, context, observations, history) -> {
@@ -140,6 +170,24 @@ class AgenticQueryEngineTrustedScopeTest {
                 @Override public String deterministicAnswer() { return "公布号=CN123"; }
             };
             return CapabilityResult.success(output, Map.of("outputCount", 1));
+        }
+    }
+
+    private static final class AggregateCountCapability implements KnowledgeCapability {
+        private final CapabilityDefinition definition = new CapabilityDefinition(
+                "aggregate-count", "1", "聚合 trusted scope 防污染测试能力", Set.of("query"), true, 1000, 10);
+
+        @Override public CapabilityDefinition definition() { return definition; }
+
+        @Override
+        public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+            AgentCapabilityOutput output = new AgentCapabilityOutput() {
+                @Override public String summary() { return "count=2; sourceEntities=[74,75]"; }
+                @Override public String progressHash() { return "count-2"; }
+                @Override public List<Long> verifiedEntityIds() { return List.of(74L, 75L); }
+                @Override public String deterministicAnswer() { return "专利数量=2"; }
+            };
+            return CapabilityResult.success(output, Map.of("task", "COUNT", "outputCount", 1));
         }
     }
 
