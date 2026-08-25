@@ -32,6 +32,12 @@ public class FieldDefinition {
     private List<String> identifierPatterns;
     /** 单实体是否多值(如多个申请人/发明人)。 */
     private boolean multiValue;
+    /**
+     * 多值字段物理存储的分隔契约。只有 multiValue=true 时生效。
+     * Adapter 合并、Executor explode/filter/group/count/transform 必须共用该规则，禁止各写一套分隔逻辑。
+     */
+    @Builder.Default
+    private String multiValueDelimiterRegex = MultiValueSupport.DEFAULT_DELIMITER_REGEX;
     private boolean sortable;
     private boolean filterable;
     private boolean groupable;
