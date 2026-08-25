@@ -74,10 +74,11 @@ public class CapabilityInvoker {
 
         for (String key : safeArguments.keySet()) {
             if (key == null || key.isBlank()) {
-                return PreparedCall.rejected(AgentStopReason.INVALID_CAPABILITY_CALL,
+                return PreparedCall.recoverableRejected(AgentStopReason.INVALID_CAPABILITY_CALL,
                         "capability argument name must not be blank");
             }
             if (PROTECTED_SCOPE_ARGUMENTS.contains(normalizeArgumentName(key))) {
+                // 系统 scope / 权限边界属于安全错误，禁止 Planner 通过反复试探绕过。
                 return PreparedCall.rejected(AgentStopReason.INVALID_CAPABILITY_CALL,
                         "planner must not provide protected scope argument: " + key);
             }
@@ -88,7 +89,8 @@ public class CapabilityInvoker {
         if (definition.argumentSchema() != null && !definition.argumentSchema().isEmpty()) {
             for (String key : safeArguments.keySet()) {
                 if (!definition.argumentSchema().containsKey(key)) {
-                    return PreparedCall.rejected(AgentStopReason.INVALID_CAPABILITY_CALL,
+                    // 纯调用契约错误允许 Agent 在剩余预算内根据真实 schema 自修复。
+                    return PreparedCall.recoverableRejected(AgentStopReason.INVALID_CAPABILITY_CALL,
                             "unknown capability argument: " + key);
                 }
             }
@@ -96,7 +98,7 @@ public class CapabilityInvoker {
 
         for (String required : definition.requiredArguments()) {
             if (!safeArguments.containsKey(required) || safeArguments.get(required) == null) {
-                return PreparedCall.rejected(AgentStopReason.INVALID_CAPABILITY_CALL,
+                return PreparedCall.recoverableRejected(AgentStopReason.INVALID_CAPABILITY_CALL,
                         "missing required capability argument: " + required);
             }
         }
@@ -105,7 +107,11 @@ public class CapabilityInvoker {
     }
 
     public CapabilityResult invoke(PreparedCall call, CapabilityInvocationContext context) {
-        if (!call.accepted()) return CapabilityResult.failure(call.stopReason(), call.message());
+        if (!call.accepted()) {
+            return call.recoverable()
+                    ? CapabilityResult.recoverableFailure(call.message(), Map.of("errorKind", "PREPARE_CONTRACT"))
+                    : CapabilityResult.failure(call.stopReason(), call.message());
+        }
         long timeoutMs = call.capability().definition().timeoutMs();
         Future<CapabilityResult> future = executor.submit(() -> call.capability().execute(context, call.arguments()));
         try {
@@ -189,12 +195,16 @@ public class CapabilityInvoker {
 
     public record PreparedCall(boolean accepted, KnowledgeCapability capability,
                                Map<String, Object> arguments, String fingerprint,
-                               AgentStopReason stopReason, String message) {
+                               AgentStopReason stopReason, String message,
+                               boolean recoverable) {
         static PreparedCall accepted(KnowledgeCapability capability, Map<String, Object> arguments, String fingerprint) {
-            return new PreparedCall(true, capability, arguments, fingerprint, null, null);
+            return new PreparedCall(true, capability, arguments, fingerprint, null, null, false);
         }
         static PreparedCall rejected(AgentStopReason reason, String message) {
-            return new PreparedCall(false, null, Collections.emptyMap(), null, reason, message);
+            return new PreparedCall(false, null, Collections.emptyMap(), null, reason, message, false);
+        }
+        static PreparedCall recoverableRejected(AgentStopReason reason, String message) {
+            return new PreparedCall(false, null, Collections.emptyMap(), null, reason, message, true);
         }
     }
 }
