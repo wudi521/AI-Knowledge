@@ -18,8 +18,11 @@ public class EvidenceProperties {
 
     @Data
     public static class Agent {
-        /** V3 / AGENT / AGENT_WITH_V3_FALLBACK。 */
-        private String mode = "V3";
+        /**
+         * 迁移兼容字段。在线 EvidenceQueryRouter 已固定走公共 Agentic Knowledge Runtime，
+         * 不再允许 V3 / fallback 覆盖 Runtime 的真实结果。保留字段只避免旧配置启动失败。
+         */
+        private String mode = "AGENT";
         private int maxSteps = 6;
         private int maxLlmCalls = 6;
         private long maxElapsedMs = 15_000L;
