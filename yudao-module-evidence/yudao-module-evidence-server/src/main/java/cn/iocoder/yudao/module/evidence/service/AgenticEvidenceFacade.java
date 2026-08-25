@@ -210,10 +210,11 @@ public class AgenticEvidenceFacade {
         dto.setSkipped(false);
         dto.setElapsedMs(step.elapsedMs());
         dto.setErrorCode(step.stopReason() == null ? null : step.stopReason().name());
-        dto.setInputSummary(StrUtil.maxLength(
-                "action=" + StrUtil.nullToEmpty(step.action())
-                        + "; capability=" + StrUtil.nullToEmpty(step.capability())
-                        + "; purpose=" + StrUtil.nullToEmpty(step.purpose()), 500));
+        String input = "action=" + StrUtil.nullToEmpty(step.action())
+                + "; capability=" + StrUtil.nullToEmpty(step.capability())
+                + "; purpose=" + StrUtil.nullToEmpty(step.purpose());
+        if (StrUtil.isNotBlank(step.argumentsSummary())) input += "; arguments=" + step.argumentsSummary();
+        dto.setInputSummary(StrUtil.maxLength(input, 900));
         dto.setOutputSummary(StrUtil.maxLength(step.summary(), 500));
         return dto;
     }
