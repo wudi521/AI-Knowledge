@@ -30,6 +30,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 @Component
 public class CapabilityInvoker {
+    /** Runtime 只对 TIMEOUT / THROTTLED / TRANSIENT 做有限原样重试。 */
+    private static final int MAX_RUNTIME_RETRIES = 2;
+    private static final long INITIAL_RETRY_BACKOFF_MS = 50L;
+
     /**
      * 系统范围和执行预算永远由服务端注入。这里使用去下划线/连字符并转小写后的规范名，
      * 防止 Planner 通过 tenant_id / TenantId / KB-ID 等变体绕过保护。
@@ -118,12 +122,10 @@ public class CapabilityInvoker {
         }
 
         // 重复调用必须按“最终执行语义”识别，而不是按 LLM 原始 JSON 文本识别。
-        // 例如省略默认 explode 与显式 explode=true 可能编译成完全相同的结构化计划。
         String canonicalKey = null;
         try {
             canonicalKey = capability.canonicalExecutionKey(context, Collections.unmodifiableMap(safeArguments));
         } catch (RuntimeException e) {
-            // canonical key 只用于去重优化；真正的领域契约错误仍由 capability 执行/编译阶段返回。
             log.debug("[agent-capability][canonical key unavailable capability={} error={}]",
                     definition.name(), e.getMessage());
         }
@@ -131,43 +133,76 @@ public class CapabilityInvoker {
         return PreparedCall.accepted(capability, Collections.unmodifiableMap(safeArguments), fingerprint);
     }
 
+    /**
+     * Runtime 执行入口。Planner 修正和 Runtime retry 在这里彻底分离：
+     * plannerRecoverable 结果直接返回给上层重新规划；runtimeRetryable 才会在本层原样重试。
+     */
     public CapabilityResult invoke(PreparedCall call, CapabilityInvocationContext context) {
         if (!call.accepted()) {
             return call.recoverable()
                     ? CapabilityResult.recoverableFailure(call.message(), Map.of("errorKind", "PREPARE_CONTRACT"))
                     : CapabilityResult.failure(call.stopReason(), call.message());
         }
+
+        CapabilityResult last = null;
+        for (int attempt = 0; attempt <= MAX_RUNTIME_RETRIES; attempt++) {
+            last = invokeOnce(call, context);
+            if (last == null || !last.runtimeRetryable() || attempt >= MAX_RUNTIME_RETRIES
+                    || Thread.currentThread().isInterrupted()) {
+                return enforceMaxRows(call.capability().definition(), last);
+            }
+            if (!backoff(attempt)) {
+                return enforceMaxRows(call.capability().definition(), last);
+            }
+        }
+        return enforceMaxRows(call.capability().definition(), last);
+    }
+
+    private CapabilityResult invokeOnce(PreparedCall call, CapabilityInvocationContext context) {
         long timeoutMs = call.capability().definition().timeoutMs();
         Future<CapabilityResult> future = executor.submit(() -> call.capability().execute(context, call.arguments()));
         try {
-            CapabilityResult result = future.get(timeoutMs, TimeUnit.MILLISECONDS);
-            return enforceMaxRows(call.capability().definition(), result);
+            return future.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
             future.cancel(true);
-            return CapabilityResult.failure(AgentStopReason.TIME_BUDGET_EXCEEDED,
+            return CapabilityResult.failure(CapabilityFailureType.TIMEOUT, AgentStopReason.TIME_BUDGET_EXCEEDED,
                     "capability timed out after " + timeoutMs + "ms: " + call.capability().definition().name());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             future.cancel(true);
-            return CapabilityResult.failure(AgentStopReason.TIME_BUDGET_EXCEEDED,
+            // 调用线程已经被中断，不能继续 backoff/retry。
+            return CapabilityResult.failure(CapabilityFailureType.TIMEOUT, AgentStopReason.TIME_BUDGET_EXCEEDED,
                     "capability execution interrupted: " + call.capability().definition().name());
         } catch (ExecutionException e) {
             Throwable cause = e.getCause() == null ? e : e.getCause();
             log.warn("[agent-capability][execution failed capability={} error={}]",
                     call.capability().definition().name(), cause.getMessage());
-            return CapabilityResult.failure(AgentStopReason.NO_RELIABLE_EVIDENCE,
+            // 未经能力显式分类的异常不猜测为 transient，防止错误重试副作用操作。
+            return CapabilityResult.failure(CapabilityFailureType.DEPENDENCY, AgentStopReason.NO_RELIABLE_EVIDENCE,
                     "capability execution failed: " + call.capability().definition().name());
+        }
+    }
+
+    private boolean backoff(int completedRetryIndex) {
+        long delay = INITIAL_RETRY_BACKOFF_MS * (1L << Math.min(completedRetryIndex, 6));
+        try {
+            Thread.sleep(delay);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 
     private CapabilityResult enforceMaxRows(CapabilityDefinition definition, CapabilityResult result) {
         if (result == null) {
-            return CapabilityResult.failure(AgentStopReason.NO_RELIABLE_EVIDENCE, "capability returned null result");
+            return CapabilityResult.failure(CapabilityFailureType.DEPENDENCY, AgentStopReason.NO_RELIABLE_EVIDENCE,
+                    "capability returned null result");
         }
         if (!result.success()) return result;
         int outputCount = outputCount(result);
         if (outputCount > definition.maxRows()) {
-            return CapabilityResult.failure(AgentStopReason.NO_RELIABLE_EVIDENCE,
+            return CapabilityResult.failure(CapabilityFailureType.DATA_INCOMPLETE, AgentStopReason.NO_RELIABLE_EVIDENCE,
                     "capability output exceeds maxRows: " + outputCount + " > " + definition.maxRows());
         }
         return result;
