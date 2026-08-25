@@ -1,12 +1,9 @@
-package cn.iocoder.yudao.module.knowledge.service.agent.capability;
+package cn.iocoder.yudao.module.evidence.service.agent.capability;
 
-/**
- * 能力调用的系统上下文。
- *
- * <p>这些字段由服务端注入，绝不能从 Planner 的 arguments 中读取。</p>
- */
+/** 由服务端注入；Planner 无权指定或覆盖。 */
 public record CapabilityInvocationContext(Long tenantId,
                                           Long userId,
                                           Long kbId,
+                                          String domainCode,
                                           String traceId) {
 }

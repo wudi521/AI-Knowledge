@@ -1,6 +1,6 @@
-package cn.iocoder.yudao.module.knowledge.service.agent;
+package cn.iocoder.yudao.module.evidence.service.agent;
 
-/** Agent 执行停止原因。 */
+/** Agent 单次执行的结构化停止原因。 */
 public enum AgentStopReason {
     ENOUGH_EVIDENCE,
     NEED_USER_INPUT,
