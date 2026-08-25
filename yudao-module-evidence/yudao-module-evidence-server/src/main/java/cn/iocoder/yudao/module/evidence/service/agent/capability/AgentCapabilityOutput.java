@@ -16,6 +16,14 @@ public interface AgentCapabilityOutput {
         return List.of();
     }
 
+    /**
+     * 只有确定性/结构化能力确认过的实体才允许进入 trusted scope。
+     * 普通语义检索候选必须保持默认空集合，防止 candidate feedback contamination。
+     */
+    default List<Long> verifiedEntityIds() {
+        return List.of();
+    }
+
     /** 结构化/确定性能力可直接给出可审计答案；语义检索能力返回 null，由 AnswerPipeline 生成。 */
     default String deterministicAnswer() {
         return null;
