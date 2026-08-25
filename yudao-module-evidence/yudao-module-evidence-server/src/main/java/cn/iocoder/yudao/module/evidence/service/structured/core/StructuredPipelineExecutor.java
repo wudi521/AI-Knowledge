@@ -6,13 +6,10 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -198,9 +195,10 @@ public class StructuredPipelineExecutor {
             }
         }
 
-        if (op == Operation.COUNT) return AggregateValue.success((double) raw.size(), 0);
+        // 对字段/指标做 COUNT/COUNT_DISTINCT 也是全集结论：任一逻辑实体缺值都不能静默少算。
         if (missing > 0) return AggregateValue.failure("aggregate source is incomplete on " + missing
                 + " of " + rows.size() + " entities");
+        if (op == Operation.COUNT) return AggregateValue.success((double) raw.size(), 0);
         if (op == Operation.COUNT_DISTINCT) return AggregateValue.success((double) new LinkedHashSet<>(raw).size(), 0);
         if (raw.isEmpty()) return AggregateValue.success(0D, 0);
         if (!"INTEGER".equalsIgnoreCase(valueType) && !"DECIMAL".equalsIgnoreCase(valueType)) {
