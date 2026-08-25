@@ -24,6 +24,35 @@ class CapabilityInvokerTest {
     }
 
     @Test
+    void protectedScopeVariantsMustAlsoBeRejected() {
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(List.of(new EchoCapability()), List.of()));
+        try {
+            CapabilityInvocationContext context = new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-scope-variant");
+            CapabilityInvoker.PreparedCall prepared = invoker.prepare(
+                    "echo", Map.of("query", "专利", "KB_ID", 999L), context);
+            assertFalse(prepared.accepted());
+            assertEquals(AgentStopReason.INVALID_CAPABILITY_CALL, prepared.stopReason());
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
+    void declaredArgumentSchemaMustActAsCentralWhitelist() {
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(List.of(new StrictCapability()), List.of()));
+        try {
+            CapabilityInvocationContext context = new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-schema");
+            CapabilityInvoker.PreparedCall prepared = invoker.prepare(
+                    "strict", Map.of("query", "专利", "invented", "candidate-title"), context);
+            assertFalse(prepared.accepted());
+            assertEquals(AgentStopReason.INVALID_CAPABILITY_CALL, prepared.stopReason());
+            assertTrue(prepared.message().contains("unknown capability argument"));
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
     void sameArgumentsAndScopeMustProduceStableFingerprint() {
         CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(List.of(new EchoCapability()), List.of()));
         CapabilityInvocationContext context = new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-1");
@@ -68,6 +97,17 @@ class CapabilityInvokerTest {
     private static final class EchoCapability implements KnowledgeCapability {
         private final CapabilityDefinition definition = new CapabilityDefinition(
                 "echo", "1", "测试能力", Set.of("query"), true, 1000, 10);
+        @Override public CapabilityDefinition definition() { return definition; }
+        @Override public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+            return CapabilityResult.success(arguments, Map.of());
+        }
+    }
+
+    private static final class StrictCapability implements KnowledgeCapability {
+        private final CapabilityDefinition definition = new CapabilityDefinition(
+                "strict", "1", "严格参数白名单测试能力",
+                Map.of("query", "必填查询文本", "topK", "可选数量"), Set.of("query"), "TEST", true,
+                Set.of(), Set.of(), Set.of(), 1000, 10);
         @Override public CapabilityDefinition definition() { return definition; }
         @Override public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
             return CapabilityResult.success(arguments, Map.of());
