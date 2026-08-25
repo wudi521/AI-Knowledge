@@ -12,7 +12,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** PATENT 精确权利要求的确定性回答器(RAW 原文 / DEPENDENCY 依赖关系; SUMMARY 走受约束 LLM)。 */
-final class PatentExactClaimAnswerer {
+public final class PatentExactClaimAnswerer {
 
     private static final Pattern CLAIM_NO = Pattern.compile("权利要求\\s*(\\d+)");
 
@@ -22,7 +22,7 @@ final class PatentExactClaimAnswerer {
      * RAW(原文): 直接返回目标 Claim 的原文, 0 LLM / 0 Vector。
      * DEPENDENCY(引用依赖): 读结构化 dependsOn, 保守表述, 0 LLM / 0 Vector。
      */
-    static DirectAnswer tryAnswer(String query, List<Evidence> evidences) {
+    public static DirectAnswer tryAnswer(String query, List<Evidence> evidences) {
         if (StrUtil.isBlank(query) || evidences == null || evidences.size() != 1) return null;
 
         Matcher matcher = CLAIM_NO.matcher(query);
@@ -38,14 +38,12 @@ final class PatentExactClaimAnswerer {
             Integer claimNo = meta.getInt("claimNo");
             if (claimNo == null || claimNo != requestedClaimNo) return null;
 
-            // RAW: “权利要求N原文/条文” → 直接返回 Claim Content, 不重写
             if (containsAny(query, "原文", "条文", "具体内容是什么", "内容是什么", "写了什么")) {
                 String content = StrUtil.trim(evidence.getContent());
                 if (StrUtil.isBlank(content)) return null;
                 return new DirectAnswer("权利要求" + claimNo + "原文是：“" + content + "”。[C1]", 0);
             }
 
-            // DEPENDENCY: 读 dependsOn 结构保守表述
             if (!containsAny(query, "引用", "依赖", "从属", "在先权利要求", "根据权利要求")) return null;
             JSONArray depends = meta.getJSONArray("dependsOn");
             List<Integer> dependsOn = new ArrayList<>();
@@ -60,7 +58,6 @@ final class PatentExactClaimAnswerer {
             if (dependsOn.isEmpty()) {
                 answer = "权利要求" + claimNo + "未引用其他在先权利要求，属于独立权利要求。[C1]";
             } else {
-                // 保守表达: 只陈述"引用的在先权利要求包括", 不推断"任意一项/全部"等语义(除非结构字段明确支持)
                 answer = "权利要求" + claimNo + "引用的在先权利要求包括"
                         + String.join("、", dependsOn.stream().map(String::valueOf).toList()) + "。[C1]";
             }
@@ -75,5 +72,5 @@ final class PatentExactClaimAnswerer {
         return false;
     }
 
-    record DirectAnswer(String answer, int evidenceIndex) {}
+    public record DirectAnswer(String answer, int evidenceIndex) {}
 }
