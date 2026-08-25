@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.evidence.service.structured.core.DomainMetricRegi
 import cn.iocoder.yudao.module.evidence.service.structured.core.EntityDefinition;
 import cn.iocoder.yudao.module.evidence.service.structured.core.FieldDefinition;
 import cn.iocoder.yudao.module.evidence.service.structured.core.MetricDefinition;
+import cn.iocoder.yudao.module.evidence.service.structured.core.MultiValueSupport;
 import cn.iocoder.yudao.module.evidence.service.structured.core.Operation;
 import cn.iocoder.yudao.module.evidence.service.structured.core.QueryScopeType;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredValueTransform;
@@ -47,6 +48,9 @@ public class PatentStructuredPack {
     public static final String FIELD_TITLE = "TITLE";
     public static final String FIELD_FILING_DATE = "FILING_DATE";
     public static final String FIELD_PUBLICATION_DATE = "PUBLICATION_DATE";
+
+    /** 专利解析器现实数据里既存在标点分隔，也存在全角空格/多空格分隔。 */
+    public static final String PERSON_OR_ORG_MULTI_VALUE_DELIMITER = MultiValueSupport.DEFAULT_DELIMITER_REGEX;
 
     public PatentStructuredPack(DomainMetricRegistry metricRegistry, DomainEntityRegistry entityRegistry,
                                 DomainFieldRegistry fieldRegistry) {
@@ -99,13 +103,17 @@ public class PatentStructuredPack {
                 .allowedTransforms(Set.of(StructuredValueTransform.LENGTH)).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_APPLICANT).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
-                .valueType("STRING").multiValue(true).aliases(List.of("申请人", "申请单位"))
+                .valueType("STRING").multiValue(true)
+                .multiValueDelimiterRegex(PERSON_OR_ORG_MULTI_VALUE_DELIMITER)
+                .aliases(List.of("申请人", "申请单位"))
                 .allowedOperators(Set.of(EQ, IN, CONTAINS, EXISTS))
                 .sortable(true).filterable(true).groupable(true)
                 .allowedTransforms(Set.of(StructuredValueTransform.LENGTH, StructuredValueTransform.VALUE_COUNT)).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_INVENTOR).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
-                .valueType("STRING").multiValue(true).aliases(List.of("发明人", "发明者"))
+                .valueType("STRING").multiValue(true)
+                .multiValueDelimiterRegex(PERSON_OR_ORG_MULTI_VALUE_DELIMITER)
+                .aliases(List.of("发明人", "发明者"))
                 .allowedOperators(Set.of(EQ, IN, CONTAINS, EXISTS))
                 .sortable(true).filterable(true).groupable(true)
                 .allowedTransforms(Set.of(StructuredValueTransform.LENGTH, StructuredValueTransform.VALUE_COUNT,
