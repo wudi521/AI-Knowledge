@@ -8,7 +8,6 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentExecutionState;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentObservation;
-import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityDefinition;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvocationContext;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityRegistry;
 import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
@@ -40,7 +39,6 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
             observations、references 和预算。
 
             只输出 JSON，不要 Markdown，不要输出内部推理过程。
-
             action 只能是 EXECUTE_PLAN / ANSWER / NEED_MORE_INFO / STOP。
 
             当 action=EXECUTE_PLAN 时，输出：
@@ -53,23 +51,27 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
             1. 节点只能调用 capabilities 中真实存在的能力；arguments 必须符合 argumentSchema。
             2. tenantId/userId/kbId/domainCode/traceId/permission/budget 等系统范围禁止写入 arguments。
             3. 可以独立执行的事实必须放在无依赖节点中，让 Runtime 并行执行；有真实数据依赖才写 dependsOn。
-            4. 下游需要消费上游结果时，只能使用显式引用：
-               {"$ref":"n1","selector":"verifiedEntityIds"}。
-               selector 只允许 data / metadata / status / verifiedEntityIds / deterministicAnswer / evidences / summary，
-               且引用节点必须同时出现在 dependsOn。
-            5. originalGoal 不可改写成更弱问题。字段存在性不能证明数量、极值、关系、阈值等更强事实。
-            6. 结构化事实严格依据 domainFields/domainMetrics；禁止编造字段、指标、transform、operator。
-            7. 精确查询/过滤/聚合优先走结构化能力；字面包含走全文/精确文本能力；开放语义问题才走 semantic retrieval。
+            4. 下游消费上游结果只能使用显式引用：{"$ref":"n1","selector":"..."}，且引用节点必须同时在 dependsOn。
+               selector 只允许 data / metadata / status / candidateEntityIds / verifiedEntityIds /
+               deterministicAnswer / evidences / summary。
+            5. candidateEntityIds 与 verifiedEntityIds 不同：语义检索、全文候选只能使用 candidateEntityIds；
+               只有结构化/关系等确定性 Tool 明确返回的 verifiedEntityIds 才是可信实体。禁止把 candidate 当 verified。
+            6. 多路实体集合需要交集/并集/差集时必须调用 visible 的 entity_set_operation，不要让模型自己计算 ID 集合。
+               entity_set_operation 的输出仍是 candidateEntityIds，不会自动提升为 verified。
+            7. originalGoal 不可改写成更弱问题。字段存在性不能证明数量、极值、关系、阈值等更强事实。
+            8. 结构化事实严格依据 domainFields/domainMetrics；禁止编造字段、指标、transform、operator。
+            9. 精确过滤/投影/聚合优先走结构化能力；逐字包含走 exact-text；开放语义问题才走 semantic retrieval。
                不要把所有问题都变成向量检索。
-            8. completeDataset=true + authoritativeEmpty=true 才能作为完整范围的“没有/为0”证明。
-               semantic retrieval 的 NO_MATCHES 不是全集不存在证明。
-            9. 如果 observations 中出现 goal_evaluator + GOAL_NOT_SATISFIED，新的计划必须直接补足指出的证明缺口，
-               不能换 JSON 写法重复同一个弱事实。
-            10. VALIDATION 类错误可以通过改变计划修正；PERMISSION/CONFIGURATION/DEPENDENCY/DATA_INCOMPLETE
+            10. relation_traversal 只有在 capabilities 中可见时才可使用，relationType 只能取其 argumentSchema 暴露的真实值。
+            11. completeDataset=true + authoritativeEmpty=true 才能作为完整范围的“没有/为0”证明。
+                semantic retrieval 的 NO_MATCHES 或 candidate 集合为空，不代表全集不存在。
+            12. observations 若出现 goal_evaluator + GOAL_NOT_SATISFIED，新计划必须直接补足证明缺口，
+                不能只换 JSON 写法重复同一个弱事实。
+            13. VALIDATION 类错误可通过改变计划修正；PERMISSION/CONFIGURATION/DEPENDENCY/DATA_INCOMPLETE
                 不能通过原样重试绕过；TIMEOUT/THROTTLED/TRANSIENT 的原样重试由 Runtime 自己处理。
-            11. 节点数量不得超过 maxPlanNodes。不要为了“保险”重复查询。
-            12. 如果现有 references 已经足以回答 originalGoal，action=ANSWER；如果必须由用户补充关键信息，
-                action=NEED_MORE_INFO；如果当前能力/数据边界无法完成，action=STOP。
+            14. 节点数量不得超过 maxPlanNodes。不要为了“保险”重复查询。
+            15. references 已经足以回答 originalGoal 时 action=ANSWER；必须由用户补充信息时 NEED_MORE_INFO；
+                当前真实能力或数据边界无法完成时 STOP。
             """;
 
     private final ModelApi modelApi;
@@ -191,6 +193,7 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
             item.put("status", reference.status());
             item.put("summary", StrUtil.maxLength(reference.summary(), 800));
             item.put("deterministicAnswer", StrUtil.maxLength(reference.deterministicAnswer(), 500));
+            item.put("candidateEntityIds", reference.candidateEntityIds());
             item.put("verifiedEntityIds", reference.verifiedEntityIds());
             item.put("metadata", reference.metadata());
             out.add(item);
@@ -262,7 +265,9 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
     private Set<String> stringSet(JSONArray array) {
         if (array == null || array.isEmpty()) return Set.of();
         Set<String> out = new LinkedHashSet<>();
-        for (Object value : array) if (value != null && StrUtil.isNotBlank(String.valueOf(value))) out.add(String.valueOf(value));
+        for (Object value : array) {
+            if (value != null && StrUtil.isNotBlank(String.valueOf(value))) out.add(String.valueOf(value));
+        }
         return out;
     }
 
