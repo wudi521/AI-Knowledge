@@ -32,6 +32,15 @@ public class ApiAccessLogDO extends BaseDO {
     public static final Integer REQUEST_PARAMS_MAX_LENGTH = 8000;
 
     /**
+     * {@link #responseBody} 的最大字符长度。
+     *
+     * <p>MySQL infra_api_access_log.response_body 为 TEXT，最大 65535 bytes。
+     * 数据库使用 utf8mb4，单字符最坏可占 4 bytes，因此限制为 16000 字符，
+     * 为字段本身和编码边界留出安全余量。评估/对话响应包含完整 Trace/Evidence 时尤其需要该保护。</p>
+     */
+    public static final Integer RESPONSE_BODY_MAX_LENGTH = 16000;
+
+    /**
      * {@link #resultMsg} 的最大长度
      */
     public static final Integer RESULT_MSG_MAX_LENGTH = 512;
