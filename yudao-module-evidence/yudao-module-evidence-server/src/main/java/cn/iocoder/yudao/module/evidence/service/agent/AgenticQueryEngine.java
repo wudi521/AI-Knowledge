@@ -8,15 +8,15 @@ import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvoc
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvoker;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResult;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.KnowledgeRetrievalCapability;
+import cn.iocoder.yudao.module.evidence.service.agent.capability.SimilarFieldValuesCapability;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
- * V1.1 有界执行循环。第一纵切先接 knowledge_retrieval；后续能力通过 registry 增量接入，主循环不改。
+ * V1.1 有界执行循环。能力通过 registry 增量接入，主循环不按业务问题增加 Intent/if。
  */
 @Component
 public class AgenticQueryEngine {
@@ -42,6 +42,7 @@ public class AgenticQueryEngine {
         CapabilityInvocationContext context = new CapabilityInvocationContext(tenantId, userId, kbId, domainCode, traceId);
         List<AgentObservation> observations = new ArrayList<>();
         List<Evidence> gatheredEvidence = new ArrayList<>();
+        List<String> deterministicAnswers = new ArrayList<>();
 
         while (!state.isStopped()) {
             AgentExecutionGuard.GuardResult plannerGuard = guard.beforePlannerCall(state);
@@ -88,8 +89,18 @@ public class AgenticQueryEngine {
                     }
                     observations.add(material.observation());
                     gatheredEvidence.addAll(material.evidences());
+                    if (StrUtil.isNotBlank(material.deterministicAnswer())) {
+                        deterministicAnswers.add(material.deterministicAnswer());
+                    }
                 }
                 case ANSWER -> {
+                    if (!deterministicAnswers.isEmpty()) {
+                        state.setEvidenceCoverage(EvidenceCoverage.FULL);
+                        state.stop(AgentStopReason.ENOUGH_EVIDENCE);
+                        return new Result(State.ANSWER, String.join("\n", deterministicAnswers), null,
+                                AgentStopReason.ENOUGH_EVIDENCE, gatheredEvidence,
+                                state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage());
+                    }
                     if (gatheredEvidence.isEmpty()) {
                         state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
                         return Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE, "没有可靠证据支持回答。",
@@ -131,15 +142,21 @@ public class AgenticQueryEngine {
             List<Evidence> evidences = output.evidences() == null ? List.of() : output.evidences();
             String progress = decision.capability() + ":" + output.progressHash();
             AgentObservation observation = new AgentObservation(decision.capability(), decision.purpose(), output.summary(), progress);
-            return new ObservationMaterial(observation, evidences, progress);
+            return new ObservationMaterial(observation, evidences, progress, null);
+        }
+        if (data instanceof SimilarFieldValuesCapability.Output output) {
+            String progress = decision.capability() + ":" + output.progressHash();
+            AgentObservation observation = new AgentObservation(decision.capability(), decision.purpose(), output.summary(), progress);
+            return new ObservationMaterial(observation, List.of(), progress, output.directAnswer());
         }
         String summary = StrUtil.maxLength(String.valueOf(result.metadata()), 1200);
         String progress = decision.capability() + ":" + Integer.toHexString((String.valueOf(data) + summary).hashCode());
         return new ObservationMaterial(new AgentObservation(decision.capability(), decision.purpose(), summary, progress),
-                List.of(), progress);
+                List.of(), progress, null);
     }
 
-    private record ObservationMaterial(AgentObservation observation, List<Evidence> evidences, String progressHash) { }
+    private record ObservationMaterial(AgentObservation observation, List<Evidence> evidences,
+                                       String progressHash, String deterministicAnswer) { }
 
     public enum State { ANSWER, CLARIFY, STOPPED }
 
