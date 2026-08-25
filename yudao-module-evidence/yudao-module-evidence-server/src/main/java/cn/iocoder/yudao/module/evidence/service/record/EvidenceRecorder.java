@@ -69,6 +69,7 @@ public class EvidenceRecorder {
             eval.setTraceId(resp.getTraceId());
             eval.setQuery(StrUtil.maxLength(resp.getQuery(), 500));
             eval.setAnswerable(Boolean.TRUE.equals(resp.getAnswerable()) ? 1 : 0);
+            // V1.1 confidence 尚未经过离线校准。null 必须原样表示“未校准”，不能污染为 0.0000。
             eval.setConfidence(toConfidence(resp.getConfidence()));
             eval.setRefusalReason(StrUtil.maxLength(resp.getRefusalReason(), 500));
             eval.setEvidenceCount(resp.getEvidence() != null ? resp.getEvidence().size() : 0);
@@ -78,7 +79,6 @@ public class EvidenceRecorder {
             eval.setClaimPass(resp.getAnswer() != null && !Boolean.TRUE.equals(resp.getClaimFail()) ? 1 : 0);
             eval.setClaims(resp.getClaims() != null ? JSONUtil.toJsonStr(resp.getClaims()) : null);
             eval.setConflicts(resp.getConflicts() != null ? JSONUtil.toJsonStr(resp.getConflicts()) : null);
-            // 上下文快照: 非空才落库, 单轮/缺失为 null
             eval.setHistory(resp.getHistory() != null && !resp.getHistory().isEmpty()
                     ? JSONUtil.toJsonStr(resp.getHistory()) : null);
             eval.setElapsedMs(resp.getElapsedMs());
@@ -105,7 +105,6 @@ public class EvidenceRecorder {
             // 3. F1 Evidence Lineage: claim 逐条落库 + 引用汇总(失败不阻断)
             recordClaimsAndCitations(resp, evidences);
         } catch (Exception e) {
-            // 业务证据落库失败不阻断响应
             log.warn("[record][traceId({}) 证据落库失败, 跳过: {}]",
                     resp != null ? resp.getTraceId() : null, e.getMessage(), e);
         } finally {
@@ -127,14 +126,10 @@ public class EvidenceRecorder {
 
     /** F1: 断言逐条 + 引用汇总落库(claim → 证据片段可追溯; 引用锚定 SUPPORTED 证据) */
     private void recordClaimsAndCitations(EvidenceEvaluateRespVO resp, List<Evidence> evidences) {
-        if (resp == null || resp.getClaims() == null || resp.getClaims().isEmpty()) {
-            return;
-        }
+        if (resp == null || resp.getClaims() == null || resp.getClaims().isEmpty()) return;
         java.util.List<Long> citedChunkIds = new java.util.ArrayList<>();
         for (EvidenceEvaluateRespVO.ClaimVO claim : resp.getClaims()) {
-            if (claim == null || StrUtil.isBlank(claim.getText())) {
-                continue;
-            }
+            if (claim == null || StrUtil.isBlank(claim.getText())) continue;
             AnswerClaimDO claimDO = new AnswerClaimDO();
             claimDO.setTraceId(resp.getTraceId());
             claimDO.setClaimText(StrUtil.maxLength(claim.getText(), 1024));
@@ -146,11 +141,8 @@ public class EvidenceRecorder {
             }
             claimDO.setEvidenceChunkId(chunkId);
             answerClaimMapper.insert(claimDO);
-            if ("SUPPORTED".equalsIgnoreCase(claim.getVerdict()) && chunkId != null) {
-                citedChunkIds.add(chunkId);
-            }
+            if ("SUPPORTED".equalsIgnoreCase(claim.getVerdict()) && chunkId != null) citedChunkIds.add(chunkId);
         }
-        // 引用汇总(一次回答一行, 唯一 trace)
         if (!citedChunkIds.isEmpty()) {
             AnswerCitationDO citation = new AnswerCitationDO();
             citation.setTraceId(resp.getTraceId());
@@ -161,47 +153,34 @@ public class EvidenceRecorder {
         }
     }
 
-    /**
-     * verdict 判定(见类注释)
-     */
     private String verdictOf(int index, List<Conflict> conflicts, EvidenceEvaluateRespVO resp) {
-        // 1. 冲突引用 → WARN
         if (conflicts != null) {
             for (Conflict conflict : conflicts) {
-                if (conflict.getEvidenceIndexA() != null && conflict.getEvidenceIndexA() == index) {
-                    return VERDICT_WARN;
-                }
-                if (conflict.getEvidenceIndexB() != null && conflict.getEvidenceIndexB() == index) {
-                    return VERDICT_WARN;
-                }
+                if (conflict.getEvidenceIndexA() != null && conflict.getEvidenceIndexA() == index) return VERDICT_WARN;
+                if (conflict.getEvidenceIndexB() != null && conflict.getEvidenceIndexB() == index) return VERDICT_WARN;
             }
         }
-        // 2. 有回答且被 SUPPORTED 断言引用 → SUPPORTED
         if (resp.getAnswer() != null && resp.getClaims() != null) {
             for (EvidenceEvaluateRespVO.ClaimVO claim : resp.getClaims()) {
                 if (claim != null && claim.getEvidenceIndex() != null && claim.getEvidenceIndex() == index
-                        && VERDICT_SUPPORTED.equals(claim.getVerdict())) {
-                    return VERDICT_SUPPORTED;
-                }
+                        && VERDICT_SUPPORTED.equals(claim.getVerdict())) return VERDICT_SUPPORTED;
             }
         }
-        // 3. 其余(未引用/claimFail/未作答) → WARN
         return VERDICT_WARN;
     }
 
-    /** 置信度: 钳制 0~1 + 保留 4 位小数(对齐 decimal(5,4)) */
+    /**
+     * 置信度: null 保持 null 表示“未校准”；非空值才钳制 0~1 并保留 4 位小数。
+     * 这是 V1.1 评测数据契约的一部分，不能把 unknown 与 numeric zero 混为一谈。
+     */
     private BigDecimal toConfidence(Double score) {
-        if (score == null) {
-            return BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
-        }
+        if (score == null) return null;
         double value = Math.max(0.0, Math.min(1.0, score));
         return BigDecimal.valueOf(value).setScale(4, RoundingMode.HALF_UP);
     }
 
-    /** 创建人: 登录用户昵称(LoginUser 无 username 字段, 用昵称兜底), 缺失为空串(框架自动填充 userId) */
     private String creator() {
         String nickname = SecurityFrameworkUtils.getLoginUserNickname();
         return nickname != null ? nickname : "";
     }
-
 }
