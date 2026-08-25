@@ -3,7 +3,16 @@ package cn.iocoder.yudao.module.evidence.service.agent.capability;
 import java.util.Map;
 
 public interface KnowledgeCapability {
+    /** 稳定的机器执行契约。 */
     CapabilityDefinition definition();
+
+    /**
+     * 给 Planner 看的上下文契约。默认与机器契约一致；动态能力可以只收窄描述/可选值，
+     * 例如按当前 Domain 暴露真实 relationType。执行端仍必须以 definition + validateArguments 做硬校验。
+     */
+    default CapabilityDefinition plannerDefinition(CapabilityInvocationContext context) {
+        return definition();
+    }
 
     /**
      * 机器可执行的参数契约校验。默认仅依赖 CapabilityDefinition 的白名单/必填校验；
