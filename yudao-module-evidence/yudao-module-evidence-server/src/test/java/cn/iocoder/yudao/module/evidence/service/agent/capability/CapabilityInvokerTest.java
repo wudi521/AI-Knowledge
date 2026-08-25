@@ -19,6 +19,7 @@ class CapabilityInvokerTest {
         CapabilityInvocationContext context = new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-1");
         CapabilityInvoker.PreparedCall prepared = invoker.prepare("echo", Map.of("query", "专利", "kbId", 999L), context);
         assertFalse(prepared.accepted());
+        assertFalse(prepared.recoverable());
         assertEquals(AgentStopReason.INVALID_CAPABILITY_CALL, prepared.stopReason());
         invoker.shutdown();
     }
@@ -31,6 +32,7 @@ class CapabilityInvokerTest {
             CapabilityInvoker.PreparedCall prepared = invoker.prepare(
                     "echo", Map.of("query", "专利", "KB_ID", 999L), context);
             assertFalse(prepared.accepted());
+            assertFalse(prepared.recoverable());
             assertEquals(AgentStopReason.INVALID_CAPABILITY_CALL, prepared.stopReason());
         } finally {
             invoker.shutdown();
@@ -45,8 +47,27 @@ class CapabilityInvokerTest {
             CapabilityInvoker.PreparedCall prepared = invoker.prepare(
                     "strict", Map.of("query", "专利", "invented", "candidate-title"), context);
             assertFalse(prepared.accepted());
+            assertTrue(prepared.recoverable());
             assertEquals(AgentStopReason.INVALID_CAPABILITY_CALL, prepared.stopReason());
             assertTrue(prepared.message().contains("unknown capability argument"));
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
+    void machineValidatorMustRunBeforeCapabilityExecution() {
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
+                List.of(new MachineValidatedCapability()), List.of()));
+        try {
+            CapabilityInvocationContext context = new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-machine-schema");
+            CapabilityInvoker.PreparedCall bad = invoker.prepare("machine", Map.of("limit", 0), context);
+            CapabilityInvoker.PreparedCall good = invoker.prepare("machine", Map.of("limit", 3), context);
+
+            assertFalse(bad.accepted());
+            assertTrue(bad.recoverable());
+            assertTrue(bad.message().contains("1..10"));
+            assertTrue(good.accepted());
         } finally {
             invoker.shutdown();
         }
@@ -111,6 +132,25 @@ class CapabilityInvokerTest {
         @Override public CapabilityDefinition definition() { return definition; }
         @Override public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
             return CapabilityResult.success(arguments, Map.of());
+        }
+    }
+
+    private static final class MachineValidatedCapability implements KnowledgeCapability {
+        private final CapabilityDefinition definition = new CapabilityDefinition(
+                "machine", "1", "机器参数验证测试能力",
+                Map.of("limit", "1..10"), Set.of("limit"), "TEST", true,
+                Set.of(), Set.of(), Set.of(), 1000, 10);
+        @Override public CapabilityDefinition definition() { return definition; }
+        @Override public CapabilityArgumentValidation validateArguments(CapabilityInvocationContext context,
+                                                                        Map<String, Object> arguments) {
+            Object raw = arguments.get("limit");
+            if (!(raw instanceof Integer value) || value < 1 || value > 10) {
+                return CapabilityArgumentValidation.invalid("limit must be integer 1..10");
+            }
+            return CapabilityArgumentValidation.ok();
+        }
+        @Override public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+            return CapabilityResult.success(arguments, Map.of("outputCount", 1));
         }
     }
 
