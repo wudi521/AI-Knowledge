@@ -5,6 +5,7 @@ import cn.iocoder.yudao.module.evidence.service.agent.AgentExecutionBudget;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -35,6 +36,17 @@ public class AgentExecutionPlanValidator {
                     return Validation.invalid("unknown dependency " + dependency + " for node " + node.id());
                 }
             }
+            Set<String> references = new HashSet<>();
+            collectReferences(node.arguments(), references);
+            for (String reference : references) {
+                if (!byId.containsKey(reference)) {
+                    return Validation.invalid("unknown argument reference " + reference + " for node " + node.id());
+                }
+                if (!node.dependsOn().contains(reference)) {
+                    return Validation.invalid("argument reference must be declared in dependsOn: "
+                            + node.id() + " -> " + reference);
+                }
+            }
         }
 
         Set<String> visiting = new HashSet<>();
@@ -45,6 +57,18 @@ public class AgentExecutionPlanValidator {
             }
         }
         return Validation.ok();
+    }
+
+    private void collectReferences(Object value, Set<String> references) {
+        if (value instanceof Map<?, ?> map) {
+            Object ref = map.get("$ref");
+            if (ref != null) references.add(String.valueOf(ref));
+            for (Object nested : map.values()) collectReferences(nested, references);
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (Object nested : list) collectReferences(nested, references);
+        }
     }
 
     private boolean hasCycle(String id, Map<String, PlanNode> byId,
