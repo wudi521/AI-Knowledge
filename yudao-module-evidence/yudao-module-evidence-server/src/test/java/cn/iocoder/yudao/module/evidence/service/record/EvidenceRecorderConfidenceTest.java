@@ -10,17 +10,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EvidenceRecorderConfidenceTest {
 
     @Test
-    void nullConfidenceMustRemainNullInsteadOfBecomingNumericZero() throws Exception {
+    void evalUnknownMustRemainNullWhileEvidenceScoreKeepsNotNullDefault() throws Exception {
         EvidenceRecorder recorder = new EvidenceRecorder();
-        Method method = EvidenceRecorder.class.getDeclaredMethod("toConfidence", Double.class);
-        method.setAccessible(true);
+        Method evalMethod = EvidenceRecorder.class.getDeclaredMethod("toNullableConfidence", Double.class);
+        Method evidenceMethod = EvidenceRecorder.class.getDeclaredMethod("toEvidenceConfidence", Double.class);
+        evalMethod.setAccessible(true);
+        evidenceMethod.setAccessible(true);
 
-        Object unknown = method.invoke(recorder, new Object[]{null});
-        BigDecimal zero = (BigDecimal) method.invoke(recorder, 0D);
-        BigDecimal high = (BigDecimal) method.invoke(recorder, 1.2D);
+        Object unknownEval = evalMethod.invoke(recorder, new Object[]{null});
+        BigDecimal missingEvidenceScore = (BigDecimal) evidenceMethod.invoke(recorder, new Object[]{null});
+        BigDecimal highEval = (BigDecimal) evalMethod.invoke(recorder, 1.2D);
 
-        assertThat(unknown).isNull();
-        assertThat(zero).isEqualByComparingTo("0.0000");
-        assertThat(high).isEqualByComparingTo("1.0000");
+        assertThat(unknownEval).isNull();
+        assertThat(missingEvidenceScore).isEqualByComparingTo("0.0000");
+        assertThat(highEval).isEqualByComparingTo("1.0000");
     }
 }
