@@ -24,22 +24,21 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * V1.1 架构级验收矩阵。
+ * 公共 Agentic Knowledge Runtime 架构级验收矩阵。
  *
- * <p>这里不测试模型“聪明程度”，只锁死上线时绝不能退化的协议：
- * 确定性答案有 provenance、confidence 不伪造、澄清/权限失败不被旧 V3 覆盖、
- * 迁移模式只有基础设施/能力缺失类错误允许安全回退。</p>
+ * <p>这里只锁死不能退化的公共协议：确定性答案有 provenance、confidence 不伪造、
+ * 澄清/权限/失败都不能被旧 V3 覆盖，旧 mode 配置也不能绕过在线 Runtime。</p>
  */
 class AgentV11AcceptanceMatrixTest {
 
     @Test
     void deterministicEntityAnswerMustExposeStructuredProvenanceWithoutFakeConfidence() {
-        AgenticQueryEngine engine = mock(AgenticQueryEngine.class);
+        AgenticKnowledgeRuntimeEngine engine = mock(AgenticKnowledgeRuntimeEngine.class);
         EvidenceRecorder recorder = mock(EvidenceRecorder.class);
         AgenticEvidenceFacade facade = new AgenticEvidenceFacade(engine, recorder);
 
-        AgenticQueryEngine.Result result = new AgenticQueryEngine.Result(
-                AgenticQueryEngine.State.ANSWER,
+        AgenticKnowledgeRuntimeEngine.Result result = new AgenticKnowledgeRuntimeEngine.Result(
+                AgenticKnowledgeRuntimeEngine.State.ANSWER,
                 "公布号=CN123",
                 null,
                 AgentStopReason.ENOUGH_EVIDENCE,
@@ -48,11 +47,12 @@ class AgentV11AcceptanceMatrixTest {
                 2,
                 EvidenceCoverage.FULL,
                 null,
-                List.of(new AgentTraceStep(1, "ANSWER", "ANSWER", null,
-                        "回答原始目标", "SUCCEEDED", 0L,
-                        "deterministic capability result answered original goal",
+                List.of(new AgentTraceStep(1, "ANSWER_VALIDATION", "ANSWER", null,
+                        "回答 immutable OriginalGoal", "SUCCEEDED", 0L,
+                        "deterministic references satisfy immutable OriginalGoal",
                         AgentStopReason.ENOUGH_EVIDENCE)),
-                List.of(74L));
+                List.of(74L),
+                List.of(), List.of(), List.of());
         when(engine.execute(eq("申请号X的公布号是什么？"), eq(6L), eq("PATENT"), eq(1L), eq(2L),
                 any(), anyList(), anyList())).thenReturn(result);
 
@@ -62,7 +62,7 @@ class AgentV11AcceptanceMatrixTest {
 
         assertTrue(Boolean.TRUE.equals(resp.getAnswerable()));
         assertEquals("公布号=CN123", resp.getAnswer());
-        assertNull(resp.getConfidence(), "V1.1 未校准连续置信度前必须保持 null");
+        assertNull(resp.getConfidence(), "未校准连续置信度前必须保持 null");
         assertEquals(1, resp.getEvidence().size());
         assertEquals("STRUCTURED_RESULT", resp.getEvidence().get(0).getEvidenceType());
         assertEquals("公布号=CN123", resp.getEvidence().get(0).getContent());
@@ -70,6 +70,7 @@ class AgentV11AcceptanceMatrixTest {
         assertTrue(resp.getEvidence().get(0).getFilters().contains("verifiedEntityIds=[74]"));
         assertEquals(List.of(74L), resp.getStructuredResult().getEntityIds());
         assertEquals("ENOUGH_EVIDENCE", resp.getReasonCode());
+        assertEquals("AGENTIC_KNOWLEDGE_RUNTIME", resp.getExecutionMode());
     }
 
     @Test
@@ -114,27 +115,29 @@ class AgentV11AcceptanceMatrixTest {
     }
 
     @Test
-    void v3ModeMustBypassAgentCompletely() {
+    void legacyV3ModeMustNotBypassPublicRuntime() {
         EvidenceQueryEngineV3Facade v3 = mock(EvidenceQueryEngineV3Facade.class);
         AgenticEvidenceFacade agent = mock(AgenticEvidenceFacade.class);
         EvidenceProperties properties = new EvidenceProperties();
         properties.getAgent().setMode("V3");
         EvidenceQueryRouter router = new EvidenceQueryRouter(v3, agent, properties);
 
-        EvidenceEvaluateRespVO v3Resp = response(true, null, "trace-v3");
-        when(v3.evaluate("q", List.of(6L), 8, 1L, 2L,
-                List.of(), false, "trace-v3", "PATENT", null, null)).thenReturn(v3Resp);
+        EvidenceEvaluateRespVO agentResp = response(false, "CAPABILITY_UNAVAILABLE", "trace-v3-config");
+        when(agent.evaluateUnrecorded("q", List.of(6L), "PATENT", 1L, 2L,
+                List.of(), null, "trace-v3-config")).thenReturn(agentResp);
 
         EvidenceEvaluateRespVO actual = router.evaluate("q", List.of(6L), 8, 1L, 2L,
-                List.of(), false, "trace-v3", "PATENT", null, null);
+                List.of(), false, "trace-v3-config", "PATENT", null, null);
 
-        assertSame(v3Resp, actual);
-        verify(agent, never()).evaluateUnrecorded(any(), anyList(), any(), any(), any(), anyList(), any(), any());
+        assertSame(agentResp, actual);
+        assertEquals("AGENT", router.mode());
+        verify(agent).record(agentResp);
+        verify(v3, never()).evaluate(any(), anyList(), any(), any(), any(), anyList(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void singleKbBoundaryMustFailClosedInPureAgentMode() {
-        AgenticQueryEngine engine = mock(AgenticQueryEngine.class);
+    void singleKbBoundaryMustFailClosedInPublicRuntime() {
+        AgenticKnowledgeRuntimeEngine engine = mock(AgenticKnowledgeRuntimeEngine.class);
         EvidenceRecorder recorder = mock(EvidenceRecorder.class);
         AgenticEvidenceFacade facade = new AgenticEvidenceFacade(engine, recorder);
 
@@ -145,6 +148,7 @@ class AgentV11AcceptanceMatrixTest {
         assertFalse(Boolean.TRUE.equals(resp.getAnswerable()));
         assertEquals("AGENT_SINGLE_KB_REQUIRED", resp.getReasonCode());
         assertNull(resp.getConfidence());
+        assertEquals("AGENTIC_KNOWLEDGE_RUNTIME", resp.getExecutionMode());
         verify(engine, never()).execute(any(), any(), any(), any(), any(), any(), anyList(), anyList());
     }
 
