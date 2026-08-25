@@ -55,6 +55,15 @@ class StructuredValueEvaluatorTest {
     }
 
     @Test
+    void oneFailedElementMustInvalidateWholeMultiValueDerivedResult() {
+        StructuredQueryResult.Row row = row("INVENTOR", "张三、X");
+        StructuredValueExpression expression = new StructuredValueExpression(
+                "INVENTOR", true, List.of(StructuredValueTransform.PERSON_SURNAME));
+
+        assertThat(evaluator.values("PATENT", row, expression)).isEmpty();
+    }
+
+    @Test
     void nonCountTransformOnMultiValueFieldRequiresExplode() {
         StructuredValueExpression invalid = new StructuredValueExpression(
                 "INVENTOR", false, List.of(StructuredValueTransform.PERSON_SURNAME));
