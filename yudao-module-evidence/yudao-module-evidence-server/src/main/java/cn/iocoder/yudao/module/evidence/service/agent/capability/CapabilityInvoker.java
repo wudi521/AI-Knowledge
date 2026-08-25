@@ -84,12 +84,10 @@ public class CapabilityInvoker {
             }
         }
 
-        // 新版 capability 的 argumentSchema 同时是 Planner 契约与 Invoker 参数白名单。
-        // 旧纵切兼容构造器 schema 为空时不做未知参数拦截，避免破坏历史测试/迁移能力。
+        // argumentSchema 是对 Planner 的可读契约，同时作为中央参数名白名单。
         if (definition.argumentSchema() != null && !definition.argumentSchema().isEmpty()) {
             for (String key : safeArguments.keySet()) {
                 if (!definition.argumentSchema().containsKey(key)) {
-                    // 纯调用契约错误允许 Agent 在剩余预算内根据真实 schema 自修复。
                     return PreparedCall.recoverableRejected(AgentStopReason.INVALID_CAPABILITY_CALL,
                             "unknown capability argument: " + key);
                 }
@@ -102,6 +100,23 @@ public class CapabilityInvoker {
                         "missing required capability argument: " + required);
             }
         }
+
+        // 真正的机器参数契约：类型、范围、对象/数组形状由 capability 代码校验，
+        // 不把正确性寄托在 Planner 是否“看懂” argumentSchema 的文字描述。
+        CapabilityArgumentValidation validation;
+        try {
+            validation = capability.validateArguments(context, Collections.unmodifiableMap(safeArguments));
+        } catch (RuntimeException e) {
+            log.warn("[agent-capability][argument validation failed capability={} error={}]",
+                    definition.name(), e.getMessage());
+            return PreparedCall.recoverableRejected(AgentStopReason.INVALID_CAPABILITY_CALL,
+                    "capability argument validation failed");
+        }
+        if (validation != null && !validation.valid()) {
+            return PreparedCall.recoverableRejected(AgentStopReason.INVALID_CAPABILITY_CALL,
+                    validation.message() == null ? "capability arguments are invalid" : validation.message());
+        }
+
         String fingerprint = fingerprint(capabilityName, safeArguments, context);
         return PreparedCall.accepted(capability, Collections.unmodifiableMap(safeArguments), fingerprint);
     }
