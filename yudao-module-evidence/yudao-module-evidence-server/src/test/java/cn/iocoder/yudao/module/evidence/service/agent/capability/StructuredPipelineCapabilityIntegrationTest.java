@@ -90,6 +90,25 @@ class StructuredPipelineCapabilityIntegrationTest {
     }
 
     @Test
+    void ordersByDerivedMultiValueCount() {
+        rows(
+                row(1L, "一位发明人", "202300000001.1", "CN1A", "2023-01-01", "2023-02-01", "张三", 1d),
+                row(2L, "三位发明人", "202300000002.2", "CN2A", "2023-01-02", "2023-02-02", "张三、李四、王五", 1d)
+        );
+
+        CapabilityResult result = delegate.execute(context, Map.of(
+                "select", List.of("TITLE", "INVENTOR"),
+                "orderBy", Map.of("field", "INVENTOR", "transforms", List.of("VALUE_COUNT"), "direction", "DESC"),
+                "limit", 1
+        ));
+
+        assertThat(result.success()).isTrue();
+        StructuredPipelineCapabilityDelegate.Output output = (StructuredPipelineCapabilityDelegate.Output) result.data();
+        assertThat(output.entityIds()).containsExactly(2L);
+        assertThat(output.answer()).contains("三位发明人");
+    }
+
+    @Test
     void groupsExplodedInventorsAndCountsLogicalPatents() {
         rows(
                 row(1L, "A", "202300000001.1", "CN1A", "2023-01-01", "2023-02-01", "张三、李四", 1d),
@@ -165,6 +184,19 @@ class StructuredPipelineCapabilityIntegrationTest {
         assertThat(result.success()).isFalse();
         assertThat(result.recoverable()).isFalse();
         assertThat(result.message()).contains("PARTIAL").contains("missing");
+    }
+
+    @Test
+    void invalidTypedFilterLiteralMustBeRejected() {
+        rows(row(1L, "A", "202300000001.1", "CN1A", "2024-05-03", "2024-06-01", "张三", 1d));
+
+        CapabilityResult result = delegate.execute(context, Map.of(
+                "filter", Map.of("field", "FILING_DATE", "operator", "GTE", "values", List.of("not-a-date")),
+                "aggregate", Map.of("operation", "COUNT", "metric", "PATENT_COUNT")
+        ));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.message()).contains("filter literal").contains("DATE");
     }
 
     @Test
