@@ -24,23 +24,33 @@ import java.util.Set;
 @Component
 public class AgenticQueryEngine {
     private static final int MAX_RECOVERABLE_CAPABILITY_ERRORS = 2;
+    private static final int MAX_GOAL_REJECTIONS = 2;
 
     private final AgentPlanner planner;
     private final CapabilityInvoker capabilityInvoker;
     private final AnswerPipeline answerPipeline;
     private final EvidenceProperties properties;
+    private final AgentGoalEvaluator goalEvaluator;
 
     @Autowired
     public AgenticQueryEngine(AgentPlanner planner, CapabilityInvoker capabilityInvoker,
-                              AnswerPipeline answerPipeline, EvidenceProperties properties) {
+                              AnswerPipeline answerPipeline, EvidenceProperties properties,
+                              AgentGoalEvaluator goalEvaluator) {
         this.planner = planner;
         this.capabilityInvoker = capabilityInvoker;
         this.answerPipeline = answerPipeline;
         this.properties = properties;
+        this.goalEvaluator = goalEvaluator;
+    }
+
+    /** 兼容旧单测/非 Spring 构造；正式 Spring 运行使用独立 Goal Evaluator。 */
+    public AgenticQueryEngine(AgentPlanner planner, CapabilityInvoker capabilityInvoker,
+                              AnswerPipeline answerPipeline, EvidenceProperties properties) {
+        this(planner, capabilityInvoker, answerPipeline, properties, AgentGoalEvaluator.trustPlanner());
     }
 
     public AgenticQueryEngine(AgentPlanner planner, CapabilityInvoker capabilityInvoker, AnswerPipeline answerPipeline) {
-        this(planner, capabilityInvoker, answerPipeline, new EvidenceProperties());
+        this(planner, capabilityInvoker, answerPipeline, new EvidenceProperties(), AgentGoalEvaluator.trustPlanner());
     }
 
     public Result execute(String query, Long kbId, String domainCode, Long tenantId, Long userId,
@@ -77,6 +87,7 @@ public class AgenticQueryEngine {
         List<Evidence> gatheredEvidence = new ArrayList<>();
         List<String> deterministicAnswers = new ArrayList<>();
         int recoverableErrors = 0;
+        int goalRejections = 0;
 
         while (!state.isStopped()) {
             AgentExecutionGuard.GuardResult plannerGuard = guard.beforePlannerCall(state);
@@ -231,25 +242,99 @@ public class AgenticQueryEngine {
                     }
                 }
                 case ANSWER -> {
-                    if (gatheredEvidence.isEmpty()) {
-                        if (!deterministicAnswers.isEmpty()) {
-                            state.setEvidenceCoverage(EvidenceCoverage.FULL);
-                            state.stop(AgentStopReason.ENOUGH_EVIDENCE);
-                            traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
-                                    decision.purpose(), decisionArgs, "SUCCEEDED", 0L,
-                                    "evidenceCount=0; verifiedEntityCount=" + trustedEntityIds.size()
-                                            + "; deterministic capability result answered original goal",
-                                    AgentStopReason.ENOUGH_EVIDENCE));
-                            return new Result(State.ANSWER, String.join("\n", deterministicAnswers), null,
-                                    AgentStopReason.ENOUGH_EVIDENCE, List.of(), state.getStep(), state.getLlmCalls(),
-                                    state.getEvidenceCoverage(), null, List.copyOf(traceSteps), trusted(trustedEntityIds));
-                        }
+                    if (gatheredEvidence.isEmpty() && deterministicAnswers.isEmpty()) {
                         state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
                         traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
-                                decision.purpose(), decisionArgs, "FAILED", 0L, "evidenceCount=0; no reliable evidence to answer",
-                                AgentStopReason.NO_RELIABLE_EVIDENCE));
+                                decision.purpose(), decisionArgs, "FAILED", 0L,
+                                "evidenceCount=0; no reliable evidence to answer", AgentStopReason.NO_RELIABLE_EVIDENCE));
                         return Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE, "没有可靠证据支持回答。",
                                 List.of(), state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
+                    }
+
+                    if (goalEvaluator.consumesLlmCall()) {
+                        AgentExecutionGuard.GuardResult evaluatorGuard = guard.beforePlannerCall(state);
+                        if (!evaluatorGuard.allowed()) {
+                            state.stop(evaluatorGuard.stopReason());
+                            traceSteps.add(trace(traceSteps, "GOAL_EVALUATOR", decision.action().name(), null,
+                                    decision.purpose(), null, "STOPPED", 0L,
+                                    "goal evaluation rejected by shared model/time budget", evaluatorGuard.stopReason()));
+                            return Result.stopped(evaluatorGuard.stopReason(), "目标充分性验证未能在预算内完成。",
+                                    gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps,
+                                    trusted(trustedEntityIds));
+                        }
+                        state.incrementLlmCalls();
+                    }
+
+                    long evaluatorStart = System.currentTimeMillis();
+                    AgentGoalEvaluator.Evaluation evaluation = goalEvaluator.evaluate(
+                            state.getOriginalGoal(), List.copyOf(observations), List.copyOf(deterministicAnswers),
+                            List.copyOf(gatheredEvidence), context);
+                    long evaluatorElapsed = System.currentTimeMillis() - evaluatorStart;
+                    AgentGoalEvaluator.Verdict verdict = evaluation == null
+                            ? AgentGoalEvaluator.Verdict.EVALUATION_FAILED : evaluation.verdict();
+                    String evaluatorReason = evaluation == null ? "goal evaluator returned null"
+                            : StrUtil.blankToDefault(evaluation.reason(), "goal evaluation completed");
+                    String evaluatorStatus = verdict == AgentGoalEvaluator.Verdict.SATISFIED ? "SUCCEEDED"
+                            : verdict == AgentGoalEvaluator.Verdict.INSUFFICIENT ? "RETRYABLE"
+                            : verdict == AgentGoalEvaluator.Verdict.NEED_MORE_INFO ? "STOPPED" : "FAILED";
+                    traceSteps.add(trace(traceSteps, "GOAL_EVALUATOR", decision.action().name(), null,
+                            decision.purpose(), null, evaluatorStatus, evaluatorElapsed,
+                            "verdict=" + verdict + "; " + StrUtil.maxLength(evaluatorReason, 380),
+                            verdict == AgentGoalEvaluator.Verdict.SATISFIED ? null
+                                    : verdict == AgentGoalEvaluator.Verdict.NEED_MORE_INFO
+                                    ? AgentStopReason.NEED_USER_INPUT : AgentStopReason.NO_RELIABLE_EVIDENCE));
+
+                    if (verdict == AgentGoalEvaluator.Verdict.NEED_MORE_INFO) {
+                        state.stop(AgentStopReason.NEED_USER_INPUT);
+                        return new Result(State.CLARIFY, null,
+                                evaluation == null ? "请补充问题中的关键信息。"
+                                        : StrUtil.blankToDefault(evaluation.message(), "请补充问题中的关键信息。"),
+                                AgentStopReason.NEED_USER_INPUT, List.copyOf(gatheredEvidence),
+                                state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), null,
+                                List.copyOf(traceSteps), trusted(trustedEntityIds));
+                    }
+                    if (verdict == AgentGoalEvaluator.Verdict.EVALUATION_FAILED) {
+                        state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
+                        return Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE,
+                                "目标充分性验证失败，拒绝在未验证情况下输出答案。",
+                                gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps,
+                                trusted(trustedEntityIds));
+                    }
+                    if (verdict == AgentGoalEvaluator.Verdict.INSUFFICIENT) {
+                        if (goalRejections < MAX_GOAL_REJECTIONS) {
+                            goalRejections++;
+                            String progress = "GOAL_NOT_SATISFIED:"
+                                    + Integer.toHexString((evaluatorReason + observations.size()
+                                    + deterministicAnswers.size() + gatheredEvidence.size()).hashCode());
+                            if (!state.markProgress(progress)) {
+                                state.stop(AgentStopReason.NO_PROGRESS);
+                                return Result.stopped(AgentStopReason.NO_PROGRESS,
+                                        "目标充分性验证连续未产生新的缺口信息。", gatheredEvidence,
+                                        state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
+                            }
+                            observations.add(AgentObservation.recoverableError(
+                                    "goal_evaluator", decision.purpose(), StrUtil.maxLength(evaluatorReason, 800), progress,
+                                    AgentStopReason.NO_RELIABLE_EVIDENCE,
+                                    Map.of("errorKind", "GOAL_NOT_SATISFIED", "verdict", "INSUFFICIENT")));
+                            continue;
+                        }
+                        state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
+                        return Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE,
+                                "现有执行事实仍不足以完整回答原始问题。", gatheredEvidence,
+                                state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
+                    }
+
+                    if (gatheredEvidence.isEmpty()) {
+                        state.setEvidenceCoverage(EvidenceCoverage.FULL);
+                        state.stop(AgentStopReason.ENOUGH_EVIDENCE);
+                        traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
+                                decision.purpose(), decisionArgs, "SUCCEEDED", 0L,
+                                "evidenceCount=0; verifiedEntityCount=" + trustedEntityIds.size()
+                                        + "; independent goal evaluator accepted deterministic result",
+                                AgentStopReason.ENOUGH_EVIDENCE));
+                        return new Result(State.ANSWER, String.join("\n", deterministicAnswers), null,
+                                AgentStopReason.ENOUGH_EVIDENCE, List.of(), state.getStep(), state.getLlmCalls(),
+                                state.getEvidenceCoverage(), null, List.copyOf(traceSteps), trusted(trustedEntityIds));
                     }
 
                     // currentSubGoal 只用于规划；最终生成永远回答 immutable originalGoal。
@@ -273,10 +358,7 @@ public class AgenticQueryEngine {
                     state.stop(AgentStopReason.ENOUGH_EVIDENCE);
                     traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
                             decision.purpose(), decisionArgs, "SUCCEEDED", answerElapsed,
-                            "evidenceCount=" + gatheredEvidence.size() + "; "
-                                    + (deterministicAnswers.isEmpty()
-                                    ? "grounded answer passed claim validation for originalGoal"
-                                    : "deterministic facts + grounded answer passed validation for originalGoal"),
+                            "evidenceCount=" + gatheredEvidence.size() + "; independent goal evaluation + claim validation passed",
                             AgentStopReason.ENOUGH_EVIDENCE));
                     return new Result(State.ANSWER, finalAnswer, null, AgentStopReason.ENOUGH_EVIDENCE,
                             List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(),
