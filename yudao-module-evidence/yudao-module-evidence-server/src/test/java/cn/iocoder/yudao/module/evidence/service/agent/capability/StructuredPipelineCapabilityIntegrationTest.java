@@ -188,8 +188,6 @@ class StructuredPipelineCapabilityIntegrationTest {
 
     @Test
     void invalidTypedFilterLiteralMustBeRejected() {
-        rows(row(1L, "A", "202300000001.1", "CN1A", "2024-05-03", "2024-06-01", "张三", 1d));
-
         CapabilityResult result = delegate.execute(context, Map.of(
                 "filter", Map.of("field", "FILING_DATE", "operator", "GTE", "values", List.of("not-a-date")),
                 "aggregate", Map.of("operation", "COUNT", "metric", "PATENT_COUNT")
