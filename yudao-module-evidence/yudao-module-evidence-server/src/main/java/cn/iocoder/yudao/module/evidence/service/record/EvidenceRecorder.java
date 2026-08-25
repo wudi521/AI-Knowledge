@@ -55,27 +55,18 @@ public class EvidenceRecorder {
     @Resource
     private QueryTraceStageStore queryTraceStageStore;
 
-    /**
-     * 落库(会话级 + 证据级 + 可回放 stage)
-     *
-     * @param resp      评估响应(含 traceId/query/answerable/claims/conflicts/elapsedMs 等)
-     * @param evidences 去重后的证据列表(位置索引与 conflicts/claims 一一对应; 可为空)
-     * @param conflicts 冲突列表(domain 对象, 用于 verdict 判定)
-     */
     public void record(EvidenceEvaluateRespVO resp, List<Evidence> evidences, List<Conflict> conflicts) {
         try {
-            // 1. 会话级评估记录(1 行)
             EvidenceEvalDO eval = new EvidenceEvalDO();
             eval.setTraceId(resp.getTraceId());
             eval.setQuery(StrUtil.maxLength(resp.getQuery(), 500));
             eval.setAnswerable(Boolean.TRUE.equals(resp.getAnswerable()) ? 1 : 0);
-            // V1.1 confidence 尚未经过离线校准。null 必须原样表示“未校准”，不能污染为 0.0000。
-            eval.setConfidence(toConfidence(resp.getConfidence()));
+            // 会话级 confidence 尚未校准：null 必须原样表示 unknown，不能伪造成 numeric zero。
+            eval.setConfidence(toNullableConfidence(resp.getConfidence()));
             eval.setRefusalReason(StrUtil.maxLength(resp.getRefusalReason(), 500));
             eval.setEvidenceCount(resp.getEvidence() != null ? resp.getEvidence().size() : 0);
             eval.setConflictCount(resp.getConflicts() != null ? resp.getConflicts().size() : 0);
             eval.setAnswer(resp.getAnswer());
-            // claimPass: 有回答 且 非验证失败 → 全部通过
             eval.setClaimPass(resp.getAnswer() != null && !Boolean.TRUE.equals(resp.getClaimFail()) ? 1 : 0);
             eval.setClaims(resp.getClaims() != null ? JSONUtil.toJsonStr(resp.getClaims()) : null);
             eval.setConflicts(resp.getConflicts() != null ? JSONUtil.toJsonStr(resp.getConflicts()) : null);
@@ -88,13 +79,13 @@ public class EvidenceRecorder {
             eval.setCreator(creator());
             evalMapper.insert(eval);
 
-            // 2. 证据级记录(每证据 1 行; 无证据时跳过)
             if (evidences != null && !evidences.isEmpty()) {
                 for (int i = 0; i < evidences.size(); i++) {
                     Evidence evidence = evidences.get(i);
                     EvidenceRecordDO record = new EvidenceRecordDO();
                     record.setChunkId(evidence.getChunkId());
-                    record.setConfidence(toConfidence(evidence.getScore()));
+                    // ai_evidence.confidence 是 NOT NULL；证据自身缺失 score 沿用 0，而不是套用会话级 unknown 语义。
+                    record.setConfidence(toEvidenceConfidence(evidence.getScore()));
                     record.setVerdict(verdictOf(i, conflicts, resp));
                     record.setTraceId(resp.getTraceId());
                     record.setCreator(creator());
@@ -102,29 +93,24 @@ public class EvidenceRecorder {
                 }
             }
 
-            // 3. F1 Evidence Lineage: claim 逐条落库 + 引用汇总(失败不阻断)
             recordClaimsAndCitations(resp, evidences);
         } catch (Exception e) {
             log.warn("[record][traceId({}) 证据落库失败, 跳过: {}]",
                     resp != null ? resp.getTraceId() : null, e.getMessage(), e);
         } finally {
-            // 4. Query/Agent stages 独立落库。replace 自身 fail-open，且不依赖 ai_evidence_eval 是否写入成功。
             recordStages(resp);
         }
     }
 
-    /** 只刷新 trace stage；用于 Agent → V3 fallback 合并 stages 后覆盖为最终可回放链。 */
     public void recordStages(EvidenceEvaluateRespVO resp) {
         if (resp == null) return;
         queryTraceStageStore.replace(resp.getTraceId(), resp.getStages());
     }
 
-    /** 按 traceId 读取持久化执行步骤，供管理端/运营台事后回放。 */
     public List<QueryStageTimingDTO> findStages(String traceId) {
         return queryTraceStageStore.find(traceId);
     }
 
-    /** F1: 断言逐条 + 引用汇总落库(claim → 证据片段可追溯; 引用锚定 SUPPORTED 证据) */
     private void recordClaimsAndCitations(EvidenceEvaluateRespVO resp, List<Evidence> evidences) {
         if (resp == null || resp.getClaims() == null || resp.getClaims().isEmpty()) return;
         java.util.List<Long> citedChunkIds = new java.util.ArrayList<>();
@@ -169,12 +155,15 @@ public class EvidenceRecorder {
         return VERDICT_WARN;
     }
 
-    /**
-     * 置信度: null 保持 null 表示“未校准”；非空值才钳制 0~1 并保留 4 位小数。
-     * 这是 V1.1 评测数据契约的一部分，不能把 unknown 与 numeric zero 混为一谈。
-     */
-    private BigDecimal toConfidence(Double score) {
-        if (score == null) return null;
+    private BigDecimal toNullableConfidence(Double score) {
+        return score == null ? null : normalizedConfidence(score);
+    }
+
+    private BigDecimal toEvidenceConfidence(Double score) {
+        return normalizedConfidence(score == null ? 0D : score);
+    }
+
+    private BigDecimal normalizedConfidence(double score) {
         double value = Math.max(0.0, Math.min(1.0, score));
         return BigDecimal.valueOf(value).setScale(4, RoundingMode.HALF_UP);
     }
