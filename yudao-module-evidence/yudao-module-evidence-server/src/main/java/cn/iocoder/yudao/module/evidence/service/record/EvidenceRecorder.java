@@ -12,6 +12,8 @@ import cn.iocoder.yudao.module.evidence.dal.mysql.evidence.EvidenceEvalMapper;
 import cn.iocoder.yudao.module.evidence.dal.mysql.evidence.EvidenceRecordMapper;
 import cn.iocoder.yudao.module.evidence.domain.Conflict;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
+import cn.iocoder.yudao.module.evidence.service.trace.QueryTraceStageStore;
+import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -32,7 +34,8 @@ import java.util.List;
  * 注: 本任务不写 UNSUPPORTED —— 无据断言由管线以 claimFail=true + answer=null 整体拦截,
  * 证据本身不单独标记 UNSUPPORTED(保留给后续任务按需扩展)。
  * <p>
- * 健壮性: 落库失败不阻断响应(整体 try/catch, log warn)。
+ * 健壮性: 业务证据落库或 trace stage 落库失败均不阻断响应；stage 独立持久化，
+ * 确保 Agent/V3 的 Planner → Capability/Retrieval → Guard/Answer 可按 traceId 事后回放。
  */
 @Slf4j
 @Component
@@ -49,9 +52,11 @@ public class EvidenceRecorder {
     private cn.iocoder.yudao.module.evidence.dal.mysql.evidence.AnswerClaimMapper answerClaimMapper;
     @Resource
     private cn.iocoder.yudao.module.evidence.dal.mysql.evidence.AnswerCitationMapper answerCitationMapper;
+    @Resource
+    private QueryTraceStageStore queryTraceStageStore;
 
     /**
-     * 落库(会话级 + 证据级)
+     * 落库(会话级 + 证据级 + 可回放 stage)
      *
      * @param resp      评估响应(含 traceId/query/answerable/claims/conflicts/elapsedMs 等)
      * @param evidences 去重后的证据列表(位置索引与 conflicts/claims 一一对应; 可为空)
@@ -100,10 +105,24 @@ public class EvidenceRecorder {
             // 3. F1 Evidence Lineage: claim 逐条落库 + 引用汇总(失败不阻断)
             recordClaimsAndCitations(resp, evidences);
         } catch (Exception e) {
-            // 落库失败不阻断响应
+            // 业务证据落库失败不阻断响应
             log.warn("[record][traceId({}) 证据落库失败, 跳过: {}]",
                     resp != null ? resp.getTraceId() : null, e.getMessage(), e);
+        } finally {
+            // 4. Query/Agent stages 独立落库。replace 自身 fail-open，且不依赖 ai_evidence_eval 是否写入成功。
+            recordStages(resp);
         }
+    }
+
+    /** 只刷新 trace stage；用于 Agent → V3 fallback 合并 stages 后覆盖为最终可回放链。 */
+    public void recordStages(EvidenceEvaluateRespVO resp) {
+        if (resp == null) return;
+        queryTraceStageStore.replace(resp.getTraceId(), resp.getStages());
+    }
+
+    /** 按 traceId 读取持久化执行步骤，供管理端/运营台事后回放。 */
+    public List<QueryStageTimingDTO> findStages(String traceId) {
+        return queryTraceStageStore.find(traceId);
     }
 
     /** F1: 断言逐条 + 引用汇总落库(claim → 证据片段可追溯; 引用锚定 SUPPORTED 证据) */
