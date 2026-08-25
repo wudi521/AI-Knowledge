@@ -15,6 +15,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgenticQueryEngineSelfRepairTest {
@@ -58,6 +59,68 @@ class AgenticQueryEngineSelfRepairTest {
     }
 
     @Test
+    void prepareContractErrorAlsoReturnsObservationAndCanBeCorrected() {
+        AtomicInteger plannerCalls = new AtomicInteger();
+        AgentPlanner planner = (state, context, observations, history) -> {
+            int call = plannerCalls.getAndIncrement();
+            if (call == 0) {
+                // invented 不在 capability 参数白名单内，应在 prepare 阶段被拒绝但允许自修复。
+                return new AgentDecision(AgentActionType.CALL_CAPABILITY, "strict-repair",
+                        Map.of("invented", "x"), "第一次使用了错误参数名", null);
+            }
+            if (call == 1) {
+                assertEquals(1, observations.size());
+                AgentObservation observation = observations.get(0);
+                assertTrue(observation.recoverableError());
+                assertEquals("PREPARE_CONTRACT", observation.metadata().get("errorKind"));
+                return new AgentDecision(AgentActionType.CALL_CAPABILITY, "strict-repair",
+                        Map.of("mode", "good"), "按 capability schema 修正参数", null);
+            }
+            return new AgentDecision(AgentActionType.ANSWER, null, Map.of(), "结果已足够", null);
+        };
+
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
+                List.of(new StrictRepairCapability()), List.of()));
+        try {
+            AgenticQueryEngine engine = new AgenticQueryEngine(planner, invoker, null);
+            AgenticQueryEngine.Result result = engine.execute(
+                    "prepare 阶段也应允许有限自修复", 6L, "PATENT", 1L, 2L,
+                    "trace-prepare-repair", List.of());
+
+            assertEquals(AgenticQueryEngine.State.ANSWER, result.state());
+            assertEquals("prepare 修复后结果", result.answer());
+            assertTrue(result.traceSteps().stream().anyMatch(step -> "CAPABILITY_PREPARE".equals(step.phase())
+                    && "RETRYABLE".equals(step.status())
+                    && step.argumentsSummary() != null && step.argumentsSummary().contains("invented")));
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
+    void protectedScopeViolationMustNeverBecomeRecoverable() {
+        AtomicInteger plannerCalls = new AtomicInteger();
+        AgentPlanner planner = (state, context, observations, history) -> {
+            plannerCalls.incrementAndGet();
+            return new AgentDecision(AgentActionType.CALL_CAPABILITY, "strict-repair",
+                    Map.of("mode", "good", "kbId", 999L), "尝试覆盖系统知识库范围", null);
+        };
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
+                List.of(new StrictRepairCapability()), List.of()));
+        try {
+            AgenticQueryEngine engine = new AgenticQueryEngine(planner, invoker, null);
+            AgenticQueryEngine.Result result = engine.execute(
+                    "越权参数不能重试", 6L, "PATENT", 1L, 2L, "trace-scope-deny", List.of());
+            assertEquals(AgenticQueryEngine.State.STOPPED, result.state());
+            assertEquals(AgentStopReason.INVALID_CAPABILITY_CALL, result.stopReason());
+            assertEquals(1, plannerCalls.get());
+            assertFalse(result.traceSteps().stream().anyMatch(step -> "RETRYABLE".equals(step.status())));
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
     void nonRecoverableFailureStopsImmediately() {
         AtomicInteger plannerCalls = new AtomicInteger();
         AgentPlanner planner = (state, context, observations, history) -> {
@@ -90,6 +153,22 @@ class AgenticQueryEngineSelfRepairTest {
                 @Override public String summary() { return "ok"; }
                 @Override public String progressHash() { return "ok"; }
                 @Override public String deterministicAnswer() { return "修复后结果"; }
+            };
+            return CapabilityResult.success(output, Map.of("completeDataset", true, "authoritativeEmpty", false));
+        }
+    }
+
+    private static final class StrictRepairCapability implements KnowledgeCapability {
+        private final CapabilityDefinition definition = new CapabilityDefinition(
+                "strict-repair", "1", "prepare 自修复测试能力",
+                Map.of("mode", "必填模式"), Set.of("mode"), "TEST", true,
+                Set.of(), Set.of(), Set.of(), 1000, 10);
+        @Override public CapabilityDefinition definition() { return definition; }
+        @Override public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+            AgentCapabilityOutput output = new AgentCapabilityOutput() {
+                @Override public String summary() { return "ok"; }
+                @Override public String progressHash() { return "prepare-ok"; }
+                @Override public String deterministicAnswer() { return "prepare 修复后结果"; }
             };
             return CapabilityResult.success(output, Map.of("completeDataset", true, "authoritativeEmpty", false));
         }
