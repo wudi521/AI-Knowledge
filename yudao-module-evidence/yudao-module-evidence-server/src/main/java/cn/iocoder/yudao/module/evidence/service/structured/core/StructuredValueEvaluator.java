@@ -61,10 +61,27 @@ public class StructuredValueEvaluator {
     }
 
     public List<String> values(String domainCode, StructuredQueryResult.Row row, StructuredValueExpression expression) {
+        return evaluate(domainCode, row, expression).values();
+    }
+
+    /**
+     * 给 Pipeline/Trace 的机器诊断。不能只返回空集合，因为“原字段没值”和“字段有值但变换失败”
+     * 对数据治理和可回答性是两种完全不同的事实。
+     */
+    public ValueEvaluation evaluate(String domainCode, StructuredQueryResult.Row row,
+                                    StructuredValueExpression expression) {
         Validation validation = validate(domainCode, expression);
-        if (!validation.valid() || row == null || row.getFields() == null) return List.of();
+        if (!validation.valid()) {
+            return ValueEvaluation.failure(FailureKind.CONTRACT_INVALID, validation.message(), null, List.of());
+        }
+        if (row == null || row.getFields() == null) {
+            return ValueEvaluation.failure(FailureKind.RAW_MISSING, "source row/fields are missing", null, List.of());
+        }
         String raw = row.getFields().get(validation.field().getFieldCode());
-        if (StrUtil.isBlank(raw)) return List.of();
+        if (StrUtil.isBlank(raw)) {
+            return ValueEvaluation.failure(FailureKind.RAW_MISSING,
+                    "raw field is missing: " + validation.field().getFieldCode(), raw, List.of());
+        }
 
         List<String> source;
         boolean valueCount = expression.transforms().contains(StructuredValueTransform.VALUE_COUNT);
@@ -77,34 +94,39 @@ public class StructuredValueEvaluator {
         } else {
             source = List.of(raw.trim());
         }
+        if (source.isEmpty()) {
+            return ValueEvaluation.failure(FailureKind.RAW_MISSING,
+                    "raw multi-value field contains no usable element: " + validation.field().getFieldCode(), raw, List.of());
+        }
 
         List<StructuredValueTransform> transforms = expression.transforms().stream()
                 .filter(t -> t != StructuredValueTransform.VALUE_COUNT).toList();
         List<String> out = new ArrayList<>();
-        boolean anyFailed = false;
         for (String value : source) {
             String current = value;
             String currentType = valueCount ? "INTEGER" : validation.field().getValueType();
-            boolean failed = false;
-
-            if (!literalValid(currentType, current)) failed = true;
-
-            for (StructuredValueTransform transform : transforms) {
-                if (failed) break;
-                current = apply(transform, current, currentType);
-                if (current == null) { failed = true; break; }
-                currentType = outputType(transform);
+            if (!literalValid(currentType, current)) {
+                return ValueEvaluation.failure(FailureKind.SOURCE_TYPE_INVALID,
+                        "raw value is invalid for declared type " + currentType,
+                        raw, List.of(value));
             }
-            if (failed || StrUtil.isBlank(current)) {
-                anyFailed = true;
-                continue;
+            for (StructuredValueTransform transform : transforms) {
+                String next = apply(transform, current, currentType);
+                if (StrUtil.isBlank(next)) {
+                    return ValueEvaluation.failure(FailureKind.TRANSFORM_FAILED,
+                            "transform " + transform + " failed for field " + validation.field().getFieldCode(),
+                            raw, List.of(value));
+                }
+                current = next;
+                currentType = outputType(transform);
             }
             out.add(current);
         }
-        // 多值派生必须具备原子完整性：任一元素解析失败，整个实体的派生值视为缺失。
-        // 这样聚合/分组/过滤上层会 fail-closed，而不是静默少算一部分元素。
-        if (anyFailed) return List.of();
-        return List.copyOf(new LinkedHashSet<>(out));
+        if (out.isEmpty()) {
+            return ValueEvaluation.failure(FailureKind.TRANSFORM_FAILED,
+                    "value evaluation produced no output", raw, source);
+        }
+        return ValueEvaluation.success(List.copyOf(new LinkedHashSet<>(out)), raw);
     }
 
     public String outputType(String domainCode, StructuredValueExpression expression) {
@@ -256,6 +278,38 @@ public class StructuredValueEvaluator {
             catch (DateTimeParseException ignore) { }
         }
         return null;
+    }
+
+    public enum FailureKind {
+        NONE,
+        CONTRACT_INVALID,
+        RAW_MISSING,
+        SOURCE_TYPE_INVALID,
+        TRANSFORM_FAILED
+    }
+
+    public record ValueEvaluation(List<String> values,
+                                  FailureKind failureKind,
+                                  String message,
+                                  String rawValue,
+                                  List<String> failedElements) {
+        public ValueEvaluation {
+            values = values == null ? List.of() : List.copyOf(values);
+            failedElements = failedElements == null ? List.of() : List.copyOf(failedElements);
+        }
+
+        public static ValueEvaluation success(List<String> values, String rawValue) {
+            return new ValueEvaluation(values, FailureKind.NONE, null, rawValue, List.of());
+        }
+
+        public static ValueEvaluation failure(FailureKind kind, String message,
+                                              String rawValue, List<String> failedElements) {
+            return new ValueEvaluation(List.of(), kind, message, rawValue, failedElements);
+        }
+
+        public boolean success() {
+            return failureKind == FailureKind.NONE;
+        }
     }
 
     public record Validation(boolean valid, FieldDefinition field, String outputType, String message) {
