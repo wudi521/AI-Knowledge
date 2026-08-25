@@ -10,6 +10,7 @@ on:
       - 'yudao-module-knowledge/**'
       - 'yudao-module-model/**'
       - 'docs/Agentic-RAG-V1.1-架构设计.md'
+      - 'docs/Agentic-RAG-V1.1-实施验收.md'
       - '.github/workflows/agent-v11-ci.yml'
   pull_request:
     branches:
@@ -20,6 +21,7 @@ on:
       - 'yudao-module-knowledge/**'
       - 'yudao-module-model/**'
       - 'docs/Agentic-RAG-V1.1-架构设计.md'
+      - 'docs/Agentic-RAG-V1.1-实施验收.md'
       - '.github/workflows/agent-v11-ci.yml'
   workflow_dispatch:
 
@@ -51,5 +53,5 @@ jobs:
           -pl yudao-module-evidence/yudao-module-evidence-server
           -am
           -Dsurefire.failIfNoSpecifiedTests=false
-          -Dtest=AgentExecutionStateTest,AgentExecutionGuardTest,AgenticQueryEngineTrustedScopeTest,CapabilityInvokerTest,CapabilityVisibilityPolicyTest,StructuredQueryCapabilityTest,SimilarFieldValuesCapabilityTest,PatentClaimLookupCapabilityTest,CandidateFeedbackGuardTest,EvidenceQueryRouterTest,AgentV11AcceptanceMatrixTest
+          -Dtest=AgentExecutionStateTest,AgentExecutionGuardTest,AgenticQueryEngineTrustedScopeTest,CapabilityInvokerTest,CapabilityVisibilityPolicyTest,KnowledgeRetrievalCapabilityTest,ExactTextSearchCapabilityTest,StructuredQueryCapabilityTest,SimilarFieldValuesCapabilityTest,PatentClaimLookupCapabilityTest,CandidateFeedbackGuardTest,EvidenceQueryRouterTest,AgentV11AcceptanceMatrixTest
           test
