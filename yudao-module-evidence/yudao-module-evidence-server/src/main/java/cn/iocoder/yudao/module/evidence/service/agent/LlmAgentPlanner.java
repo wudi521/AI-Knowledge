@@ -59,6 +59,7 @@ public class LlmAgentPlanner implements AgentPlanner {
             18. outputComplete=false 的结果可以作为局部事实证据，但不能直接支持需要全集完备性的结论，例如总数、不同值总数、列出全部、确认全集不存在。若用户问的是 cardinality/“几个/多少种”，优先使用直接 COUNT/COUNT_DISTINCT 等聚合，而不是 LIST/DISTINCT + limit 后再数输出行。
             19. capability/source failure 且 recoverableError=false 时不得通过换参数或换近似查询绕过；只有明确标记 recoverable 的参数或执行契约错误才允许在预算内自修复。基础设施失败和“合法零匹配”必须严格区分。
             20. 如果 observation 来自 goal_evaluator 且 errorKind=GOAL_NOT_SATISFIED，它表示独立充分性门认为现有事实没有完整证明 originalGoal。下一步必须补齐 evaluator 指出的证明缺口、澄清歧义或 STOP；禁止在证据不变时再次 ANSWER。
+            21. 如果 originalGoal 的真假取决于“是否存在符合某条件的对象”或“某个值是否属于某多值字段”，且结构化字段能直接表达该谓词，优先用 filter + aggregate COUNT（COUNT 不带 field/metric 时表示对过滤后的实体计数）证明 0 或 >0。不要用 select + limit=1 代替存在性证明；投影展示值与筛选谓词是两个不同事实。
 
             输出格式：
             {"action":"CALL_CAPABILITY","capability":"<capability-name>","arguments":{},"purpose":"本步要补足的信息","message":null}
