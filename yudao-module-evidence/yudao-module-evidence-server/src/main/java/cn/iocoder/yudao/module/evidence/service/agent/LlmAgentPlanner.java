@@ -38,15 +38,17 @@ public class LlmAgentPlanner implements AgentPlanner {
 
             硬规则：
             1. originalGoal 永远只读，不能因候选、工具结果、二次搜索而改变。
-            2. observations 是工具结果。语义检索候选不能自动成为用户指定实体；结构化精确匹配或 conversationContextEntityIds 才能作为已验证范围。
+            2. observations 是工具结果。语义检索候选不能自动成为用户指定实体；只有 structured_query 返回的 verifiedEntityIds 或服务端 conversationContextEntityIds 才能成为 trusted scope。
             3. tenantId/userId/kbId/domainCode/traceId/permissions/environment 绝不能放入 arguments。
             4. 只能调用 capabilities 中列出的能力，严格遵守 argumentSchema。
             5. 字段/指标必须来自 domainFields/domainMetrics，禁止编造 code。
             6. 精确事实、计数、聚合、字段投影优先 structured_query；明确逐字原文要求使用 exact_text_search；开放语义事实使用 knowledge_retrieval。
-            7. 用户明确说“它/这个/刚才那个/这些”并且 conversationContextEntityIds 非空时，检索能力 scope=CONTEXT；没有上下文对象时 NEED_MORE_INFO。
-            8. 集合级相似字段关系优先 similar_field_values；不要用普通语义 TopK 冒充全集结论。
-            9. observations 已足够回答 originalGoal 时必须 ANSWER，不要重复调用相同能力。
-            10. 能力不足以完成问题时 STOP，不得伪造答案。
+            7. 用户明确说“它/这个/刚才那个/这些”并且 conversationContextEntityIds 非空时，检索能力 scope=CONTEXT；没有可信上下文对象时 NEED_MORE_INFO。
+            8. PATENT 领域询问某一权利要求的原文、引用、依赖或从属关系时：先确保 conversationContextEntityIds 中只有一个可信专利对象，再调用 patent_claim_lookup；不要让普通 RAG 猜 claim 依赖关系。
+            9. 集合级相似字段关系优先 similar_field_values；不要用普通语义 TopK 冒充全集结论。
+            10. 一个问题同时包含确定性字段事实和语义解释时可以多步调用能力：先 structured_query 建立 trusted scope，再在 scope=CONTEXT 下检索剩余语义证据，最后 ANSWER。
+            11. observations 已足够回答 originalGoal 时必须 ANSWER，不要重复调用相同能力。
+            12. 能力不足以完成问题时 STOP，不得伪造答案。
 
             JSON: {"action":"CALL_CAPABILITY","capability":"knowledge_retrieval","arguments":{"query":"视频技术"},"purpose":"获得与原始问题相关的证据","message":null}
             """;
@@ -125,9 +127,12 @@ public class LlmAgentPlanner implements AgentPlanner {
         List<Map<String, Object>> out = new ArrayList<>();
         for (FieldDefinition field : fieldRegistry.all(domainCode)) {
             Map<String, Object> item = new LinkedHashMap<>();
-            item.put("code", field.getFieldCode()); item.put("aliases", field.getAliases());
-            item.put("valueType", field.getValueType()); item.put("filterable", field.isFilterable());
-            item.put("operators", field.getAllowedOperators()); item.put("exactIdentifier", field.isExactIdentifier());
+            item.put("code", field.getFieldCode());
+            item.put("aliases", field.getAliases());
+            item.put("valueType", field.getValueType());
+            item.put("filterable", field.isFilterable());
+            item.put("operators", field.getAllowedOperators());
+            item.put("exactIdentifier", field.isExactIdentifier());
             out.add(item);
         }
         return out;
@@ -138,8 +143,10 @@ public class LlmAgentPlanner implements AgentPlanner {
         List<Map<String, Object>> out = new ArrayList<>();
         for (MetricDefinition metric : metricRegistry.all(domainCode)) {
             Map<String, Object> item = new LinkedHashMap<>();
-            item.put("code", metric.getMetricCode()); item.put("aliases", metric.getAliases());
-            item.put("operations", metric.getSupportedOperations()); item.put("displayName", metric.getDisplayName());
+            item.put("code", metric.getMetricCode());
+            item.put("aliases", metric.getAliases());
+            item.put("operations", metric.getSupportedOperations());
+            item.put("displayName", metric.getDisplayName());
             out.add(item);
         }
         return out;
@@ -161,12 +168,15 @@ public class LlmAgentPlanner implements AgentPlanner {
         try {
             int start = raw.indexOf('{'), end = raw.lastIndexOf('}');
             return start >= 0 && end > start ? JSONUtil.parseObj(raw.substring(start, end + 1)) : null;
-        } catch (Exception e) { return null; }
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private AgentActionType enumValue(String raw) {
         if (StrUtil.isBlank(raw)) return null;
-        try { return AgentActionType.valueOf(raw.trim().toUpperCase()); } catch (Exception e) { return null; }
+        try { return AgentActionType.valueOf(raw.trim().toUpperCase()); }
+        catch (Exception e) { return null; }
     }
 
     private Map<String, Object> jsonObjectMap(JSONObject json) {
