@@ -17,6 +17,7 @@ import org.springframework.validation.annotation.Validated;
 import java.time.LocalDateTime;
 
 import static cn.iocoder.yudao.module.infra.dal.dataobject.logger.ApiAccessLogDO.REQUEST_PARAMS_MAX_LENGTH;
+import static cn.iocoder.yudao.module.infra.dal.dataobject.logger.ApiAccessLogDO.RESPONSE_BODY_MAX_LENGTH;
 import static cn.iocoder.yudao.module.infra.dal.dataobject.logger.ApiAccessLogDO.RESULT_MSG_MAX_LENGTH;
 
 /**
@@ -36,6 +37,10 @@ public class ApiAccessLogServiceImpl implements ApiAccessLogService {
     public void createApiAccessLog(ApiAccessLogCreateReqDTO createDTO) {
         ApiAccessLogDO apiAccessLog = BeanUtils.toBean(createDTO, ApiAccessLogDO.class);
         apiAccessLog.setRequestParams(StrUtils.maxLength(apiAccessLog.getRequestParams(), REQUEST_PARAMS_MAX_LENGTH));
+        // response_body 在 MySQL 中为 TEXT。Query Engine V3 的 evaluate/chat 响应会携带完整执行链路与证据，
+        // 若不限制日志副本长度，可能因为超出 TEXT 容量导致异步访问日志接口返回 500。
+        // 这里只截断审计日志副本，不影响真实 HTTP/RPC 响应。
+        apiAccessLog.setResponseBody(StrUtils.maxLength(apiAccessLog.getResponseBody(), RESPONSE_BODY_MAX_LENGTH));
         apiAccessLog.setResultMsg(StrUtils.maxLength(apiAccessLog.getResultMsg(), RESULT_MSG_MAX_LENGTH));
         if (TenantContextHolder.getTenantId() != null) {
             apiAccessLogMapper.insert(apiAccessLog);
