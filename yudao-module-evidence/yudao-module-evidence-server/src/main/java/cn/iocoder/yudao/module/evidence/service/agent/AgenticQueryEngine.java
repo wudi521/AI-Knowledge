@@ -324,12 +324,17 @@ public class AgenticQueryEngine {
 
     /**
      * trusted scope 的最后一道通用防线。
-     * 聚合/计数事实只能作为 provenance，不能把参与统计的整批实体升级成后续“它/这些”的指代范围。
+     * 聚合/计数/分组和值投影事实只能作为 provenance，不能把参与计算或代表性来源实体升级成后续“它/这些”的指代范围。
      */
     private List<Long> sanitizeVerifiedEntityIds(List<Long> rawIds, CapabilityResult result) {
         if (rawIds == null || rawIds.isEmpty()) return List.of();
         List<Long> ids = rawIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
         if (ids.isEmpty()) return List.of();
+        Object valueProjectionRaw = result == null ? null : result.metadata().get("valueProjection");
+        if (Boolean.TRUE.equals(valueProjectionRaw)
+                || (valueProjectionRaw != null && "true".equalsIgnoreCase(String.valueOf(valueProjectionRaw)))) {
+            return List.of();
+        }
         Object taskRaw = result == null ? null : result.metadata().get("task");
         String task = taskRaw == null ? "" : String.valueOf(taskRaw).trim();
         if ("COUNT".equalsIgnoreCase(task) || "AGGREGATE".equalsIgnoreCase(task)
