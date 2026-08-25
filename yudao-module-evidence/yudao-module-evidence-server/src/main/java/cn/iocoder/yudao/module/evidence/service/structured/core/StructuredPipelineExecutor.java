@@ -23,6 +23,7 @@ public class StructuredPipelineExecutor {
     private static final int MAX_GROUP_COMBINATIONS_PER_ENTITY = 256;
     private static final int MAX_GROUP_BUCKETS = 5_000;
     private static final int MAX_PROJECTION_COMBINATIONS_PER_ENTITY = 256;
+    private static final int MAX_DIAGNOSTIC_SAMPLES = 12;
 
     private final DomainFieldRegistry fieldRegistry;
     private final DomainMetricRegistry metricRegistry;
@@ -73,7 +74,8 @@ public class StructuredPipelineExecutor {
                     : StrUtil.blankToDefault(source.getUnsupportedReason(), "structured source unavailable"));
         }
         if (source.isTruncated()) {
-            return StructuredPipelineResult.failure("structured source is truncated; complete conclusion is unsafe");
+            return StructuredPipelineResult.failure("structured source is truncated; complete conclusion is unsafe",
+                    Map.of("sourceTruncated", true));
         }
 
         List<StructuredQueryResult.Row> sourceRows = source.getRows() == null ? List.of() : source.getRows();
@@ -101,11 +103,17 @@ public class StructuredPipelineExecutor {
         StructuredAggregateSpec aggregate = plan.getAggregate();
         if (aggregate != null) {
             AggregateValue computed = aggregate(plan.getDomainCode(), rows, aggregate);
-            if (!computed.success()) return StructuredPipelineResult.failure(computed.message());
+            if (!computed.success()) {
+                return StructuredPipelineResult.failure(computed.message(), Map.of(
+                        "missingValueCount", computed.missing(),
+                        "missingDiagnostics", computed.diagnostics()));
+            }
             Map<String, Object> meta = new LinkedHashMap<>();
             meta.put("aggregate", aggregate.operation().name());
             meta.put("completeDataset", true);
+            meta.put("outputComplete", true);
             meta.put("authoritativeEmpty", rows.isEmpty());
+            meta.put("sourceEntityCount", sourceEntityCount);
             return new StructuredPipelineResult(true, null, List.of(), computed.value(), true,
                     rows.isEmpty(), sourceEntityCount, computed.missing(), meta);
         }
@@ -117,24 +125,33 @@ public class StructuredPipelineExecutor {
         Projection projection = project(plan.getDomainCode(), sorted.rows(), plan.getSelect());
         if (!projection.success()) return StructuredPipelineResult.failure(projection.message());
         if (projection.missing() > 0) {
-            return new StructuredPipelineResult(true, null, projection.rows(), null, true,
-                    projection.rows().isEmpty(), sourceEntityCount, projection.missing(), Map.of(
-                    "completeDataset", true,
-                    "authoritativeEmpty", projection.rows().isEmpty(),
-                    "outputCount", projection.rows().size()));
+            Map<String, Object> meta = new LinkedHashMap<>();
+            meta.put("completeDataset", false);
+            meta.put("outputComplete", false);
+            meta.put("authoritativeEmpty", false);
+            meta.put("outputCount", projection.rows().size());
+            meta.put("missingValueCount", projection.missing());
+            meta.put("missingDiagnostics", projection.diagnostics());
+            return new StructuredPipelineResult(true, null, projection.rows(), null, false,
+                    false, sourceEntityCount, projection.missing(), meta);
         }
 
         List<StructuredPipelineResult.Row> output = projection.rows();
         if (plan.isDistinct()) output = distinctProjectedRows(output, plan.getSelect());
-        if (plan.getLimit() != null && plan.getLimit() > 0 && output.size() > plan.getLimit()) {
-            output = new ArrayList<>(output.subList(0, plan.getLimit()));
-        }
+        int fullOutputCount = output.size();
+        boolean limited = plan.getLimit() != null && plan.getLimit() > 0 && output.size() > plan.getLimit();
+        if (limited) output = new ArrayList<>(output.subList(0, plan.getLimit()));
+
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("completeDataset", true);
+        meta.put("outputComplete", !limited);
+        meta.put("authoritativeEmpty", fullOutputCount == 0);
+        meta.put("outputCount", output.size());
+        meta.put("fullOutputCount", fullOutputCount);
+        meta.put("limited", limited);
+        meta.put("valueProjection", hasExplodedProjection(plan.getSelect()) || plan.isDistinct());
         return new StructuredPipelineResult(true, null, output, null, true,
-                output.isEmpty(), sourceEntityCount, 0, Map.of(
-                "completeDataset", true,
-                "authoritativeEmpty", output.isEmpty(),
-                "outputCount", output.size(),
-                "valueProjection", hasExplodedProjection(plan.getSelect()) || plan.isDistinct()));
+                fullOutputCount == 0, sourceEntityCount, 0, meta);
     }
 
     private StructuredPipelineResult executeGrouped(StructuredPipelinePlan plan,
@@ -142,13 +159,20 @@ public class StructuredPipelineExecutor {
                                                      int sourceEntityCount) {
         Map<String, GroupBucket> groups = new LinkedHashMap<>();
         int missing = 0;
+        List<Map<String, Object>> missingDiagnostics = new ArrayList<>();
         for (StructuredQueryResult.Row row : rows) {
             List<List<String>> dimensions = new ArrayList<>();
             boolean rowMissing = false;
             long combinations = 1L;
             for (StructuredValueExpression expression : plan.getGroupBy()) {
-                List<String> result = values.values(plan.getDomainCode(), row, expression);
-                if (result.isEmpty()) { rowMissing = true; break; }
+                StructuredValueEvaluator.ValueEvaluation evaluated = values.evaluate(plan.getDomainCode(), row, expression);
+                List<String> result = evaluated.values();
+                if (result.isEmpty()) {
+                    missing++;
+                    addDiagnostic(missingDiagnostics, row, expression, evaluated);
+                    rowMissing = true;
+                    break;
+                }
                 if (combinations > MAX_GROUP_COMBINATIONS_PER_ENTITY / Math.max(1, result.size())) {
                     return StructuredPipelineResult.failure("group-by expansion exceeds per-entity safety limit: "
                             + MAX_GROUP_COMBINATIONS_PER_ENTITY);
@@ -156,7 +180,7 @@ public class StructuredPipelineExecutor {
                 combinations *= result.size();
                 dimensions.add(result);
             }
-            if (rowMissing) { missing++; continue; }
+            if (rowMissing) continue;
             for (List<String> tuple : cartesian(dimensions)) {
                 String key = String.join(" | ", tuple);
                 groups.computeIfAbsent(key, k -> new GroupBucket(tuple)).rows.add(row);
@@ -167,7 +191,9 @@ public class StructuredPipelineExecutor {
         }
         if (missing > 0) {
             return StructuredPipelineResult.failure("group-by field data is incomplete on " + missing
-                    + " of " + rows.size() + " entities; cannot prove complete grouped result");
+                    + " of " + rows.size() + " entities; cannot prove complete grouped result", Map.of(
+                    "missingValueCount", missing,
+                    "missingDiagnostics", List.copyOf(missingDiagnostics)));
         }
 
         StructuredAggregateSpec aggregate = plan.getAggregate() == null
@@ -175,7 +201,12 @@ public class StructuredPipelineExecutor {
         List<StructuredPipelineResult.Row> output = new ArrayList<>();
         for (Map.Entry<String, GroupBucket> entry : groups.entrySet()) {
             AggregateValue computed = aggregate(plan.getDomainCode(), entry.getValue().rows, aggregate);
-            if (!computed.success()) return StructuredPipelineResult.failure(computed.message());
+            if (!computed.success()) {
+                return StructuredPipelineResult.failure(computed.message(), Map.of(
+                        "missingValueCount", computed.missing(),
+                        "missingDiagnostics", computed.diagnostics(),
+                        "groupKey", entry.getKey()));
+            }
             Map<String, String> fields = new LinkedHashMap<>();
             for (int i = 0; i < plan.getGroupBy().size(); i++) {
                 fields.put(expressionKey(plan.getGroupBy().get(i)), entry.getValue().keys.get(i));
@@ -187,65 +218,77 @@ public class StructuredPipelineExecutor {
         GroupSort sorted = sortGroups(plan.getDomainCode(), output, plan.getOrderBy(), plan.getGroupBy());
         if (!sorted.success()) return StructuredPipelineResult.failure(sorted.message());
         output = sorted.rows();
-        if (plan.getLimit() != null && plan.getLimit() > 0 && output.size() > plan.getLimit()) {
-            output = new ArrayList<>(output.subList(0, plan.getLimit()));
-        }
-        return new StructuredPipelineResult(true, null, output, null, true, output.isEmpty(),
-                sourceEntityCount, 0, Map.of(
-                "completeDataset", true,
-                "authoritativeEmpty", output.isEmpty(),
-                "groupCount", output.size(),
-                "aggregate", aggregate.operation().name(),
-                "outputCount", output.size()));
+        int fullGroupCount = output.size();
+        boolean limited = plan.getLimit() != null && plan.getLimit() > 0 && output.size() > plan.getLimit();
+        if (limited) output = new ArrayList<>(output.subList(0, plan.getLimit()));
+
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("completeDataset", true);
+        meta.put("outputComplete", !limited);
+        meta.put("authoritativeEmpty", fullGroupCount == 0);
+        meta.put("groupCount", output.size());
+        meta.put("fullGroupCount", fullGroupCount);
+        meta.put("limited", limited);
+        meta.put("aggregate", aggregate.operation().name());
+        meta.put("outputCount", output.size());
+        return new StructuredPipelineResult(true, null, output, null, true, fullGroupCount == 0,
+                sourceEntityCount, 0, meta);
     }
 
     private AggregateValue aggregate(String domainCode, List<StructuredQueryResult.Row> rows,
                                      StructuredAggregateSpec spec) {
         Operation op = spec.operation();
-        if (op == null || op == Operation.NONE) return AggregateValue.failure("aggregate operation is required");
+        if (op == null || op == Operation.NONE) return AggregateValue.failure("aggregate operation is required", 0, List.of());
         if (op == Operation.COUNT && spec.value() == null && StrUtil.isBlank(spec.metricCode())) {
-            return AggregateValue.success((double) rows.size(), 0);
+            return AggregateValue.success((double) rows.size());
         }
 
         List<String> raw = new ArrayList<>();
         int missing = 0;
+        List<Map<String, Object>> diagnostics = new ArrayList<>();
         String valueType = null;
         if (spec.value() != null) {
             valueType = values.outputType(domainCode, spec.value());
             for (StructuredQueryResult.Row row : rows) {
-                List<String> item = values.values(domainCode, row, spec.value());
-                if (item.isEmpty()) missing++;
-                else raw.addAll(item);
+                StructuredValueEvaluator.ValueEvaluation evaluated = values.evaluate(domainCode, row, spec.value());
+                if (!evaluated.success()) {
+                    missing++;
+                    addDiagnostic(diagnostics, row, spec.value(), evaluated);
+                } else {
+                    raw.addAll(evaluated.values());
+                }
             }
         } else if (StrUtil.isNotBlank(spec.metricCode())) {
             MetricDefinition metric = metricRegistry.lookup(domainCode, spec.metricCode()).orElse(null);
-            if (metric == null) return AggregateValue.failure("metric is not registered: " + spec.metricCode());
+            if (metric == null) return AggregateValue.failure("metric is not registered: " + spec.metricCode(), 0, List.of());
             valueType = metric.getValueType();
             for (StructuredQueryResult.Row row : rows) {
-                if (row.getValue() == null) missing++;
-                else raw.add(String.valueOf(row.getValue()));
+                if (row.getValue() == null) {
+                    missing++;
+                    addMetricDiagnostic(diagnostics, row, spec.metricCode());
+                } else raw.add(String.valueOf(row.getValue()));
             }
         }
 
         // 对字段/指标做 COUNT/COUNT_DISTINCT 也是全集结论：任一逻辑实体缺值都不能静默少算。
         if (missing > 0) return AggregateValue.failure("aggregate source is incomplete on " + missing
-                + " of " + rows.size() + " entities");
-        if (op == Operation.COUNT) return AggregateValue.success((double) raw.size(), 0);
-        if (op == Operation.COUNT_DISTINCT) return AggregateValue.success((double) new LinkedHashSet<>(raw).size(), 0);
-        if (raw.isEmpty()) return AggregateValue.success(0D, 0);
+                + " of " + rows.size() + " entities", missing, List.copyOf(diagnostics));
+        if (op == Operation.COUNT) return AggregateValue.success((double) raw.size());
+        if (op == Operation.COUNT_DISTINCT) return AggregateValue.success((double) new LinkedHashSet<>(raw).size());
+        if (raw.isEmpty()) return AggregateValue.success(0D);
         if (!"INTEGER".equalsIgnoreCase(valueType) && !"DECIMAL".equalsIgnoreCase(valueType)) {
-            return AggregateValue.failure("operation " + op + " requires numeric value but got " + valueType);
+            return AggregateValue.failure("operation " + op + " requires numeric value but got " + valueType, 0, List.of());
         }
         List<BigDecimal> numbers = new ArrayList<>();
         try { for (String value : raw) numbers.add(new BigDecimal(value)); }
-        catch (NumberFormatException e) { return AggregateValue.failure("aggregate value is not numeric"); }
+        catch (NumberFormatException e) { return AggregateValue.failure("aggregate value is not numeric", 0, List.of()); }
         return switch (op) {
-            case SUM -> AggregateValue.success(numbers.stream().reduce(BigDecimal.ZERO, BigDecimal::add).doubleValue(), 0);
+            case SUM -> AggregateValue.success(numbers.stream().reduce(BigDecimal.ZERO, BigDecimal::add).doubleValue());
             case AVG -> AggregateValue.success(numbers.stream().reduce(BigDecimal.ZERO, BigDecimal::add)
-                    .divide(BigDecimal.valueOf(numbers.size()), 8, java.math.RoundingMode.HALF_UP).doubleValue(), 0);
-            case MIN -> AggregateValue.success(numbers.stream().min(BigDecimal::compareTo).orElse(BigDecimal.ZERO).doubleValue(), 0);
-            case MAX -> AggregateValue.success(numbers.stream().max(BigDecimal::compareTo).orElse(BigDecimal.ZERO).doubleValue(), 0);
-            default -> AggregateValue.failure("unsupported aggregate operation: " + op);
+                    .divide(BigDecimal.valueOf(numbers.size()), 8, java.math.RoundingMode.HALF_UP).doubleValue());
+            case MIN -> AggregateValue.success(numbers.stream().min(BigDecimal::compareTo).orElse(BigDecimal.ZERO).doubleValue());
+            case MAX -> AggregateValue.success(numbers.stream().max(BigDecimal::compareTo).orElse(BigDecimal.ZERO).doubleValue());
+            default -> AggregateValue.failure("unsupported aggregate operation: " + op, 0, List.of());
         };
     }
 
@@ -339,6 +382,7 @@ public class StructuredPipelineExecutor {
                                List<StructuredValueExpression> select) {
         List<StructuredPipelineResult.Row> out = new ArrayList<>();
         int missing = 0;
+        List<Map<String, Object>> diagnostics = new ArrayList<>();
         for (StructuredQueryResult.Row row : rows) {
             if (select == null || select.isEmpty()) {
                 out.add(new StructuredPipelineResult.Row(row.getEntityId(), row.getEntityName(),
@@ -350,9 +394,11 @@ public class StructuredPipelineExecutor {
             boolean rowMissing = false;
             long combinations = 1L;
             for (StructuredValueExpression expression : select) {
-                List<String> result = values.values(domainCode, row, expression);
+                StructuredValueEvaluator.ValueEvaluation evaluated = values.evaluate(domainCode, row, expression);
+                List<String> result = evaluated.values();
                 if (result.isEmpty()) {
                     missing++;
+                    addDiagnostic(diagnostics, row, expression, evaluated);
                     rowMissing = true;
                     break;
                 }
@@ -372,7 +418,36 @@ public class StructuredPipelineExecutor {
                         row.getValue(), null));
             }
         }
-        return Projection.success(out, missing);
+        return Projection.success(out, missing, List.copyOf(diagnostics));
+    }
+
+    private void addDiagnostic(List<Map<String, Object>> diagnostics,
+                               StructuredQueryResult.Row row,
+                               StructuredValueExpression expression,
+                               StructuredValueEvaluator.ValueEvaluation evaluated) {
+        if (diagnostics.size() >= MAX_DIAGNOSTIC_SAMPLES) return;
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("entityId", row == null ? null : row.getEntityId());
+        detail.put("entityName", row == null ? null : StrUtil.maxLength(StrUtil.nullToEmpty(row.getEntityName()), 100));
+        detail.put("expression", expressionKey(expression));
+        detail.put("failureKind", evaluated == null ? "UNKNOWN" : evaluated.failureKind().name());
+        detail.put("reason", evaluated == null ? "value evaluation returned no result"
+                : StrUtil.maxLength(StrUtil.nullToEmpty(evaluated.message()), 180));
+        detail.put("failedElementCount", evaluated == null ? 0 : evaluated.failedElements().size());
+        diagnostics.add(Map.copyOf(detail));
+    }
+
+    private void addMetricDiagnostic(List<Map<String, Object>> diagnostics,
+                                     StructuredQueryResult.Row row,
+                                     String metricCode) {
+        if (diagnostics.size() >= MAX_DIAGNOSTIC_SAMPLES) return;
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("entityId", row == null ? null : row.getEntityId());
+        detail.put("entityName", row == null ? null : StrUtil.maxLength(StrUtil.nullToEmpty(row.getEntityName()), 100));
+        detail.put("expression", "@METRIC:" + metricCode);
+        detail.put("failureKind", "RAW_MISSING");
+        detail.put("reason", "metric value is missing");
+        diagnostics.add(Map.copyOf(detail));
     }
 
     private List<StructuredPipelineResult.Row> distinctProjectedRows(List<StructuredPipelineResult.Row> rows,
@@ -583,9 +658,15 @@ public class StructuredPipelineExecutor {
         private GroupBucket(List<String> keys) { this.keys = List.copyOf(keys); }
     }
 
-    private record AggregateValue(boolean success, Double value, int missing, String message) {
-        static AggregateValue success(Double value, int missing) { return new AggregateValue(true, value, missing, null); }
-        static AggregateValue failure(String message) { return new AggregateValue(false, null, 0, message); }
+    private record AggregateValue(boolean success, Double value, int missing,
+                                  List<Map<String, Object>> diagnostics, String message) {
+        static AggregateValue success(Double value) {
+            return new AggregateValue(true, value, 0, List.of(), null);
+        }
+        static AggregateValue failure(String message, int missing, List<Map<String, Object>> diagnostics) {
+            return new AggregateValue(false, null, missing,
+                    diagnostics == null ? List.of() : List.copyOf(diagnostics), message);
+        }
     }
     private record SortRows(boolean success, List<StructuredQueryResult.Row> rows, String message) {
         static SortRows success(List<StructuredQueryResult.Row> rows) { return new SortRows(true, rows, null); }
@@ -595,8 +676,13 @@ public class StructuredPipelineExecutor {
         static GroupSort success(List<StructuredPipelineResult.Row> rows) { return new GroupSort(true, rows, null); }
         static GroupSort failure(String message) { return new GroupSort(false, List.of(), message); }
     }
-    private record Projection(boolean success, List<StructuredPipelineResult.Row> rows, int missing, String message) {
-        static Projection success(List<StructuredPipelineResult.Row> rows, int missing) { return new Projection(true, rows, missing, null); }
-        static Projection failure(String message) { return new Projection(false, List.of(), 0, message); }
+    private record Projection(boolean success, List<StructuredPipelineResult.Row> rows, int missing,
+                              List<Map<String, Object>> diagnostics, String message) {
+        static Projection success(List<StructuredPipelineResult.Row> rows, int missing,
+                                  List<Map<String, Object>> diagnostics) {
+            return new Projection(true, rows, missing,
+                    diagnostics == null ? List.of() : List.copyOf(diagnostics), null);
+        }
+        static Projection failure(String message) { return new Projection(false, List.of(), 0, List.of(), message); }
     }
 }
