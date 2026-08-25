@@ -19,7 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-/** V1.1 Agent 评估/RPC Facade；支持独立评估和顶层路由的未落库执行。 */
+/** V1.1 Agent 评估/RPC Facade；支持独立评估、顶层路由未落库执行与 traceId 事后回放。 */
 @Service
 public class AgenticEvidenceFacade {
     private final AgenticQueryEngine agenticQueryEngine;
@@ -106,6 +106,11 @@ public class AgenticEvidenceFacade {
             }
         }
         recorder.record(resp, evidences, List.of());
+    }
+
+    /** V1.1 事后回放：返回该 traceId 已持久化的 Planner/Capability/Guard/Answer 步骤。 */
+    public List<QueryStageTimingDTO> replayTrace(String traceId) {
+        return recorder.findStages(traceId);
     }
 
     private void applyGeneration(EvidenceEvaluateRespVO resp, GenerationResult generation) {
