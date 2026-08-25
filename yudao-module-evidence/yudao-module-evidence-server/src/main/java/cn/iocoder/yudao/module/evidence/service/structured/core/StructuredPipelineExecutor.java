@@ -121,7 +121,6 @@ public class StructuredPipelineExecutor {
         SortRows sorted = sortRows(plan.getDomainCode(), rows, plan.getOrderBy());
         if (!sorted.success()) return StructuredPipelineResult.failure(sorted.message());
 
-        // 投影先真正执行 explode/transform，DISTINCT 才能作用于派生后的值，而不是作用于物理实体行。
         Projection projection = project(plan.getDomainCode(), sorted.rows(), plan.getSelect());
         if (!projection.success()) return StructuredPipelineResult.failure(projection.message());
         if (projection.missing() > 0) {
@@ -270,7 +269,6 @@ public class StructuredPipelineExecutor {
             }
         }
 
-        // 对字段/指标做 COUNT/COUNT_DISTINCT 也是全集结论：任一逻辑实体缺值都不能静默少算。
         if (missing > 0) return AggregateValue.failure("aggregate source is incomplete on " + missing
                 + " of " + rows.size() + " entities", missing, List.copyOf(diagnostics));
         if (op == Operation.COUNT) return AggregateValue.success((double) raw.size());
@@ -427,12 +425,14 @@ public class StructuredPipelineExecutor {
                                StructuredValueEvaluator.ValueEvaluation evaluated) {
         if (diagnostics.size() >= MAX_DIAGNOSTIC_SAMPLES) return;
         Map<String, Object> detail = new LinkedHashMap<>();
-        detail.put("entityId", row == null ? null : row.getEntityId());
-        detail.put("entityName", row == null ? null : StrUtil.maxLength(StrUtil.nullToEmpty(row.getEntityName()), 100));
+        if (row != null && row.getEntityId() != null) detail.put("entityId", row.getEntityId());
+        if (row != null && StrUtil.isNotBlank(row.getEntityName())) {
+            detail.put("entityName", StrUtil.maxLength(row.getEntityName(), 100));
+        }
         detail.put("expression", expressionKey(expression));
         detail.put("failureKind", evaluated == null ? "UNKNOWN" : evaluated.failureKind().name());
         detail.put("reason", evaluated == null ? "value evaluation returned no result"
-                : StrUtil.maxLength(StrUtil.nullToEmpty(evaluated.message()), 180));
+                : StrUtil.maxLength(StrUtil.blankToDefault(evaluated.message(), "value evaluation failed"), 180));
         detail.put("failedElementCount", evaluated == null ? 0 : evaluated.failedElements().size());
         diagnostics.add(Map.copyOf(detail));
     }
@@ -442,9 +442,11 @@ public class StructuredPipelineExecutor {
                                      String metricCode) {
         if (diagnostics.size() >= MAX_DIAGNOSTIC_SAMPLES) return;
         Map<String, Object> detail = new LinkedHashMap<>();
-        detail.put("entityId", row == null ? null : row.getEntityId());
-        detail.put("entityName", row == null ? null : StrUtil.maxLength(StrUtil.nullToEmpty(row.getEntityName()), 100));
-        detail.put("expression", "@METRIC:" + metricCode);
+        if (row != null && row.getEntityId() != null) detail.put("entityId", row.getEntityId());
+        if (row != null && StrUtil.isNotBlank(row.getEntityName())) {
+            detail.put("entityName", StrUtil.maxLength(row.getEntityName(), 100));
+        }
+        detail.put("expression", "@METRIC:" + StrUtil.blankToDefault(metricCode, "UNKNOWN"));
         detail.put("failureKind", "RAW_MISSING");
         detail.put("reason", "metric value is missing");
         diagnostics.add(Map.copyOf(detail));
@@ -487,10 +489,6 @@ public class StructuredPipelineExecutor {
         };
     }
 
-    /**
-     * 非 EXISTS 条件需要真实字段值才能形成完整过滤结论。这里保守递归检查 AND/OR 中的每个条件，
-     * 宁可 fail-closed，也不把缺值默认为 false/true 后制造假全集。
-     */
     private String validateFilterCompleteness(String domainCode,
                                               List<StructuredQueryResult.Row> rows,
                                               StructuredPredicateNode node) {
