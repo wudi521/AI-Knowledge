@@ -52,7 +52,7 @@ public class AgenticQueryEngine {
             state = new AgentExecutionState(query);
         } catch (IllegalArgumentException e) {
             traceSteps.add(trace(traceSteps, "GUARD", null, null, null, "FAILED", 0L,
-                    "original goal is blank", AgentStopReason.INVALID_CAPABILITY_CALL));
+                    "evidenceCount=0; original goal is blank", AgentStopReason.INVALID_CAPABILITY_CALL));
             return Result.stopped(AgentStopReason.INVALID_CAPABILITY_CALL, "查询不能为空。", List.of(),
                     0, 0, traceSteps, List.of());
         }
@@ -78,7 +78,8 @@ public class AgenticQueryEngine {
             if (!plannerGuard.allowed()) {
                 state.stop(plannerGuard.stopReason());
                 traceSteps.add(trace(traceSteps, "GUARD", null, null, state.getCurrentSubGoal(), "STOPPED", 0L,
-                        "planner call rejected by execution guard", plannerGuard.stopReason()));
+                        "evidenceCount=" + gatheredEvidence.size() + "; planner call rejected by execution guard",
+                        plannerGuard.stopReason()));
                 break;
             }
 
@@ -89,7 +90,8 @@ public class AgenticQueryEngine {
             if (decision == null) {
                 state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
                 traceSteps.add(trace(traceSteps, "PLANNER", null, null, state.getCurrentSubGoal(), "FAILED",
-                        plannerElapsed, "planner returned null decision", AgentStopReason.NO_RELIABLE_EVIDENCE));
+                        plannerElapsed, "evidenceCount=" + gatheredEvidence.size() + "; planner returned null decision",
+                        AgentStopReason.NO_RELIABLE_EVIDENCE));
                 break;
             }
             traceSteps.add(trace(traceSteps, "PLANNER", decision.action().name(), decision.capability(),
@@ -102,7 +104,9 @@ public class AgenticQueryEngine {
                     if (!call.accepted()) {
                         state.stop(call.stopReason());
                         traceSteps.add(trace(traceSteps, "CAPABILITY_PREPARE", decision.action().name(), decision.capability(),
-                                decision.purpose(), "FAILED", 0L, StrUtil.maxLength(call.message(), 300), call.stopReason()));
+                                decision.purpose(), "FAILED", 0L,
+                                "evidenceCount=" + gatheredEvidence.size() + "; " + StrUtil.maxLength(call.message(), 260),
+                                call.stopReason()));
                         return Result.stopped(call.stopReason(), call.message(), gatheredEvidence,
                                 state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
                     }
@@ -110,7 +114,8 @@ public class AgenticQueryEngine {
                     if (!callGuard.allowed()) {
                         state.stop(callGuard.stopReason());
                         traceSteps.add(trace(traceSteps, "GUARD", decision.action().name(), decision.capability(),
-                                decision.purpose(), "STOPPED", 0L, "capability call rejected by execution guard",
+                                decision.purpose(), "STOPPED", 0L,
+                                "evidenceCount=" + gatheredEvidence.size() + "; capability call rejected by execution guard",
                                 callGuard.stopReason()));
                         return Result.stopped(callGuard.stopReason(), "执行预算或重复调用保护触发。",
                                 gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
@@ -128,18 +133,21 @@ public class AgenticQueryEngine {
                         state.stop(reason);
                         traceSteps.add(trace(traceSteps, "CAPABILITY", decision.action().name(), decision.capability(),
                                 decision.purpose(), "FAILED", capabilityElapsed,
-                                StrUtil.maxLength(capabilityResult.message(), 300), reason));
+                                "evidenceCount=0; " + StrUtil.maxLength(capabilityResult.message(), 260), reason));
                         return Result.stopped(reason, capabilityResult.message(), gatheredEvidence,
                                 state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
                     }
                     ObservationMaterial material = materialize(decision, capabilityResult);
                     traceSteps.add(trace(traceSteps, "CAPABILITY", decision.action().name(), decision.capability(),
                             decision.purpose(), "SUCCEEDED", capabilityElapsed,
-                            StrUtil.maxLength(material.observation().summary(), 500), null));
+                            "evidenceCount=" + material.evidences().size()
+                                    + "; verifiedEntityCount=" + material.verifiedEntityIds().size()
+                                    + "; " + StrUtil.maxLength(material.observation().summary(), 400), null));
                     if (!state.markProgress(material.progressHash())) {
                         state.stop(AgentStopReason.NO_PROGRESS);
                         traceSteps.add(trace(traceSteps, "GUARD", decision.action().name(), decision.capability(),
-                                decision.purpose(), "STOPPED", 0L, "capability produced no new progress",
+                                decision.purpose(), "STOPPED", 0L,
+                                "evidenceCount=" + gatheredEvidence.size() + "; capability produced no new progress",
                                 AgentStopReason.NO_PROGRESS));
                         return Result.stopped(AgentStopReason.NO_PROGRESS, "连续能力调用没有产生新的有效信息。",
                                 gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
@@ -158,7 +166,7 @@ public class AgenticQueryEngine {
                             context = context.withContextEntityIds(trusted(trustedEntityIds));
                             traceSteps.add(trace(traceSteps, "TRUSTED_SCOPE", decision.action().name(), decision.capability(),
                                     decision.purpose(), "SUCCEEDED", 0L,
-                                    "verifiedEntityIds=" + trustedEntityIds, null));
+                                    "evidenceCount=" + gatheredEvidence.size() + "; verifiedEntityIds=" + trustedEntityIds, null));
                         }
                     }
                 }
@@ -169,29 +177,32 @@ public class AgenticQueryEngine {
                             state.stop(AgentStopReason.ENOUGH_EVIDENCE);
                             traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
                                     decision.purpose(), "SUCCEEDED", 0L,
-                                    "deterministic capability result answered original goal", AgentStopReason.ENOUGH_EVIDENCE));
+                                    "evidenceCount=0; verifiedEntityCount=" + trustedEntityIds.size()
+                                            + "; deterministic capability result answered original goal",
+                                    AgentStopReason.ENOUGH_EVIDENCE));
                             return new Result(State.ANSWER, String.join("\n", deterministicAnswers), null,
                                     AgentStopReason.ENOUGH_EVIDENCE, List.of(), state.getStep(), state.getLlmCalls(),
                                     state.getEvidenceCoverage(), null, List.copyOf(traceSteps), trusted(trustedEntityIds));
                         }
                         state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
                         traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
-                                decision.purpose(), "FAILED", 0L, "no reliable evidence to answer",
+                                decision.purpose(), "FAILED", 0L, "evidenceCount=0; no reliable evidence to answer",
                                 AgentStopReason.NO_RELIABLE_EVIDENCE));
                         return Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE, "没有可靠证据支持回答。",
                                 List.of(), state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
                     }
 
-                    String generationQuery = deterministicAnswers.isEmpty()
-                            ? state.getOriginalGoal()
-                            : StrUtil.blankToDefault(state.getCurrentSubGoal(), state.getOriginalGoal());
+                    // V1.1 硬约束：currentSubGoal 只用于规划下一步能力，最终生成永远回答 immutable originalGoal。
+                    // 即使前面已产生确定性字段答案，也不能把最后一次检索 purpose 升级为最终问题。
+                    String generationQuery = state.getOriginalGoal();
                     long answerStart = System.currentTimeMillis();
                     GenerationResult generation = answerPipeline.generateWithClaims(generationQuery, gatheredEvidence, history);
                     long answerElapsed = System.currentTimeMillis() - answerStart;
                     if (generation == null || StrUtil.isBlank(generation.getAnswer()) || generation.isClaimFail()) {
                         state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
                         traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
-                                decision.purpose(), "FAILED", answerElapsed, "answer failed evidence/claim validation",
+                                decision.purpose(), "FAILED", answerElapsed,
+                                "evidenceCount=" + gatheredEvidence.size() + "; answer failed evidence/claim validation",
                                 AgentStopReason.NO_RELIABLE_EVIDENCE));
                         return Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE, "最终回答未通过证据验证。",
                                 gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
@@ -203,9 +214,10 @@ public class AgenticQueryEngine {
                     state.stop(AgentStopReason.ENOUGH_EVIDENCE);
                     traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
                             decision.purpose(), "SUCCEEDED", answerElapsed,
-                            deterministicAnswers.isEmpty()
-                                    ? "grounded answer passed claim validation"
-                                    : "deterministic facts + grounded residual answer passed validation",
+                            "evidenceCount=" + gatheredEvidence.size() + "; "
+                                    + (deterministicAnswers.isEmpty()
+                                    ? "grounded answer passed claim validation for originalGoal"
+                                    : "deterministic facts + grounded answer passed validation for originalGoal"),
                             AgentStopReason.ENOUGH_EVIDENCE));
                     return new Result(State.ANSWER, finalAnswer, null, AgentStopReason.ENOUGH_EVIDENCE,
                             List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(),
@@ -215,7 +227,8 @@ public class AgenticQueryEngine {
                     state.stop(AgentStopReason.NEED_USER_INPUT);
                     traceSteps.add(trace(traceSteps, "STOP", decision.action().name(), null,
                             decision.purpose(), "STOPPED", 0L,
-                            StrUtil.maxLength(decision.message(), 300), AgentStopReason.NEED_USER_INPUT));
+                            "evidenceCount=" + gatheredEvidence.size() + "; " + StrUtil.maxLength(decision.message(), 260),
+                            AgentStopReason.NEED_USER_INPUT));
                     return new Result(State.CLARIFY, null,
                             StrUtil.blankToDefault(decision.message(), "请补充完成该查询所需的信息。"),
                             AgentStopReason.NEED_USER_INPUT, List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(),
@@ -225,7 +238,8 @@ public class AgenticQueryEngine {
                     state.stop(AgentStopReason.CAPABILITY_UNAVAILABLE);
                     traceSteps.add(trace(traceSteps, "STOP", decision.action().name(), null,
                             decision.purpose(), "STOPPED", 0L,
-                            StrUtil.maxLength(decision.message(), 300), AgentStopReason.CAPABILITY_UNAVAILABLE));
+                            "evidenceCount=" + gatheredEvidence.size() + "; " + StrUtil.maxLength(decision.message(), 260),
+                            AgentStopReason.CAPABILITY_UNAVAILABLE));
                     return Result.stopped(AgentStopReason.CAPABILITY_UNAVAILABLE,
                             StrUtil.blankToDefault(decision.message(), "当前能力不足以可靠完成该问题。"),
                             gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
