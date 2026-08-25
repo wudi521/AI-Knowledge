@@ -24,6 +24,7 @@ V1.1 架构文档定义的第一阶段能力已经完成代码落地：
 - Chat / Evidence RPC / 管理端统一查询 Router。
 - V3 / AGENT / AGENT_WITH_V3_FALLBACK 三种迁移模式。
 - Agent 逐步骤 Trace。
+- Trace stage 持久化与 traceId 事后回放。
 - 确定性答案 Structured provenance。
 - V1.1 独立 JDK17 CI 与架构契约测试矩阵。
 
@@ -231,7 +232,7 @@ evidenceType = STRUCTURED_RESULT
 
 语义回答仍必须经过现有 AnswerPipeline / Claim Verification。
 
-## 8. Trace
+## 8. Trace 与回放
 
 Agent 每步都映射回现有 `stages`：
 
@@ -260,6 +261,22 @@ AGENT_FALLBACK_TO_V3
 ```
 
 并沿用同一 traceId。
+
+V1.1 现在不仅把 stages 返回给调用方，还持久化到：
+
+```text
+ai_query_trace_stage
+```
+
+`EvidenceRecorder` 对 Agent/V3 的最终 stages 统一执行 replace 持久化；同一 traceId 重写时先删除旧步骤，避免重复/脏回放。Agent→V3 fallback 在合并两段步骤后再次 replace，因此事后看到的是完整执行链而不是单独 V3 片段。
+
+管理端只读回放接口：
+
+```text
+GET /evidence/agent-trace/{traceId}
+```
+
+返回按 `seq` 排序的 `QueryStageTimingDTO`。Trace 存储 fail-open：审计写入异常不会改变查询答案，但会记录 warn 日志。
 
 ## 9. 自动化回归
 
@@ -290,6 +307,8 @@ AGENT_FALLBACK_TO_V3
 - exact patent claim lookup
 - deterministic + semantic composite flow
 - V1.1 -> V3 controlled fallback
+- fallback 合并后的完整 trace 持久化刷新
+- traceId stage replace / replay DTO 重建
 - NEED_USER_INPUT 不回退
 - PERMISSION_DENIED 不回退
 - deterministic answer structured provenance
@@ -337,6 +356,7 @@ Agent 原生 capability context 当前使用一个权威 kbId。
 - [x] candidate feedback contamination 防线完成
 - [x] Chat / Eval / Admin 统一 Router 完成
 - [x] 逐步骤 Trace 完成
+- [x] Trace stage 持久化与 traceId 回放完成
 - [x] V3 安全回退策略完成
 - [x] V1.1 独立 CI 已加入仓库
 - [x] capability / architecture contract tests 已加入仓库
