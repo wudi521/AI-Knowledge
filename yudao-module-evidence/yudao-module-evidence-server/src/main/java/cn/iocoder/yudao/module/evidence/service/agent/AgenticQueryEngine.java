@@ -263,7 +263,7 @@ public class AgenticQueryEngine {
         Object data = result.data();
         if (data instanceof AgentCapabilityOutput output) {
             List<Evidence> evidences = output.evidences() == null ? List.of() : output.evidences();
-            List<Long> verified = output.verifiedEntityIds() == null ? List.of() : output.verifiedEntityIds();
+            List<Long> verified = sanitizeVerifiedEntityIds(output.verifiedEntityIds(), result);
             String progress = decision.capability() + ":" + StrUtil.blankToDefault(output.progressHash(), "EMPTY");
             String summary = StrUtil.maxLength(StrUtil.blankToDefault(output.summary(), String.valueOf(result.metadata())), 1200);
             AgentObservation observation = new AgentObservation(decision.capability(), decision.purpose(), summary, progress);
@@ -273,6 +273,31 @@ public class AgenticQueryEngine {
         String progress = decision.capability() + ":" + Integer.toHexString((String.valueOf(data) + summary).hashCode());
         return new ObservationMaterial(new AgentObservation(decision.capability(), decision.purpose(), summary, progress),
                 List.of(), progress, null, List.of());
+    }
+
+    /**
+     * trusted scope 的最后一道通用防线。
+     * 聚合/计数事实只能作为 provenance，不能把参与统计的整批实体升级成后续“它/这些”的指代范围。
+     * 当能力声明的 outputCount 与 verifiedEntityIds 数量不一致时同样 fail-closed，避免“只展示前 N 条，
+     * 却把全集实体偷偷塞进上下文”的 scope 污染。
+     */
+    private List<Long> sanitizeVerifiedEntityIds(List<Long> rawIds, CapabilityResult result) {
+        if (rawIds == null || rawIds.isEmpty()) return List.of();
+        List<Long> ids = rawIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) return List.of();
+        Object taskRaw = result == null ? null : result.metadata().get("task");
+        String task = taskRaw == null ? "" : String.valueOf(taskRaw).trim();
+        if ("COUNT".equalsIgnoreCase(task) || "AGGREGATE".equalsIgnoreCase(task)) return List.of();
+        Integer outputCount = metadataCount(result == null ? null : result.metadata().get("outputCount"));
+        if (outputCount != null && outputCount >= 0 && outputCount != ids.size()) return List.of();
+        return ids;
+    }
+
+    private Integer metadataCount(Object raw) {
+        if (raw instanceof Number n) return Math.max(0, n.intValue());
+        if (raw == null) return null;
+        try { return Math.max(0, Integer.parseInt(String.valueOf(raw))); }
+        catch (Exception ignore) { return null; }
     }
 
     private List<Long> trusted(LinkedHashSet<Long> entityIds) {
