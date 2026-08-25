@@ -55,5 +55,5 @@ jobs:
           -pl yudao-module-evidence/yudao-module-evidence-server
           -am
           -Dsurefire.failIfNoSpecifiedTests=false
-          -Dtest=AgentExecutionStateTest,AgentExecutionGuardTest,AgenticQueryEngineTrustedScopeTest,AgenticQueryEngineSelfRepairTest,CapabilityInvokerTest,CapabilityVisibilityPolicyTest,KnowledgeRetrievalCapabilityTest,ExactTextSearchCapabilityTest,StructuredQueryCapabilityTest,StructuredPipelineCapabilityIntegrationTest,StructuredValueEvaluatorTest,SimilarFieldValuesCapabilityTest,PatentClaimLookupCapabilityTest,PatentStructuredSchemaContractTest,CandidateFeedbackGuardTest,EvidenceQueryRouterTest,AgentV11AcceptanceMatrixTest,QueryTraceStageStoreTest
+          -Dtest=AgentExecutionStateTest,AgentExecutionGuardTest,AgenticQueryEngineTrustedScopeTest,AgenticQueryEngineSelfRepairTest,CapabilityInvokerTest,CapabilityVisibilityPolicyTest,KnowledgeRetrievalCapabilityTest,ExactTextSearchCapabilityTest,StructuredQueryCapabilityTest,StructuredPipelineCapabilityIntegrationTest,StructuredPipelineErrorClassificationTest,StructuredValueEvaluatorTest,SimilarFieldValuesCapabilityTest,PatentClaimLookupCapabilityTest,PatentStructuredSchemaContractTest,CandidateFeedbackGuardTest,EvidenceQueryRouterTest,AgentV11AcceptanceMatrixTest,QueryTraceStageStoreTest
           test
