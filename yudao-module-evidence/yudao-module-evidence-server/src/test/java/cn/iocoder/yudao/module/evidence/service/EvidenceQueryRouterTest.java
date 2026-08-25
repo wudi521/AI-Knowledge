@@ -1,27 +1,34 @@
 package cn.iocoder.yudao.module.evidence.service;
 
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
-import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Constructor;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class EvidenceQueryRouterTest {
 
     @Test
-    void legacyFallbackConfigurationMustNotBypassAgentRuntime() {
-        EvidenceQueryEngineV3Facade v3 = mock(EvidenceQueryEngineV3Facade.class);
+    void onlineRouterOnlyDependsOnAgentFacade() {
+        Constructor<?>[] constructors = EvidenceQueryRouter.class.getDeclaredConstructors();
+        assertEquals(1, constructors.length);
+        assertEquals(1, constructors[0].getParameterCount());
+        assertEquals(AgenticEvidenceFacade.class, constructors[0].getParameterTypes()[0]);
+        assertTrue(java.util.Arrays.stream(constructors[0].getParameterTypes())
+                .noneMatch(type -> type.getName().contains("V3")));
+    }
+
+    @Test
+    void runtimeFailureCannotEscapeIntoLegacyFallback() {
         AgenticEvidenceFacade agent = mock(AgenticEvidenceFacade.class);
-        EvidenceProperties properties = new EvidenceProperties();
-        properties.getAgent().setMode("AGENT_WITH_V3_FALLBACK");
-        EvidenceQueryRouter router = new EvidenceQueryRouter(v3, agent, properties);
+        EvidenceQueryRouter router = new EvidenceQueryRouter(agent);
 
         EvidenceEvaluateRespVO agentResp = response(false, "CAPABILITY_UNAVAILABLE", "trace-1");
         when(agent.evaluateUnrecorded("q", List.of(6L), "PATENT", 1L, 2L,
@@ -33,15 +40,12 @@ class EvidenceQueryRouterTest {
         assertSame(agentResp, actual);
         assertEquals("AGENT", router.mode());
         verify(agent).record(agentResp);
-        verify(v3, never()).evaluate("q", List.of(6L), 8, 1L, 2L,
-                List.of(), false, "trace-1", "PATENT", null, null);
     }
 
     @Test
     void evidenceInsufficiencyStaysOnAgentRuntime() {
-        EvidenceQueryEngineV3Facade v3 = mock(EvidenceQueryEngineV3Facade.class);
         AgenticEvidenceFacade agent = mock(AgenticEvidenceFacade.class);
-        EvidenceQueryRouter router = new EvidenceQueryRouter(v3, agent, new EvidenceProperties());
+        EvidenceQueryRouter router = new EvidenceQueryRouter(agent);
 
         EvidenceEvaluateRespVO agentResp = response(false, "NO_RELIABLE_EVIDENCE", "trace-2");
         when(agent.evaluateUnrecorded("q", List.of(6L), "PATENT", 1L, 2L,
@@ -51,8 +55,6 @@ class EvidenceQueryRouterTest {
                 List.of(), false, "trace-2", "PATENT", null, null);
         assertSame(agentResp, actual);
         verify(agent).record(agentResp);
-        verify(v3, never()).evaluate("q", List.of(6L), 8, 1L, 2L,
-                List.of(), false, "trace-2", "PATENT", null, null);
     }
 
     private EvidenceEvaluateRespVO response(boolean answerable, String reasonCode, String traceId) {
