@@ -1,0 +1,55 @@
+name: Agentic RAG V1.1 CI
+
+on:
+  push:
+    branches:
+      - refactor/knowledge-platform-business-p0
+    paths:
+      - 'yudao-module-evidence/**'
+      - 'yudao-module-retrieval/**'
+      - 'yudao-module-knowledge/**'
+      - 'yudao-module-model/**'
+      - 'docs/Agentic-RAG-V1.1-架构设计.md'
+      - '.github/workflows/agent-v11-ci.yml'
+  pull_request:
+    branches:
+      - refactor/knowledge-platform-business-p0
+    paths:
+      - 'yudao-module-evidence/**'
+      - 'yudao-module-retrieval/**'
+      - 'yudao-module-knowledge/**'
+      - 'yudao-module-model/**'
+      - 'docs/Agentic-RAG-V1.1-架构设计.md'
+      - '.github/workflows/agent-v11-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  agent-v11-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+
+      - name: Compile Agent V1.1 dependency graph
+        run: >-
+          mvn -B
+          -pl yudao-module-evidence/yudao-module-evidence-server
+          -am
+          -DskipTests
+          package
+
+      - name: Run Agent V1.1 contract tests
+        run: >-
+          mvn -B
+          -pl yudao-module-evidence/yudao-module-evidence-server
+          -am
+          -Dsurefire.failIfNoSpecifiedTests=false
+          -Dtest=AgentExecutionStateTest,AgentExecutionGuardTest,AgenticQueryEngineTrustedScopeTest,CapabilityInvokerTest,CapabilityVisibilityPolicyTest,PatentClaimLookupCapabilityTest,CandidateFeedbackGuardTest,EvidenceQueryRouterTest,AgentV11AcceptanceMatrixTest
+          test
