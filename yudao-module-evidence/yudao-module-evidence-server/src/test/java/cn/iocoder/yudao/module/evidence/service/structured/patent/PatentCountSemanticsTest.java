@@ -42,10 +42,10 @@ class PatentCountSemanticsTest {
 
         StructuredQueryRespDTO data = new StructuredQueryRespDTO();
         data.setRows(new ArrayList<>(List.of(
-                row(65L, "A.pdf", "202311344028.2", "CN 122621758 A"),
-                row(66L, "B.pdf", "202311042981.1", "CN 122604134 A"),
-                row(67L, "C.pdf", "202311832214.0", "CN 122619519 A"),
-                row(68L, "B-copy.pdf", "202311042981.1", "CN 122604134 A")
+                row(65L, "A.pdf", "202311344028.2", "CN 122621758 A", "A"),
+                row(66L, "B.pdf", "202311042981.1", "CN 122604134 A", "一种代替印花的运动服"),
+                row(67L, "C.pdf", "202311832214.0", "CN 122619519 A", "C"),
+                row(68L, "B-copy.pdf", "202311042981.1", "CN 122604134 A", "一种代替印花的运动服")
         )));
         when(knowledgeApi.structuredQuery(any())).thenReturn(CommonResult.success(data));
 
@@ -68,6 +68,38 @@ class PatentCountSemanticsTest {
     }
 
     @Test
+    void logicalPatentFieldListAlsoDedupesDuplicateImports() {
+        PatentStructuredDataAdapter adapter = new PatentStructuredDataAdapter(knowledgeApi);
+        StructuredQueryRespDTO data = new StructuredQueryRespDTO();
+        data.setRows(new ArrayList<>(List.of(
+                row(66L, "B.pdf", "202311042981.1", "CN 122604134 A", "一种代替印花的运动服"),
+                row(68L, "B-copy.pdf", "202311042981.1", "CN 122604134 A", "一种代替印花的运动服"),
+                row(67L, "C.pdf", "202311832214.0", "CN 122619519 A", "一种粒子化磁涌装置及其使用方法")
+        )));
+        when(knowledgeApi.structuredQuery(any())).thenReturn(CommonResult.success(data));
+
+        StructuredQueryPlan titleListPlan = StructuredQueryPlan.builder()
+                .route("AGENT_CAPABILITY")
+                .queryType(QueryType.LIST)
+                .domainCode("PATENT")
+                .entityType(PatentStructuredPack.ENTITY_PATENT_DOCUMENT)
+                .scope(QueryScope.currentKb(6L))
+                .metricCode(PatentStructuredPack.FIELD_TITLE)
+                .fieldCode(PatentStructuredPack.FIELD_TITLE)
+                .projections(List.of(PatentStructuredPack.FIELD_TITLE))
+                .operation(Operation.NONE)
+                .filters(java.util.Map.of("publishedOnly", "true"))
+                .build();
+
+        StructuredQueryResult result = adapter.execute(titleListPlan);
+
+        assertThat(result.isUnsupported()).isFalse();
+        assertThat(result.getRows()).hasSize(2);
+        assertThat(result.getRows()).extracting(StructuredQueryResult.Row::getEntityId)
+                .containsExactly(66L, 67L);
+    }
+
+    @Test
     void patentAndDocumentAliasesAreSeparated() {
         DefaultDomainMetricRegistry metricRegistry = new DefaultDomainMetricRegistry();
         new PatentStructuredPack(metricRegistry, new DefaultDomainEntityRegistry(), new DefaultDomainFieldRegistry());
@@ -80,12 +112,13 @@ class PatentCountSemanticsTest {
                 .isEqualTo(PatentStructuredPack.METRIC_DOCUMENT_COUNT);
     }
 
-    private StructuredQueryRowDTO row(Long id, String name, String app, String pub) {
+    private StructuredQueryRowDTO row(Long id, String name, String app, String pub, String title) {
         StructuredQueryRowDTO row = new StructuredQueryRowDTO();
         row.setDocumentId(id);
         row.setDocumentName(name);
         row.setApplicationNo(app);
         row.setPublicationNo(pub);
+        row.setTitle(title);
         row.setValue(1d);
         return row;
     }
