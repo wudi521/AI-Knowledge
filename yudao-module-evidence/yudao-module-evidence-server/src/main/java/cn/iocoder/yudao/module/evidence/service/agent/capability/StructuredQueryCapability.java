@@ -70,6 +70,58 @@ public class StructuredQueryCapability implements KnowledgeCapability {
                 Set.of(), Set.of(), Set.of(), 8_000L, 50);
     }
 
+    /**
+     * 调用前机器校验 JSON 形状/类型/范围。字段是否存在、是否 sortable/groupable、transform/operator
+     * 是否允许等领域语义仍由 StructuredPipeline 编译器/Executor 依据 Domain Schema 做第二层校验。
+     */
+    @Override
+    public CapabilityArgumentValidation validateArguments(CapabilityInvocationContext context,
+                                                           Map<String, Object> arguments) {
+        if (arguments == null) return CapabilityArgumentValidation.ok();
+        for (Map.Entry<String, Object> entry : arguments.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+            if (value == null) continue;
+            switch (key) {
+                case "limit" -> {
+                    Integer limit = strictInteger(value);
+                    if (limit == null || limit < 1 || limit > 50) {
+                        return CapabilityArgumentValidation.invalid("limit must be an integer between 1 and 50");
+                    }
+                }
+                case "distinct" -> {
+                    if (!(value instanceof Boolean)) {
+                        return CapabilityArgumentValidation.invalid("distinct must be boolean");
+                    }
+                }
+                case "filter", "aggregate" -> {
+                    if (!(value instanceof Map<?, ?>)) {
+                        return CapabilityArgumentValidation.invalid(key + " must be an object");
+                    }
+                }
+                case "select", "groupBy", "orderBy" -> {
+                    if (!expressionContainer(value, "orderBy".equals(key))) {
+                        return CapabilityArgumentValidation.invalid(key + " must be a field/expression object or an array of them");
+                    }
+                }
+                case "task", "field", "operator", "metric", "operation", "sort" -> {
+                    if (!(value instanceof String)) {
+                        return CapabilityArgumentValidation.invalid(key + " must be a string");
+                    }
+                }
+                case "values", "projections", "transforms" -> {
+                    if (!scalarOrScalarArray(value)) {
+                        return CapabilityArgumentValidation.invalid(key + " must be a scalar or an array of scalar values");
+                    }
+                }
+                default -> {
+                    // 未知参数已由 Invoker 的 argumentSchema 白名单提前拦截。
+                }
+            }
+        }
+        return CapabilityArgumentValidation.ok();
+    }
+
     @Override
     public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
         if (pipelineDelegate != null) return pipelineDelegate.execute(context, arguments);
@@ -165,6 +217,40 @@ public class StructuredQueryCapability implements KnowledgeCapability {
         ));
     }
 
+    private boolean expressionContainer(Object raw, boolean orderBy) {
+        if (raw instanceof String) return !orderBy;
+        if (raw instanceof Map<?, ?>) return true;
+        if (raw instanceof Iterable<?> iterable) {
+            for (Object item : iterable) {
+                if (!(item instanceof String) && !(item instanceof Map<?, ?>)) return false;
+                if (orderBy && item instanceof String) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private boolean scalarOrScalarArray(Object raw) {
+        if (isScalar(raw)) return true;
+        if (raw instanceof Iterable<?> iterable) {
+            for (Object item : iterable) if (!isScalar(item)) return false;
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isScalar(Object raw) {
+        return raw instanceof String || raw instanceof Number || raw instanceof Boolean;
+    }
+
+    private Integer strictInteger(Object raw) {
+        if (raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long) {
+            long value = ((Number) raw).longValue();
+            return value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE ? (int) value : null;
+        }
+        return null;
+    }
+
     private Map<String, String> legacyArgumentSchema() {
         return Map.ofEntries(
                 Map.entry("task", "PROJECT/LIST/COUNT/AGGREGATE/TOP_N。"),
@@ -233,7 +319,7 @@ public class StructuredQueryCapability implements KnowledgeCapability {
         List<FieldDefinition> out = new ArrayList<>();
         for (String name : names) {
             FieldDefinition field = resolveField(domainCode, name);
-            if (field != null && out.stream().noneMatch(v -> v.getFieldCode().equals(field.getFieldCode()))) out.add(field);
+            if (field != null && out.stream().noneMatch(v -> field.getFieldCode().equals(v.getFieldCode()))) out.add(field);
         }
         return List.copyOf(out);
     }
