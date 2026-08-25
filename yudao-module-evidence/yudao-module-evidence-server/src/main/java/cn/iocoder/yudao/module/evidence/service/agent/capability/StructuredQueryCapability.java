@@ -122,12 +122,11 @@ public class StructuredQueryCapability implements KnowledgeCapability {
             queryType = task == Task.TOP_N ? QueryType.TOP_N : QueryType.AGGREGATE;
         }
 
-        String entityType = metric.getEntityType();
         StructuredQueryPlan plan = StructuredQueryPlan.builder()
                 .route("AGENT_CAPABILITY")
                 .queryType(queryType)
                 .domainCode(context.domainCode())
-                .entityType(entityType)
+                .entityType(metric.getEntityType())
                 .scope(QueryScope.currentKb(context.kbId()))
                 .metricCode(metric.getMetricCode())
                 .fieldCode(projections.isEmpty() ? null : projections.get(0).getFieldCode())
@@ -301,6 +300,11 @@ public class StructuredQueryCapability implements KnowledgeCapability {
         @Override
         public String progressHash() {
             return task + ":" + metricCode + ":" + entityIds + ":" + value + ":" + rowSummary.hashCode();
+        }
+
+        @Override
+        public List<Long> verifiedEntityIds() {
+            return entityIds == null ? List.of() : List.copyOf(entityIds);
         }
 
         @Override
