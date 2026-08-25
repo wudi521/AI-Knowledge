@@ -33,14 +33,14 @@ import static org.mockito.Mockito.when;
 class AgentV11AcceptanceMatrixTest {
 
     @Test
-    void deterministicAnswerMustExposeStructuredProvenanceWithoutFakeConfidence() {
+    void deterministicEntityAnswerMustExposeStructuredProvenanceWithoutFakeConfidence() {
         AgenticQueryEngine engine = mock(AgenticQueryEngine.class);
         EvidenceRecorder recorder = mock(EvidenceRecorder.class);
         AgenticEvidenceFacade facade = new AgenticEvidenceFacade(engine, recorder);
 
         AgenticQueryEngine.Result result = new AgenticQueryEngine.Result(
                 AgenticQueryEngine.State.ANSWER,
-                "当前知识库共有 12 件专利。",
+                "公布号=CN123",
                 null,
                 AgentStopReason.ENOUGH_EVIDENCE,
                 List.of(),
@@ -52,21 +52,23 @@ class AgentV11AcceptanceMatrixTest {
                         "回答原始目标", "SUCCEEDED", 0L,
                         "deterministic capability result answered original goal",
                         AgentStopReason.ENOUGH_EVIDENCE)),
-                List.of(11L, 12L));
-        when(engine.execute(eq("现在专利库有多少专利？"), eq(6L), eq("PATENT"), eq(1L), eq(2L),
+                List.of(74L));
+        when(engine.execute(eq("申请号X的公布号是什么？"), eq(6L), eq("PATENT"), eq(1L), eq(2L),
                 any(), anyList(), anyList())).thenReturn(result);
 
         EvidenceEvaluateRespVO resp = facade.evaluateUnrecorded(
-                "现在专利库有多少专利？", List.of(6L), "PATENT", 1L, 2L,
+                "申请号X的公布号是什么？", List.of(6L), "PATENT", 1L, 2L,
                 List.of(), null, "ag-contract-1");
 
         assertTrue(Boolean.TRUE.equals(resp.getAnswerable()));
-        assertEquals("当前知识库共有 12 件专利。", resp.getAnswer());
+        assertEquals("公布号=CN123", resp.getAnswer());
         assertNull(resp.getConfidence(), "V1.1 未校准连续置信度前必须保持 null");
         assertEquals(1, resp.getEvidence().size());
         assertEquals("STRUCTURED_RESULT", resp.getEvidence().get(0).getEvidenceType());
-        assertEquals("当前知识库共有 12 件专利。", resp.getEvidence().get(0).getContent());
-        assertEquals(List.of(11L, 12L), resp.getStructuredResult().getEntityIds());
+        assertEquals("公布号=CN123", resp.getEvidence().get(0).getContent());
+        assertEquals(74L, resp.getEvidence().get(0).getDocumentId());
+        assertTrue(resp.getEvidence().get(0).getFilters().contains("verifiedEntityIds=[74]"));
+        assertEquals(List.of(74L), resp.getStructuredResult().getEntityIds());
         assertEquals("ENOUGH_EVIDENCE", resp.getReasonCode());
     }
 
