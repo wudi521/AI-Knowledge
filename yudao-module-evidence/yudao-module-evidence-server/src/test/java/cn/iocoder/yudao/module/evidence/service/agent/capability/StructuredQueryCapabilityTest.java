@@ -17,6 +17,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -65,6 +66,32 @@ class StructuredQueryCapabilityTest {
         assertTrue(output.deterministicAnswer().contains("CN123456789A"));
         assertTrue(output.summary().contains("entityIds=[74]"));
         assertEquals(Boolean.TRUE, result.metadata().get("completeDataset"));
+    }
+
+    @Test
+    void machineArgumentContractRejectsWrongShapesBeforeExecution() {
+        StructuredQueryCapability capability = new StructuredQueryCapability(
+                mock(DomainFieldRegistry.class), mock(DomainMetricRegistry.class), mock(DomainEntityRegistry.class),
+                mock(StructuredQueryExecutor.class), mock(StructuredAnswerRenderer.class));
+        CapabilityInvocationContext context = new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "arg-contract");
+
+        CapabilityArgumentValidation badLimit = capability.validateArguments(context, Map.of("limit", 3.5D));
+        CapabilityArgumentValidation badDistinct = capability.validateArguments(context, Map.of("distinct", "true"));
+        CapabilityArgumentValidation badFilter = capability.validateArguments(context, Map.of("filter", "FILING_DATE >= 2024"));
+        CapabilityArgumentValidation good = capability.validateArguments(context, Map.of(
+                "select", List.of("TITLE", Map.of("field", "FILING_DATE", "transforms", List.of("YEAR"))),
+                "filter", Map.of("field", "FILING_DATE", "operator", "GTE", "values", List.of("2024-01-01")),
+                "distinct", true,
+                "limit", 3
+        ));
+
+        assertFalse(badLimit.valid());
+        assertTrue(badLimit.message().contains("integer"));
+        assertFalse(badDistinct.valid());
+        assertTrue(badDistinct.message().contains("boolean"));
+        assertFalse(badFilter.valid());
+        assertTrue(badFilter.message().contains("object"));
+        assertTrue(good.valid());
     }
 
     private FieldDefinition field(String code, List<String> aliases, Set<FilterOperator> operators,
