@@ -5,6 +5,7 @@ import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentStopReason;
 import cn.iocoder.yudao.module.evidence.service.assemble.PlannedEvidenceRetriever;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -30,10 +31,14 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
     private static final int MAX_MERGED_EVIDENCE = 20;
 
     private final PlannedEvidenceRetriever retriever;
+    private final DomainEvidenceEntityMapperRegistry entityMapperRegistry;
     private final ExecutorService subqueryExecutor;
 
-    public KnowledgeRetrievalCapability(PlannedEvidenceRetriever retriever) {
+    @Autowired
+    public KnowledgeRetrievalCapability(PlannedEvidenceRetriever retriever,
+                                        DomainEvidenceEntityMapperRegistry entityMapperRegistry) {
         this.retriever = retriever;
+        this.entityMapperRegistry = entityMapperRegistry;
         AtomicInteger seq = new AtomicInteger();
         ThreadFactory factory = runnable -> {
             Thread thread = new Thread(runnable, "agent-retrieval-subquery-" + seq.incrementAndGet());
@@ -43,17 +48,22 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         this.subqueryExecutor = Executors.newFixedThreadPool(MAX_SUBQUERIES, factory);
     }
 
+    /** 单测/迁移期兼容构造：没有 Domain mapper 时只返回 Evidence，不制造 candidate entity。 */
+    public KnowledgeRetrievalCapability(PlannedEvidenceRetriever retriever) {
+        this(retriever, new DomainEvidenceEntityMapperRegistry(List.of()));
+    }
+
     @Override
     public CapabilityDefinition definition() {
-        return new CapabilityDefinition(NAME, "2",
-                "在当前已授权知识库中检索语义证据；内部自动完成 BM25/Vector/Fusion/Rerank。复杂问题可提供 focused subqueries，系统并行检索后合并证据；variants 只用于同一个查询的同义表达，不等同于子问题。",
+        return new CapabilityDefinition(NAME, "3",
+                "在当前已授权知识库中检索语义证据；内部自动完成 BM25/Vector/Fusion/Rerank。复杂问题可提供 focused subqueries，系统并行检索后合并证据；若当前 Domain 显式注册 Evidence->Entity 映射，还会输出 candidateEntityIds，但绝不会输出 verifiedEntityIds。",
                 Map.of(
                         "query", "必填。当前要补足的信息需求；不得从候选中发明新的硬事实。",
                         "subqueries", "可选。最多 4 个相互独立、共同覆盖当前信息需求的 focused 子查询。非空时系统并行执行这些子查询并合并结果。",
                         "variants", "可选。最多 5 个保持同一信息需求不变的同义检索表达；仅单查询模式使用。",
                         "topK", "可选。每个检索请求 1~20，默认 8；最终合并结果最多 20 条。",
                         "scope", "可选。CURRENT_KB 或 CONTEXT；只有用户明确指代上一轮已验证对象时才用 CONTEXT。"
-                ), Set.of("query"), "EVIDENCE_LIST_WITH_ACTIVITY", true,
+                ), Set.of("query"), "EVIDENCE_LIST_WITH_CANDIDATES_AND_ACTIVITY", true,
                 Set.of(), Set.of(), Set.of(), 8_000L, MAX_MERGED_EVIDENCE);
     }
 
@@ -136,15 +146,19 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         }
 
         List<Evidence> evidences = mergeRoundRobin(runs, MAX_MERGED_EVIDENCE);
+        List<Long> candidateEntityIds = entityMapperRegistry.candidateEntityIds(context.domainCode(), evidences);
         int matchedQueries = (int) runs.stream().filter(run -> !run.result().evidences().isEmpty()).count();
         String outcome = evidences.isEmpty() ? "NO_MATCHES" : "MATCHES";
         Map<String, Integer> perQueryCounts = new LinkedHashMap<>();
         for (QueryRun run : runs) perQueryCounts.put(run.query(), run.result().evidences().size());
 
-        Output output = new Output(evidences, List.copyOf(effectiveQueries), outcome,
+        Output output = new Output(evidences, candidateEntityIds, List.copyOf(effectiveQueries), outcome,
                 Map.copyOf(perQueryCounts), summary(evidences));
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("evidenceCount", evidences.size());
+        metadata.put("candidateEntityCount", candidateEntityIds.size());
+        metadata.put("candidateEntityMapped", entityMapperRegistry.hasMapper(context.domainCode()));
+        metadata.put("entityTrust", "CANDIDATE");
         metadata.put("retrievalOutcome", outcome);
         metadata.put("subqueryCount", runs.size());
         metadata.put("matchedSubqueryCount", matchedQueries);
@@ -212,7 +226,6 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
             rank++;
         } while (added && unique.size() < maxRows);
         List<Evidence> out = new ArrayList<>(unique.values());
-        // round-robin 保覆盖；相同覆盖层内保持分值高的证据靠前。
         out.sort(Comparator.comparingDouble(this::score).reversed());
         return List.copyOf(out.subList(0, Math.min(maxRows, out.size())));
     }
@@ -301,14 +314,22 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
     private record QueryRun(String query, String traceId, PlannedEvidenceRetriever.Result result) { }
 
     public record Output(List<Evidence> evidences,
+                         List<Long> candidateEntityIds,
                          List<String> executedQueries,
                          String retrievalOutcome,
                          Map<String, Integer> perQueryCounts,
                          String summary) implements AgentCapabilityOutput {
+        public Output {
+            evidences = evidences == null ? List.of() : List.copyOf(evidences);
+            candidateEntityIds = candidateEntityIds == null ? List.of() : List.copyOf(candidateEntityIds);
+            executedQueries = executedQueries == null ? List.of() : List.copyOf(executedQueries);
+            perQueryCounts = perQueryCounts == null ? Map.of() : Map.copyOf(perQueryCounts);
+        }
+
         @Override
         public String progressHash() {
             String queryHash = Integer.toHexString(String.valueOf(executedQueries).hashCode());
-            if (evidences == null || evidences.isEmpty()) return retrievalOutcome + ":" + queryHash;
+            if (evidences.isEmpty()) return retrievalOutcome + ":" + queryHash;
             String chunks = evidences.stream().map(e -> String.valueOf(e.getChunkId())).collect(Collectors.joining(","));
             return retrievalOutcome + ":" + queryHash + ":" + chunks;
         }
