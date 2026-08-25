@@ -68,10 +68,18 @@ public class StructuredPipelineExecutor {
             return StructuredPipelineResult.failure(source == null ? "structured source returned null"
                     : StrUtil.blankToDefault(source.getUnsupportedReason(), "structured source unavailable"));
         }
-        if (source.isTruncated()) return StructuredPipelineResult.failure("structured source is truncated; complete conclusion is unsafe");
+        if (source.isTruncated()) {
+            return StructuredPipelineResult.failure("structured source is truncated; complete conclusion is unsafe");
+        }
 
         List<StructuredQueryResult.Row> sourceRows = source.getRows() == null ? List.of() : source.getRows();
         int sourceEntityCount = sourceRows.size();
+
+        // 过滤本身也可能参与全集结论。除了 EXISTS（它的语义就是判断是否有值）之外，
+        // 任一过滤表达式在任一逻辑实体上缺值，都不能把“未知”静默当成“不匹配”。
+        String filterCompleteness = validateFilterCompleteness(plan.getDomainCode(), sourceRows, plan.getFilter());
+        if (filterCompleteness != null) return StructuredPipelineResult.failure(filterCompleteness);
+
         List<StructuredQueryResult.Row> filtered = new ArrayList<>();
         for (StructuredQueryResult.Row row : sourceRows) {
             if (plan.getFilter() == null || matches(plan.getDomainCode(), row, plan.getFilter())) filtered.add(row);
@@ -152,7 +160,7 @@ public class StructuredPipelineExecutor {
                     computed.value(), entry.getKey()));
         }
 
-        GroupSort sorted = sortGroups(plan.getDomainCode(), output, plan.getOrderBy());
+        GroupSort sorted = sortGroups(plan.getDomainCode(), output, plan.getOrderBy(), plan.getGroupBy());
         if (!sorted.success()) return StructuredPipelineResult.failure(sorted.message());
         output = sorted.rows();
         if (plan.getLimit() != null && plan.getLimit() > 0 && output.size() > plan.getLimit()) {
@@ -257,20 +265,37 @@ public class StructuredPipelineExecutor {
                 b.getEntityId() == null ? Long.MAX_VALUE : b.getEntityId());
     }
 
-    private GroupSort sortGroups(String domainCode, List<StructuredPipelineResult.Row> rows,
-                                 List<StructuredOrderSpec> specs) {
+    private GroupSort sortGroups(String domainCode,
+                                 List<StructuredPipelineResult.Row> rows,
+                                 List<StructuredOrderSpec> specs,
+                                 List<StructuredValueExpression> groupBy) {
         if (specs == null || specs.isEmpty()) return GroupSort.success(new ArrayList<>(rows));
-        List<StructuredPipelineResult.Row> out = new ArrayList<>(rows);
+        Set<String> groupKeys = new LinkedHashSet<>();
+        for (StructuredValueExpression expression : safe(groupBy)) groupKeys.add(expressionKey(expression));
         for (StructuredOrderSpec spec : specs) {
-            if (!spec.aggregateValue()) {
-                return GroupSort.failure("grouped result currently orders by aggregateValue; field dimensions remain deterministic insertion order");
+            if (spec.aggregateValue()) continue;
+            if (spec.value() == null) {
+                return GroupSort.failure("grouped result can only order by aggregateValue or a group-by expression");
+            }
+            String key = expressionKey(spec.value());
+            if (!groupKeys.contains(key)) {
+                return GroupSort.failure("grouped result order-by expression is not a group dimension: " + key);
             }
         }
+
+        List<StructuredPipelineResult.Row> out = new ArrayList<>(rows);
         out.sort((a, b) -> {
             for (StructuredOrderSpec spec : specs) {
-                double av = a.value() == null ? 0D : a.value();
-                double bv = b.value() == null ? 0D : b.value();
-                int cmp = Double.compare(av, bv);
+                int cmp;
+                if (spec.aggregateValue()) {
+                    double av = a.value() == null ? 0D : a.value();
+                    double bv = b.value() == null ? 0D : b.value();
+                    cmp = Double.compare(av, bv);
+                } else {
+                    String key = expressionKey(spec.value());
+                    String type = values.outputType(domainCode, spec.value());
+                    cmp = values.compare(a.fields().get(key), b.fields().get(key), type);
+                }
                 if (cmp != 0) return spec.direction() == SortDirection.ASC ? cmp : -cmp;
             }
             return String.valueOf(a.groupKey()).compareTo(String.valueOf(b.groupKey()));
@@ -327,6 +352,33 @@ public class StructuredPipelineExecutor {
                 yield values.matches(node.operator(), actual, node.expected(), type);
             }
         };
+    }
+
+    /**
+     * 非 EXISTS 条件需要真实字段值才能形成完整过滤结论。这里保守递归检查 AND/OR 中的每个条件，
+     * 宁可 fail-closed，也不把缺值默认为 false/true 后制造假全集。
+     */
+    private String validateFilterCompleteness(String domainCode,
+                                              List<StructuredQueryResult.Row> rows,
+                                              StructuredPredicateNode node) {
+        if (node == null) return null;
+        if (node.type() == StructuredPredicateNode.Type.AND || node.type() == StructuredPredicateNode.Type.OR) {
+            for (StructuredPredicateNode child : node.children()) {
+                String error = validateFilterCompleteness(domainCode, rows, child);
+                if (error != null) return error;
+            }
+            return null;
+        }
+        if (node.operator() == FilterOperator.EXISTS) return null;
+        int missing = 0;
+        for (StructuredQueryResult.Row row : rows) {
+            if (values.values(domainCode, row, node.value()).isEmpty()) missing++;
+        }
+        if (missing > 0) {
+            return "filter source is incomplete for " + expressionKey(node.value()) + " on " + missing
+                    + " of " + rows.size() + " entities; cannot prove complete filtered result";
+        }
+        return null;
     }
 
     private String validate(StructuredPipelinePlan plan) {
@@ -400,7 +452,9 @@ public class StructuredPipelineExecutor {
 
     private Set<String> referencedFields(StructuredPipelinePlan plan) {
         Set<String> fields = new LinkedHashSet<>();
-        for (StructuredValueExpression expression : allExpressions(plan)) if (expression != null && StrUtil.isNotBlank(expression.fieldCode())) fields.add(expression.fieldCode());
+        for (StructuredValueExpression expression : allExpressions(plan)) {
+            if (expression != null && StrUtil.isNotBlank(expression.fieldCode())) fields.add(expression.fieldCode());
+        }
         collectPredicateFields(plan.getFilter(), fields);
         return fields;
     }
@@ -439,7 +493,9 @@ public class StructuredPipelineExecutor {
         for (List<String> dimension : dimensions) {
             List<List<String>> next = new ArrayList<>();
             for (List<String> prefix : result) for (String value : dimension) {
-                List<String> tuple = new ArrayList<>(prefix); tuple.add(value); next.add(tuple);
+                List<String> tuple = new ArrayList<>(prefix);
+                tuple.add(value);
+                next.add(tuple);
             }
             result = next;
         }
