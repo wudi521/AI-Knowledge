@@ -5,9 +5,12 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -38,17 +41,17 @@ public class StructuredValueEvaluator {
         if (expression == null || StrUtil.isBlank(expression.fieldCode())) return Validation.invalid("value field is required");
         FieldDefinition field = fieldRegistry.byCode(domainCode, expression.fieldCode()).orElse(null);
         if (field == null) return Validation.invalid("field is not registered: " + expression.fieldCode());
-        if (expression.explode() && !field.isMultiValue()) {
-            // 单值字段 explode 没有副作用，允许执行，避免 Planner 因无害参数失败。
-        }
         Set<StructuredValueTransform> allowed = field.getAllowedTransforms() == null ? Set.of() : field.getAllowedTransforms();
+        String type = field.getValueType();
         for (StructuredValueTransform transform : expression.transforms()) {
             if (!allowed.contains(transform)) {
                 return Validation.invalid("transform " + transform + " is not allowed for field " + field.getFieldCode());
             }
-        }
-        String type = field.getValueType();
-        for (StructuredValueTransform transform : expression.transforms()) {
+            if (field.isMultiValue() && !expression.explode()
+                    && transform != StructuredValueTransform.VALUE_COUNT) {
+                return Validation.invalid("transform " + transform + " on multi-value field "
+                        + field.getFieldCode() + " requires explode=true");
+            }
             if (!supportsInput(transform, type, field.isMultiValue())) {
                 return Validation.invalid("transform " + transform + " does not accept " + type + " on " + field.getFieldCode());
             }
@@ -67,8 +70,12 @@ public class StructuredValueEvaluator {
         boolean valueCount = expression.transforms().contains(StructuredValueTransform.VALUE_COUNT);
         if (valueCount) {
             source = List.of(String.valueOf(splitMulti(raw).size()));
-        } else if (expression.explode() || validation.field().isMultiValue()) {
+        } else if (validation.field().isMultiValue() && expression.explode()) {
             source = splitMulti(raw);
+        } else if (validation.field().isMultiValue()) {
+            // 未显式 explode 时把多值字段视为一个“集合值”，而不是偷偷按元素展开。
+            // canonicalMulti 只用于确定性比较/去重/展示，不改变 trusted scope。
+            source = List.of(canonicalMulti(raw));
         } else {
             source = List.of(raw.trim());
         }
@@ -200,6 +207,12 @@ public class StructuredValueEvaluator {
         return values.isEmpty() ? List.of(raw.trim()) : List.copyOf(values);
     }
 
+    private String canonicalMulti(String raw) {
+        List<String> items = new ArrayList<>(new LinkedHashSet<>(splitMulti(raw)));
+        items.sort(Comparator.comparing(v -> v.toLowerCase(Locale.ROOT)));
+        return String.join("、", items);
+    }
+
     /**
      * 保守姓名姓氏解析：先去掉姓名内部空白判断中文姓名，识别常见复姓；否则对拉丁空格姓名取末 token。
      * 无法形成稳定 token 时返回 null，由调用方完整性规则 fail-closed。
@@ -224,12 +237,23 @@ public class StructuredValueEvaluator {
 
     private LocalDate date(String value) {
         if (StrUtil.isBlank(value)) return null;
+        String text = value.trim();
         for (DateTimeFormatter formatter : List.of(
                 DateTimeFormatter.ISO_LOCAL_DATE,
                 DateTimeFormatter.ofPattern("yyyy/MM/dd"),
                 DateTimeFormatter.ofPattern("yyyy.MM.dd"),
                 DateTimeFormatter.BASIC_ISO_DATE)) {
-            try { return LocalDate.parse(value.trim(), formatter); }
+            try { return LocalDate.parse(text, formatter); }
+            catch (DateTimeParseException ignore) { }
+        }
+        try { return LocalDateTime.parse(text, DateTimeFormatter.ISO_LOCAL_DATE_TIME).toLocalDate(); }
+        catch (DateTimeParseException ignore) { }
+        try { return OffsetDateTime.parse(text, DateTimeFormatter.ISO_OFFSET_DATE_TIME).toLocalDate(); }
+        catch (DateTimeParseException ignore) { }
+        for (DateTimeFormatter formatter : List.of(
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
+                DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss"))) {
+            try { return LocalDateTime.parse(text, formatter).toLocalDate(); }
             catch (DateTimeParseException ignore) { }
         }
         return null;
