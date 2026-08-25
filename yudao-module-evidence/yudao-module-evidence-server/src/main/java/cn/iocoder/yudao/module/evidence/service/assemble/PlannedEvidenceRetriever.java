@@ -136,11 +136,6 @@ public class PlannedEvidenceRetriever {
             return new Result(Status.FAILED, message, List.of(), null, null, null, null, null);
         }
 
-        /** 仅为旧测试/调用兼容；合法空结果，绝不表示失败。 */
-        public static Result empty() {
-            return new Result(Status.EMPTY, null, List.of(), null, null, null, null, null);
-        }
-
         public boolean failed() {
             return status == Status.FAILED;
         }
