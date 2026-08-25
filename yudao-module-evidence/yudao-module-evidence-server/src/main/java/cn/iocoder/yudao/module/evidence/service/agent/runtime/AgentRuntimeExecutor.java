@@ -14,7 +14,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -26,7 +25,7 @@ import java.util.concurrent.CompletableFuture;
  *
  * <p>Responsibilities are deliberately generic: DAG validation, dependency scheduling, scope-safe
  * capability invocation, budget enforcement, bounded Runtime retry (delegated to CapabilityInvoker),
- * and Activity/Reference/Provenance recording. It contains no patent/customer-service/etc. intent branch.</p>
+ * and Activity/Reference/Provenance recording. It contains no domain query-intent branch.</p>
  */
 @Component
 public class AgentRuntimeExecutor {
@@ -53,8 +52,6 @@ public class AgentRuntimeExecutor {
         List<ActivityRecord> activities = new ArrayList<>();
         List<ReferenceRecord> references = new ArrayList<>();
         List<ProvenanceRecord> provenance = new ArrayList<>();
-        Map<String, PlanNode> byId = new LinkedHashMap<>();
-        for (PlanNode node : plan.nodes()) byId.put(node.id(), node);
 
         while (results.size() < plan.nodes().size()) {
             if (System.currentTimeMillis() - runtimeStart >= safeBudget.maxElapsedMs()) {
@@ -168,6 +165,8 @@ public class AgentRuntimeExecutor {
             String referenceId = StrUtil.blankToDefault(plan.planId(), "plan") + ":" + node.id();
             AgentCapabilityOutput output = result.data() instanceof AgentCapabilityOutput o ? o : null;
             List<Evidence> evidences = output == null || output.evidences() == null ? List.of() : output.evidences();
+            List<Long> candidateIds = output == null || output.candidateEntityIds() == null
+                    ? List.of() : output.candidateEntityIds().stream().filter(Objects::nonNull).distinct().toList();
             List<Long> verifiedIds = output == null || output.verifiedEntityIds() == null
                     ? List.of() : output.verifiedEntityIds().stream().filter(Objects::nonNull).distinct().toList();
             String summary = output == null
@@ -175,7 +174,7 @@ public class AgentRuntimeExecutor {
                     : StrUtil.maxLength(StrUtil.blankToDefault(output.summary(), String.valueOf(result.metadata())), 1200);
             String deterministicAnswer = output == null ? null : output.deterministicAnswer();
             reference = new ReferenceRecord(referenceId, plan.planId(), node.id(), node.capability(),
-                    result.status(), summary, deterministicAnswer, evidences, verifiedIds, result.metadata());
+                    result.status(), summary, deterministicAnswer, evidences, candidateIds, verifiedIds, result.metadata());
             provenance = new ProvenanceRecord(referenceId, plan.planId(), node.id(), node.capability(),
                     context == null ? null : context.tenantId(),
                     context == null ? null : context.userId(),
