@@ -10,7 +10,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** QueryIntentV3 白名单校验；任何未注册字段/指标/运算符都禁止进入执行层。 */
+/** QueryIntentV3 白名单校验；任何未注册字段、指标、运算符都禁止进入执行层。 */
 @Component
 public class QueryIntentValidatorV3 {
 
@@ -43,8 +43,17 @@ public class QueryIntentValidatorV3 {
         });
 
         QueryIntentV3.Selection selection = intent.getSelection();
-        if (selection.getType() == QueryIntentV3.SelectionType.STRUCTURED_FILTER
-                || selection.getType() == QueryIntentV3.SelectionType.EXACT_ENTITY) {
+        if (selection.getType() == QueryIntentV3.SelectionType.EXACT_ENTITY) {
+            if (StrUtil.isBlank(selection.getField()) || !allowedFields.contains(selection.getField().toUpperCase())) {
+                return Validation.failure("INVALID_SELECTION_FIELD");
+            }
+            // EXACT_ENTITY 已经表达“精确相等”的业务语义，运算符由系统固定为 EQ，不能要求模型决定。
+            if (selection.getValues() == null || selection.getValues().isEmpty()) {
+                return Validation.failure("MISSING_EXACT_VALUE");
+            }
+        }
+
+        if (selection.getType() == QueryIntentV3.SelectionType.STRUCTURED_FILTER) {
             if (StrUtil.isBlank(selection.getField()) || !allowedFields.contains(selection.getField().toUpperCase())) {
                 return Validation.failure("INVALID_SELECTION_FIELD");
             }
@@ -54,11 +63,8 @@ public class QueryIntentValidatorV3 {
             } catch (Exception e) {
                 return Validation.failure("INVALID_FILTER_OPERATOR");
             }
-            if (selection.getType() == QueryIntentV3.SelectionType.EXACT_ENTITY
-                    && (selection.getValues() == null || selection.getValues().isEmpty())) {
-                return Validation.failure("MISSING_EXACT_VALUE");
-            }
         }
+
         if ((selection.getType() == QueryIntentV3.SelectionType.SEMANTIC
                 || selection.getType() == QueryIntentV3.SelectionType.EXACT_TEXT)
                 && StrUtil.isBlank(selection.getQuery())) {
@@ -85,7 +91,12 @@ public class QueryIntentValidatorV3 {
     }
 
     public record Validation(boolean valid, String reasonCode) {
-        public static Validation success() { return new Validation(true, null); }
-        public static Validation failure(String reasonCode) { return new Validation(false, reasonCode); }
+        public static Validation success() {
+            return new Validation(true, null);
+        }
+
+        public static Validation failure(String reasonCode) {
+            return new Validation(false, reasonCode);
+        }
     }
 }
