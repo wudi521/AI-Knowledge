@@ -29,6 +29,15 @@ public record CapabilityInvocationContext(Long tenantId,
                 Set.of(), Set.of(), List.of(), "default", false);
     }
 
+    /**
+     * 同一 Agent 请求内，只有能力返回的 verifiedEntityIds 才能扩充这里的 trusted scope。
+     * 其他系统范围保持服务端原值，Planner 无权覆盖。
+     */
+    public CapabilityInvocationContext withContextEntityIds(List<Long> entityIds) {
+        return new CapabilityInvocationContext(tenantId, userId, kbId, domainCode, traceId,
+                permissions, kbCapabilities, entityIds, environment, writeAllowed);
+    }
+
     private static Set<String> immutable(Set<String> source) {
         return source == null ? Collections.emptySet()
                 : Collections.unmodifiableSet(new LinkedHashSet<>(source));
