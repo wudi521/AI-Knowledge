@@ -57,15 +57,21 @@ public class PlannedEvidenceRetriever {
     private Result execute(RetrievalSearchReqDTO req) {
         try {
             CommonResult<RetrievalSearchRespDTO> response = retrievalApi.search(req);
-            if (response == null || response.getCode() == null || response.getCode() != 0 || response.getData() == null) {
-                return Result.empty();
+            if (response == null) {
+                return Result.failed("retrieval RPC returned null response");
+            }
+            if (response.getCode() == null || response.getCode() != 0 || response.getData() == null) {
+                return Result.failed("retrieval RPC failed with code=" + response.getCode());
             }
             RetrievalSearchRespDTO data = response.getData();
             List<RetrievalResultDTO> rows = data.getResults() == null ? Collections.emptyList() : data.getResults();
             List<Double> raw = new ArrayList<>(rows.size());
             for (RetrievalResultDTO row : rows) {
-                if (row.getRerankScore() != null && row.getRerankScore() >= 0) raw.add(row.getRerankScore().doubleValue());
-                else raw.add(row.getRrfScore());
+                if (row.getRerankScore() != null && row.getRerankScore() >= 0) {
+                    raw.add(row.getRerankScore().doubleValue());
+                } else {
+                    raw.add(row.getRrfScore() == null ? 0D : row.getRrfScore());
+                }
             }
             List<Double> normalized = EvidenceSimilarity.minMaxNormalize(raw);
             List<Evidence> evidences = new ArrayList<>(rows.size());
@@ -85,18 +91,43 @@ public class PlannedEvidenceRetriever {
                         .chunkMetadata(row.getChunkMetadata())
                         .build());
             }
-            return new Result(evidences, data.getAnalysis(), data.getChannels(), data.getTotalHits(), data.getTotalHitsExact());
+            Status status = evidences.isEmpty() ? Status.EMPTY : Status.MATCHES;
+            return new Result(status, null, evidences, data.getAnalysis(), data.getChannels(),
+                    data.getTotalHits(), data.getTotalHitsExact(), data.getCandidateTotalHits());
         } catch (Exception e) {
             log.warn("[planned-evidence][retrieval failed: {}]", e.getMessage());
-            return Result.empty();
+            return Result.failed("retrieval source failure: " + e.getClass().getSimpleName());
         }
     }
 
-    public record Result(List<Evidence> evidences,
+    public enum Status {
+        MATCHES,
+        EMPTY,
+        FAILED
+    }
+
+    public record Result(Status status,
+                         String errorMessage,
+                         List<Evidence> evidences,
                          RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis,
                          RetrievalSearchRespDTO.RetrievalChannelStatDTO channels,
                          Long totalHits,
-                         Boolean totalHitsExact) {
-        public static Result empty() { return new Result(List.of(), null, null, null, null); }
+                         Boolean totalHitsExact,
+                         Long candidateTotalHits) {
+        public Result {
+            evidences = evidences == null ? List.of() : List.copyOf(evidences);
+        }
+
+        public static Result failed(String message) {
+            return new Result(Status.FAILED, message, List.of(), null, null, null, null, null);
+        }
+
+        public boolean failed() {
+            return status == Status.FAILED;
+        }
+
+        public boolean empty() {
+            return status == Status.EMPTY;
+        }
     }
 }
