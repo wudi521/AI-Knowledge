@@ -33,8 +33,8 @@ import java.util.stream.Collectors;
 /**
  * Domain Registry 驱动的通用结构化能力。
  *
- * <p>Spring 运行时优先进入组合式 StructuredPipeline；旧 StructuredQueryExecutor 只保留给迁移期
- * 非 Spring 单测/兼容路径，避免一次替换破坏 V3 对照测试。</p>
+ * <p>Spring 正式运行必须使用组合式 StructuredPipeline；旧 StructuredQueryExecutor 仅由 5 参数构造
+ * 保留给迁移期纯 Java 单测/兼容验证，生产环境不允许因 Bean 缺失静默退回旧执行器。</p>
  */
 @Component
 public class StructuredQueryCapability implements KnowledgeCapability {
@@ -45,10 +45,25 @@ public class StructuredQueryCapability implements KnowledgeCapability {
     private final DomainEntityRegistry entityRegistry;
     private final StructuredQueryExecutor executor;
     private final StructuredAnswerRenderer renderer;
+    private final StructuredPipelineCapabilityDelegate pipelineDelegate;
 
-    @Autowired(required = false)
-    private StructuredPipelineCapabilityDelegate pipelineDelegate;
+    /** Spring 正式构造：Pipeline 是强依赖，缺失应启动失败而不是退回 legacy。 */
+    @Autowired
+    public StructuredQueryCapability(DomainFieldRegistry fieldRegistry,
+                                     DomainMetricRegistry metricRegistry,
+                                     DomainEntityRegistry entityRegistry,
+                                     StructuredQueryExecutor executor,
+                                     StructuredAnswerRenderer renderer,
+                                     StructuredPipelineCapabilityDelegate pipelineDelegate) {
+        this.fieldRegistry = fieldRegistry;
+        this.metricRegistry = metricRegistry;
+        this.entityRegistry = entityRegistry;
+        this.executor = executor;
+        this.renderer = renderer;
+        this.pipelineDelegate = Objects.requireNonNull(pipelineDelegate, "pipelineDelegate");
+    }
 
+    /** 仅供迁移期旧单测/非 Spring 兼容验证；正式运行不使用。 */
     public StructuredQueryCapability(DomainFieldRegistry fieldRegistry,
                                      DomainMetricRegistry metricRegistry,
                                      DomainEntityRegistry entityRegistry,
@@ -59,6 +74,7 @@ public class StructuredQueryCapability implements KnowledgeCapability {
         this.entityRegistry = entityRegistry;
         this.executor = executor;
         this.renderer = renderer;
+        this.pipelineDelegate = null;
     }
 
     @Override
