@@ -13,6 +13,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -29,9 +30,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 @Component
 public class CapabilityInvoker {
+    /**
+     * 系统范围和执行预算永远由服务端注入。这里使用去下划线/连字符并转小写后的规范名，
+     * 防止 Planner 通过 tenant_id / TenantId / KB-ID 等变体绕过保护。
+     */
     private static final Set<String> PROTECTED_SCOPE_ARGUMENTS = Set.of(
-            "tenantId", "tenant_id", "userId", "user_id", "kbId", "kb_id",
-            "domainCode", "domain_code", "traceId", "trace_id", "permissions", "environment"
+            "tenantid", "userid", "kbid", "domaincode", "traceid", "requestid",
+            "permissions", "kbcapabilities", "contextentityids", "environment", "writeallowed",
+            "timeoutms", "maxrows", "maxsteps", "maxllmcalls", "maxelapsedms"
     );
 
     private final CapabilityRegistry registry;
@@ -64,13 +70,31 @@ public class CapabilityInvoker {
                     "capability unavailable in current context: " + capabilityName);
         }
         Map<String, Object> safeArguments = arguments == null ? Collections.emptyMap() : new LinkedHashMap<>(arguments);
+        CapabilityDefinition definition = capability.definition();
+
         for (String key : safeArguments.keySet()) {
-            if (PROTECTED_SCOPE_ARGUMENTS.contains(key)) {
+            if (key == null || key.isBlank()) {
+                return PreparedCall.rejected(AgentStopReason.INVALID_CAPABILITY_CALL,
+                        "capability argument name must not be blank");
+            }
+            if (PROTECTED_SCOPE_ARGUMENTS.contains(normalizeArgumentName(key))) {
                 return PreparedCall.rejected(AgentStopReason.INVALID_CAPABILITY_CALL,
                         "planner must not provide protected scope argument: " + key);
             }
         }
-        for (String required : capability.definition().requiredArguments()) {
+
+        // 新版 capability 的 argumentSchema 同时是 Planner 契约与 Invoker 参数白名单。
+        // 旧纵切兼容构造器 schema 为空时不做未知参数拦截，避免破坏历史测试/迁移能力。
+        if (definition.argumentSchema() != null && !definition.argumentSchema().isEmpty()) {
+            for (String key : safeArguments.keySet()) {
+                if (!definition.argumentSchema().containsKey(key)) {
+                    return PreparedCall.rejected(AgentStopReason.INVALID_CAPABILITY_CALL,
+                            "unknown capability argument: " + key);
+                }
+            }
+        }
+
+        for (String required : definition.requiredArguments()) {
             if (!safeArguments.containsKey(required) || safeArguments.get(required) == null) {
                 return PreparedCall.rejected(AgentStopReason.INVALID_CAPABILITY_CALL,
                         "missing required capability argument: " + required);
@@ -148,6 +172,14 @@ public class CapabilityInvoker {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
+    }
+
+    private String normalizeArgumentName(String key) {
+        if (key == null) return "";
+        return key.replace("_", "")
+                .replace("-", "")
+                .trim()
+                .toLowerCase(Locale.ROOT);
     }
 
     @PreDestroy
