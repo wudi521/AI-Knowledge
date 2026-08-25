@@ -51,14 +51,22 @@ public final class MultiValueSupport {
     }
 
     public static String canonical(String raw, FieldDefinition field) {
-        List<String> items = new ArrayList<>(new LinkedHashSet<>(split(raw, field)));
+        return canonical(raw, field == null ? null : field.getMultiValueDelimiterRegex());
+    }
+
+    public static String canonical(String raw, String delimiterRegex) {
+        List<String> items = new ArrayList<>(new LinkedHashSet<>(split(raw, delimiterRegex)));
         items.sort(String.CASE_INSENSITIVE_ORDER);
         return String.join("、", items);
     }
 
     public static Set<String> normalizedSet(String raw, FieldDefinition field) {
+        return normalizedSet(raw, field == null ? null : field.getMultiValueDelimiterRegex());
+    }
+
+    public static Set<String> normalizedSet(String raw, String delimiterRegex) {
         Set<String> normalized = new LinkedHashSet<>();
-        for (String item : split(raw, field)) {
+        for (String item : split(raw, delimiterRegex)) {
             String value = normalizeComparable(item);
             if (StrUtil.isNotBlank(value)) normalized.add(value);
         }
