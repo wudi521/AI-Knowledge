@@ -20,8 +20,25 @@ public record CapabilityResult(CapabilityResultStatus status,
                                String message) {
     public CapabilityResult {
         status = status == null ? CapabilityResultStatus.FAILED : status;
-        metadata = metadata == null ? Collections.emptyMap()
-                : Collections.unmodifiableMap(new LinkedHashMap<>(metadata));
+        Map<String, Object> safeMetadata = metadata == null ? new LinkedHashMap<>()
+                : new LinkedHashMap<>(metadata);
+
+        // 统一在 Tool Result 边界归一化结果形态，避免每个领域能力各自发明 EMPTY/PARTIAL 规则。
+        // authoritativeEmpty 只表示“这个 Tool 在其声明范围内权威为空”，不等于 OriginalGoal 已证明不存在。
+        if (status == CapabilityResultStatus.SUCCESS) {
+            boolean authoritativeEmpty = Boolean.TRUE.equals(safeMetadata.get("authoritativeEmpty"));
+            boolean explicitPartial = Boolean.FALSE.equals(safeMetadata.get("outputComplete"))
+                    || Boolean.TRUE.equals(safeMetadata.get("partial"));
+            boolean retrievalNoMatches = "NO_MATCHES".equalsIgnoreCase(String.valueOf(safeMetadata.get("retrievalOutcome")))
+                    || "EMPTY".equalsIgnoreCase(String.valueOf(safeMetadata.get("resultStatus")));
+            if (authoritativeEmpty || retrievalNoMatches) {
+                status = CapabilityResultStatus.EMPTY;
+            } else if (explicitPartial) {
+                status = CapabilityResultStatus.PARTIAL;
+            }
+        }
+
+        metadata = Collections.unmodifiableMap(safeMetadata);
         if (status != CapabilityResultStatus.FAILED) {
             failureType = null;
             stopReason = null;
@@ -64,6 +81,10 @@ public record CapabilityResult(CapabilityResultStatus status,
 
     public static CapabilityResult empty(Map<String, Object> metadata) {
         return new CapabilityResult(CapabilityResultStatus.EMPTY, null, metadata, null, null, null);
+    }
+
+    public static CapabilityResult empty(Object data, String message, Map<String, Object> metadata) {
+        return new CapabilityResult(CapabilityResultStatus.EMPTY, data, metadata, null, null, message);
     }
 
     public static CapabilityResult failure(AgentStopReason stopReason, String message) {
