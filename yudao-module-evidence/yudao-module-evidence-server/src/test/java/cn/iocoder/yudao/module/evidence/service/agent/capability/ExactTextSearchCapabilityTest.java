@@ -18,7 +18,7 @@ import static org.mockito.Mockito.when;
 class ExactTextSearchCapabilityTest {
 
     @Test
-    void exactTextMustUseExactRetrieverAndTrustedContextScope() {
+    void exactTextUsesTrustedContextAndExplicitDomainCandidateMapping() {
         PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
         Evidence evidence = Evidence.builder()
                 .chunkId(101L).documentId("74").documentName("测试专利")
@@ -28,7 +28,14 @@ class ExactTextSearchCapabilityTest {
                 1L, 2L, "ag-exact")).thenReturn(new PlannedEvidenceRetriever.Result(
                 List.of(evidence), null, null, 1L, true));
 
-        ExactTextSearchCapability capability = new ExactTextSearchCapability(retriever);
+        DomainEvidenceEntityMapper mapper = new DomainEvidenceEntityMapper() {
+            @Override public String domainCode() { return "PATENT"; }
+            @Override public Long candidateEntityId(Evidence source) {
+                return source == null || source.getDocumentId() == null ? null : Long.valueOf(source.getDocumentId());
+            }
+        };
+        ExactTextSearchCapability capability = new ExactTextSearchCapability(
+                retriever, new DomainEvidenceEntityMapperRegistry(List.of(mapper)));
         CapabilityInvocationContext context = new CapabilityInvocationContext(
                 1L, 2L, 6L, "PATENT", "ag-exact", java.util.Set.of(), java.util.Set.of(),
                 List.of(74L), "test", false);
@@ -39,9 +46,30 @@ class ExactTextSearchCapabilityTest {
         ExactTextSearchCapability.Output output = (ExactTextSearchCapability.Output) result.data();
         assertEquals(1, output.evidences().size());
         assertEquals("这里逐字包含磁涌技术", output.evidences().get(0).getContent());
+        assertEquals(List.of(74L), output.candidateEntityIds());
         assertTrue(output.verifiedEntityIds().isEmpty(), "原文命中不是新的 trusted entity 来源");
+        assertEquals(true, result.metadata().get("candidateEntityMapped"));
         verify(retriever).exactText("磁涌", List.of(6L), List.of(74L), 20,
                 1L, 2L, "ag-exact");
+    }
+
+    @Test
+    void domainWithoutMapperDoesNotGuessExactTextEntityId() {
+        PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
+        Evidence evidence = Evidence.builder().chunkId(102L).documentId("74").content("逐字命中").build();
+        when(retriever.exactText("x", List.of(6L), null, 20,
+                1L, 2L, "ag-exact-no-map")).thenReturn(new PlannedEvidenceRetriever.Result(
+                List.of(evidence), null, null, 1L, true));
+
+        ExactTextSearchCapability capability = new ExactTextSearchCapability(retriever);
+        CapabilityResult result = capability.execute(
+                new CapabilityInvocationContext(1L, 2L, 6L, "CONTRACT", "ag-exact-no-map"),
+                Map.of("text", "x"));
+        ExactTextSearchCapability.Output output = (ExactTextSearchCapability.Output) result.data();
+
+        assertTrue(output.candidateEntityIds().isEmpty());
+        assertTrue(output.verifiedEntityIds().isEmpty());
+        assertEquals(false, result.metadata().get("candidateEntityMapped"));
     }
 
     @Test
