@@ -18,6 +18,7 @@ import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredAnswer
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryExecutor;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -31,7 +32,9 @@ import java.util.stream.Collectors;
 
 /**
  * Domain Registry 驱动的通用结构化能力。
- * 不理解自然语言 Intent，只执行 Planner 已选择的白名单字段/指标/操作。
+ *
+ * <p>Spring 运行时优先进入组合式 StructuredPipeline；旧 StructuredQueryExecutor 只保留给迁移期
+ * 非 Spring 单测/兼容路径，避免一次替换破坏 V3 对照测试。</p>
  */
 @Component
 public class StructuredQueryCapability implements KnowledgeCapability {
@@ -42,6 +45,9 @@ public class StructuredQueryCapability implements KnowledgeCapability {
     private final DomainEntityRegistry entityRegistry;
     private final StructuredQueryExecutor executor;
     private final StructuredAnswerRenderer renderer;
+
+    @Autowired(required = false)
+    private StructuredPipelineCapabilityDelegate pipelineDelegate;
 
     public StructuredQueryCapability(DomainFieldRegistry fieldRegistry,
                                      DomainMetricRegistry metricRegistry,
@@ -57,24 +63,21 @@ public class StructuredQueryCapability implements KnowledgeCapability {
 
     @Override
     public CapabilityDefinition definition() {
-        return new CapabilityDefinition(NAME, "1",
-                "对当前知识库完整结构化数据执行字段投影、精确/白名单过滤、计数、聚合或 Top-N。字段和指标必须来自当前 Domain Registry。",
-                Map.ofEntries(
-                        Map.entry("task", "必填：PROJECT/LIST/COUNT/AGGREGATE/TOP_N。"),
-                        Map.entry("field", "可选过滤字段 code/别名。"),
-                        Map.entry("operator", "有 field 时可选：EQ/NE/CONTAINS/STARTS_WITH/IN/EXISTS/GT/GTE/LT/LTE/BETWEEN。"),
-                        Map.entry("values", "过滤值，字符串或数组；EXISTS 可为空。"),
-                        Map.entry("projections", "PROJECT/LIST 的返回字段 code/别名数组。"),
-                        Map.entry("metric", "COUNT/AGGREGATE/TOP_N 的已注册指标 code/别名。"),
-                        Map.entry("operation", "AGGREGATE：SUM/AVG/MIN/MAX/COUNT/COUNT_DISTINCT。COUNT 默认 COUNT。"),
-                        Map.entry("sort", "TOP_N：ASC/DESC，默认 DESC。"),
-                        Map.entry("limit", "输出上限 1~50；只限制展示，不用于伪造全集统计。")
-                ), Set.of("task"), "STRUCTURED_RESULT", true,
+        Map<String, String> schema = pipelineDelegate == null ? legacyArgumentSchema() : pipelineDelegate.argumentSchema();
+        return new CapabilityDefinition(NAME, "2",
+                "对当前知识库完整结构化数据执行可组合的数据管道：字段读取/安全变换、AND/OR 过滤、多值展开、去重、分组、聚合、排序与 limit。只能使用 Domain Schema 已声明能力。",
+                schema, Set.of(), "STRUCTURED_RESULT", true,
                 Set.of(), Set.of(), Set.of(), 8_000L, 50);
     }
 
     @Override
     public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+        if (pipelineDelegate != null) return pipelineDelegate.execute(context, arguments);
+        return executeLegacy(context, arguments);
+    }
+
+    /** 第一纵切兼容执行；线上 Spring Agent 已不走此路径。 */
+    private CapabilityResult executeLegacy(CapabilityInvocationContext context, Map<String, Object> arguments) {
         if (context == null || context.kbId() == null || StrUtil.isBlank(context.domainCode())) {
             return CapabilityResult.failure(AgentStopReason.PERMISSION_DENIED, "structured scope is incomplete");
         }
@@ -123,7 +126,7 @@ public class StructuredQueryCapability implements KnowledgeCapability {
         }
 
         StructuredQueryPlan plan = StructuredQueryPlan.builder()
-                .route("AGENT_CAPABILITY")
+                .route("AGENT_CAPABILITY_LEGACY")
                 .queryType(queryType)
                 .domainCode(context.domainCode())
                 .entityType(metric.getEntityType())
@@ -160,6 +163,20 @@ public class StructuredQueryCapability implements KnowledgeCapability {
                 "task", task.name(),
                 "metricCode", metric.getMetricCode()
         ));
+    }
+
+    private Map<String, String> legacyArgumentSchema() {
+        return Map.ofEntries(
+                Map.entry("task", "PROJECT/LIST/COUNT/AGGREGATE/TOP_N。"),
+                Map.entry("field", "可选过滤字段 code/别名。"),
+                Map.entry("operator", "过滤操作符。"),
+                Map.entry("values", "过滤值。"),
+                Map.entry("projections", "返回字段数组。"),
+                Map.entry("metric", "已注册指标。"),
+                Map.entry("operation", "聚合操作。"),
+                Map.entry("sort", "ASC/DESC。"),
+                Map.entry("limit", "1~50。")
+        );
     }
 
     private String render(Task task, StructuredQueryPlan plan, MetricDefinition metric,
