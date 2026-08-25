@@ -19,6 +19,11 @@ public interface AgentGoalEvaluator {
                         List<Evidence> evidences,
                         CapabilityInvocationContext context);
 
+    /** 生产 LLM evaluator 返回 true；兼容测试 evaluator 不占模型预算。 */
+    default boolean consumesLlmCall() {
+        return true;
+    }
+
     enum Verdict {
         SATISFIED,
         INSUFFICIENT,
@@ -46,7 +51,18 @@ public interface AgentGoalEvaluator {
 
     /** 仅供旧单测/非 Spring 构造兼容；正式运行必须注入独立 evaluator。 */
     static AgentGoalEvaluator trustPlanner() {
-        return (goal, observations, deterministicAnswers, evidences, context) ->
-                Evaluation.satisfied("compatibility evaluator trusts planner decision");
+        return new AgentGoalEvaluator() {
+            @Override
+            public Evaluation evaluate(String goal, List<AgentObservation> observations,
+                                       List<String> deterministicAnswers, List<Evidence> evidences,
+                                       CapabilityInvocationContext context) {
+                return Evaluation.satisfied("compatibility evaluator trusts planner decision");
+            }
+
+            @Override
+            public boolean consumesLlmCall() {
+                return false;
+            }
+        };
     }
 }
