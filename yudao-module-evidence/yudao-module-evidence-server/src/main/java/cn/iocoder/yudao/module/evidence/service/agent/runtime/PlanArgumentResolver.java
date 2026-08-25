@@ -12,8 +12,9 @@ import java.util.Map;
  * Resolves explicit DAG data references in node arguments.
  *
  * <p>Reference shape: {"$ref":"node-a","selector":"verifiedEntityIds"}.
- * Supported selectors: data, metadata, status, verifiedEntityIds, deterministicAnswer,
- * evidences and summary. No expression language or arbitrary reflection is allowed.</p>
+ * Supported selectors are deliberately finite: data, metadata, status, candidateEntityIds,
+ * verifiedEntityIds, deterministicAnswer, evidences and summary. No expression language or
+ * arbitrary reflection is allowed.</p>
  */
 public class PlanArgumentResolver {
 
@@ -55,6 +56,7 @@ public class PlanArgumentResolver {
             case "data" -> result.data();
             case "metadata" -> result.metadata();
             case "status" -> result.status().name();
+            case "candidateEntityIds" -> output(result).candidateEntityIds();
             case "verifiedEntityIds" -> output(result).verifiedEntityIds();
             case "deterministicAnswer" -> output(result).deterministicAnswer();
             case "evidences" -> output(result).evidences();
