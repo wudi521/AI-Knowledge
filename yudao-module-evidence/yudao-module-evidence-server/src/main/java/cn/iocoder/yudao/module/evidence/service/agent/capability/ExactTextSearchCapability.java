@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.evidence.service.agent.AgentStopReason;
 import cn.iocoder.yudao.module.evidence.service.assemble.PlannedEvidenceRetriever;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -21,10 +22,18 @@ public class ExactTextSearchCapability implements KnowledgeCapability {
 
     @Override
     public CapabilityDefinition definition() {
-        return new CapabilityDefinition(NAME, "1", "在当前授权知识库中执行逐字原文检索。仅用于用户明确要求‘原文包含/逐字出现/精确短语’的场景。",
+        return new CapabilityDefinition(NAME, "2", "在当前授权知识库中执行逐字原文检索。仅用于用户明确要求‘原文包含/逐字出现/精确短语’的场景。",
                 Map.of("text", "必填。需要逐字匹配的原文短语。", "topK", "可选。1~50，默认 20。",
                         "scope", "可选。CURRENT_KB 或 CONTEXT；CONTEXT 只检索上一轮已验证对象集合。"),
                 Set.of("text"), "EXACT_TEXT_EVIDENCE", true, Set.of(), Set.of(), Set.of(), 8_000L, 50);
+    }
+
+    @Override
+    public String canonicalExecutionKey(CapabilityInvocationContext context, Map<String, Object> arguments) {
+        String text = normalizeText(arguments == null ? null : arguments.get("text"));
+        String scope = arguments == null ? "CURRENT_KB" : String.valueOf(arguments.getOrDefault("scope", "CURRENT_KB")).trim().toUpperCase();
+        int topK = intValue(arguments == null ? null : arguments.get("topK"), 20, 1, 50);
+        return "text=" + text + ";scope=" + scope + ";topK=" + topK;
     }
 
     @Override
@@ -39,10 +48,24 @@ public class ExactTextSearchCapability implements KnowledgeCapability {
         int topK = intValue(arguments.get("topK"), 20, 1, 50);
         PlannedEvidenceRetriever.Result result = retriever.exactText(text, List.of(context.kbId()),
                 documentIds.isEmpty() ? null : documentIds, topK, context.tenantId(), context.userId(), context.traceId());
-        List<Evidence> evidences = result.evidences() == null ? List.of() : result.evidences();
+        if (result.failed()) {
+            return CapabilityResult.failure(AgentStopReason.NO_RELIABLE_EVIDENCE,
+                    StrUtil.blankToDefault(result.errorMessage(), "exact-text retrieval source failed"));
+        }
+        List<Evidence> evidences = result.evidences();
+        boolean exactTotal = Boolean.TRUE.equals(result.totalHitsExact());
+        boolean authoritativeEmpty = exactTotal && result.totalHits() != null && result.totalHits() == 0L;
         Output output = new Output(evidences, result.totalHits(), result.totalHitsExact(), summary(evidences));
-        return CapabilityResult.success(output, Map.of("evidenceCount", evidences.size(),
-                "totalHits", result.totalHits() == null ? -1L : result.totalHits(), "totalHitsExact", Boolean.TRUE.equals(result.totalHitsExact())));
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("evidenceCount", evidences.size());
+        metadata.put("totalHits", result.totalHits() == null ? -1L : result.totalHits());
+        metadata.put("totalHitsExact", exactTotal);
+        metadata.put("candidateTotalHits", result.candidateTotalHits() == null ? -1L : result.candidateTotalHits());
+        metadata.put("retrievalOutcome", result.status().name());
+        metadata.put("completeDataset", exactTotal);
+        metadata.put("authoritativeEmpty", authoritativeEmpty);
+        metadata.put("outputComplete", true);
+        return CapabilityResult.success(output, metadata);
     }
 
     private List<Long> scope(Object raw, CapabilityInvocationContext context) {
@@ -56,6 +79,10 @@ public class ExactTextSearchCapability implements KnowledgeCapability {
         if (raw instanceof Number n) value = n.intValue();
         else if (raw != null) try { value = Integer.parseInt(String.valueOf(raw)); } catch (Exception ignore) { }
         return Math.max(min, Math.min(max, value));
+    }
+
+    private String normalizeText(Object raw) {
+        return raw == null ? "" : String.valueOf(raw).trim().replaceAll("\\s+", " ");
     }
 
     private String summary(List<Evidence> evidences) {
