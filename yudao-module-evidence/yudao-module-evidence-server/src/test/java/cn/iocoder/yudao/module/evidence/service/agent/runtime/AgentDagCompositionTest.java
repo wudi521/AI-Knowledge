@@ -16,15 +16,16 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Covers the generic A + B -> intersection C DAG composition used by cross-channel queries. */
 class AgentDagCompositionTest {
 
     @Test
-    void parallelFactsCanFeedGenericIntersectionNode() {
+    void verifiedStructuredSetAndSemanticCandidateSetCanIntersectWithoutTrustEscalation() {
         CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(List.of(
-                new FixedEntitySetCapability("structured-filter", List.of(1L, 2L, 3L)),
-                new FixedEntitySetCapability("semantic-filter", List.of(2L, 3L, 4L)),
+                new FixedEntitySetCapability("structured-filter", List.of(1L, 2L, 3L), true),
+                new FixedEntitySetCapability("semantic-filter", List.of(2L, 3L, 4L), false),
                 new EntitySetOperationCapability()), List.of()));
         try {
             AgentExecutionPlan plan = new AgentExecutionPlan("compose-1", "组合结构化与语义条件", 0, List.of(
@@ -35,7 +36,7 @@ class AgentDagCompositionTest {
                                     "operation", "INTERSECT",
                                     "sets", List.of(
                                             Map.of("$ref", "a", "selector", "verifiedEntityIds"),
-                                            Map.of("$ref", "b", "selector", "verifiedEntityIds")
+                                            Map.of("$ref", "b", "selector", "candidateEntityIds")
                                     )),
                             "取两个集合交集", Set.of("a", "b"))
             ));
@@ -46,9 +47,12 @@ class AgentDagCompositionTest {
 
             EntitySetOperationCapability.Output output = (EntitySetOperationCapability.Output) result.nodeResults()
                     .get("c").data();
-            assertEquals(List.of(2L, 3L), output.verifiedEntityIds());
-            assertEquals(List.of(2L, 3L), result.references().stream()
-                    .filter(r -> "c".equals(r.nodeId())).findFirst().orElseThrow().verifiedEntityIds());
+            assertEquals(List.of(2L, 3L), output.candidateEntityIds());
+            ReferenceRecord intersection = result.references().stream()
+                    .filter(r -> "c".equals(r.nodeId())).findFirst().orElseThrow();
+            assertEquals(List.of(2L, 3L), intersection.candidateEntityIds());
+            assertTrue(intersection.verifiedEntityIds().isEmpty(),
+                    "deterministic set arithmetic must not elevate semantic candidates to trusted verified ids");
             assertEquals(3, result.activities().size());
         } finally {
             invoker.shutdown();
@@ -58,10 +62,12 @@ class AgentDagCompositionTest {
     private static final class FixedEntitySetCapability implements KnowledgeCapability {
         private final CapabilityDefinition definition;
         private final List<Long> ids;
+        private final boolean verified;
 
-        private FixedEntitySetCapability(String name, List<Long> ids) {
+        private FixedEntitySetCapability(String name, List<Long> ids, boolean verified) {
             this.definition = new CapabilityDefinition(name, "1", "测试实体集合来源", Set.of(), true, 1_000L, 20);
             this.ids = ids;
+            this.verified = verified;
         }
 
         @Override public CapabilityDefinition definition() { return definition; }
@@ -71,7 +77,8 @@ class AgentDagCompositionTest {
             AgentCapabilityOutput output = new AgentCapabilityOutput() {
                 @Override public String summary() { return definition.name() + ids; }
                 @Override public String progressHash() { return definition.name() + ids; }
-                @Override public List<Long> verifiedEntityIds() { return ids; }
+                @Override public List<Long> candidateEntityIds() { return verified ? List.of() : ids; }
+                @Override public List<Long> verifiedEntityIds() { return verified ? ids : List.of(); }
             };
             return CapabilityResult.success(output, Map.of("outputCount", ids.size(), "outputComplete", true));
         }
