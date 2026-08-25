@@ -48,7 +48,8 @@ public class LlmAgentPlanner implements AgentPlanner {
             9. 集合级相似字段关系优先 similar_field_values；不要用普通语义 TopK 冒充全集结论。
             10. 一个问题同时包含确定性字段事实和语义解释时可以多步调用能力：先 structured_query 建立 trusted scope，再在 scope=CONTEXT 下检索剩余语义证据，最后 ANSWER。
             11. observations 已足够回答 originalGoal 时必须 ANSWER，不要重复调用相同能力。
-            12. 能力不足以完成问题时 STOP，不得伪造答案。
+            12. structured_query 成功返回 sourceRowCount=0 时，表示在当前可信完整结构化范围内没有符合条件的对象；如果该查询直接对应 originalGoal，这是权威的“未找到”结论，应 ANSWER，不得换一种参数形式重复执行同一查询，也不得再用语义检索猜一个对象。
+            13. 能力不足以完成问题时 STOP，不得伪造答案。
 
             JSON: {"action":"CALL_CAPABILITY","capability":"knowledge_retrieval","arguments":{"query":"视频技术"},"purpose":"获得与原始问题相关的证据","message":null}
             """;
