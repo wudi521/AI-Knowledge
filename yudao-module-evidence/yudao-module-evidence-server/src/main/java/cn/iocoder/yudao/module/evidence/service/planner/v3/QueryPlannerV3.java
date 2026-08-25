@@ -10,6 +10,7 @@ import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainFieldRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainMetricRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.FieldDefinition;
+import cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator;
 import cn.iocoder.yudao.module.evidence.service.structured.core.MetricDefinition;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
@@ -18,6 +19,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -34,8 +36,6 @@ import java.util.regex.Pattern;
 @Component
 public class QueryPlannerV3 {
 
-    private static final Pattern APPLICATION_NO = Pattern.compile("(?<!\\d)20\\d{10}\\.\\d(?!\\d)");
-    private static final Pattern PUBLICATION_NO = Pattern.compile("(?i)\\bCN\\s*\\d{8,12}\\s*[A-Z]\\b");
     private static final Pattern QUOTED = Pattern.compile("[\\\"“‘']([^\\\"”’']{1,200})[\\\"”’']");
 
     private static final String DEFAULT_PROMPT = """
@@ -57,7 +57,8 @@ public class QueryPlannerV3 {
             PROJECT_FIELDS 必须填写 fields；AGGREGATE 填 metric/operation；COMPARE 可填 compareType；
             SUMMARIZE/ANSWER/COMPARE 可填写 action.query 作为后续证据检索焦点。
 
-            STRUCTURED_FILTER 的 operator 只能使用：EQ/NE/CONTAINS/STARTS_WITH/IN/EXISTS。
+            STRUCTURED_FILTER 的 operator 只能使用：EQ/NE/CONTAINS/STARTS_WITH/IN/EXISTS/GT/GTE/LT/LTE/BETWEEN，
+            且必须属于 allowedFields 中该字段声明的 operators。
 
             重要规则：
             1. “发明人/申请号/公布号”等字段只是 Action 或结构化条件，不能仅因为出现这些词就把整句当成结构化查询。
@@ -89,23 +90,35 @@ public class QueryPlannerV3 {
     private final ModelApi modelApi;
     private final PromptSupport promptSupport;
     private final QueryIntentValidatorV3 validator;
+    private final DeterministicQueryPlannerV3 deterministicPlanner;
 
     public QueryPlannerV3(DomainFieldRegistry fieldRegistry,
                           DomainMetricRegistry metricRegistry,
                           ModelApi modelApi,
                           PromptSupport promptSupport,
-                          QueryIntentValidatorV3 validator) {
+                          QueryIntentValidatorV3 validator,
+                          DeterministicQueryPlannerV3 deterministicPlanner) {
         this.fieldRegistry = fieldRegistry;
         this.metricRegistry = metricRegistry;
         this.modelApi = modelApi;
         this.promptSupport = promptSupport;
         this.validator = validator;
+        this.deterministicPlanner = deterministicPlanner;
     }
 
     public QueryIntentV3 plan(String query, String domainCode, List<ChatTurnDTO> history,
                               List<Long> explicitEntityIds, String traceId) {
         if (StrUtil.isBlank(query)) {
             return clarify(domainCode, "请描述你想查询的问题。", "EMPTY_QUERY", 0L);
+        }
+        QueryIntentV3 deterministic = deterministicPlanner.tryPlan(query, domainCode).orElse(null);
+        if (deterministic != null) {
+            QueryIntentValidatorV3.Validation validation = validator.validate(deterministic);
+            if (validation.valid()) return deterministic;
+            log.error("[plan-v3][确定性计划违反 Schema 契约 reason={} query={}]",
+                    validation.reasonCode(), StrUtil.maxLength(query, 100));
+            return unavailable(domainCode, "DETERMINISTIC_PLAN_INVALID_" + validation.reasonCode(),
+                    deterministic.getPlannerElapsedMs() == null ? 0L : deterministic.getPlannerElapsedMs());
         }
         long start = System.currentTimeMillis();
         try {
@@ -143,7 +156,8 @@ public class QueryPlannerV3 {
                     .type(enumValue(QueryIntentV3.SelectionType.class, s.getStr("type")))
                     .query(s.getStr("query"))
                     .field(upper(s.getStr("field")))
-                    .operator(normalizeOperator(s.getStr("operator")))
+                    .operator(FilterOperator.fromExternal(s.getStr("operator")).orElse(null))
+                    .operatorRaw(s.getStr("operator"))
                     .values(selectionValues(s))
                     .queryVariants(stringList(s.get("queryVariants"), 5))
                     .build();
@@ -168,6 +182,7 @@ public class QueryPlannerV3 {
             }
         }
 
+        boolean requiresClarification = Boolean.TRUE.equals(json.getBool("requiresClarification"));
         return QueryIntentV3.builder()
                 .version("3")
                 .domainCode(domainCode)
@@ -175,10 +190,12 @@ public class QueryPlannerV3 {
                 .selection(selection)
                 .actions(actions)
                 .completeness(StrUtil.blankToDefault(json.getStr("completeness"), "BEST_EFFORT"))
-                .requiresClarification(Boolean.TRUE.equals(json.getBool("requiresClarification")))
+                .requiresClarification(requiresClarification)
                 .clarificationQuestion(json.getStr("clarificationQuestion"))
                 .reasonCode(json.getStr("reasonCode"))
                 .plannerSource("LLM")
+                .plannerStatus(requiresClarification ? QueryIntentV3.PlannerStatus.CLARIFICATION_REQUIRED
+                        : QueryIntentV3.PlannerStatus.EXECUTABLE)
                 .plannerElapsedMs(elapsed)
                 .build();
     }
@@ -193,19 +210,19 @@ public class QueryPlannerV3 {
 
         if (selection.getType() == QueryIntentV3.SelectionType.EXACT_ENTITY) {
             // EXACT_ENTITY 的语义已经是“精确定位”，执行层固定使用 EQ，不允许模型改变。
-            selection.setOperator("EQ");
-            boolean lexicalAdjusted = fillExactLexicalFact(query, selection);
+            selection.setOperator(FilterOperator.EQ);
+            boolean lexicalAdjusted = fillExactLexicalFact(query, intent.getDomainCode(), selection);
             if (lexicalAdjusted) intent.setPlannerSource("LLM+LEXICAL");
             return intent;
         }
 
         if (selection.getType() == QueryIntentV3.SelectionType.STRUCTURED_FILTER) {
-            selection.setOperator(normalizeOperator(selection.getOperator()));
             // 如果模型已经明确选择申请号/公布号等唯一标识字段，并且是精确相等，则收敛为 EXACT_ENTITY。
-            if ("EQ".equals(selection.getOperator()) && isExactIdentityField(selection.getField())
-                    && fillExactLexicalFact(query, selection)) {
+            if (FilterOperator.EQ == selection.getOperator()
+                    && isExactIdentityField(intent.getDomainCode(), selection.getField())
+                    && fillExactLexicalFact(query, intent.getDomainCode(), selection)) {
                 selection.setType(QueryIntentV3.SelectionType.EXACT_ENTITY);
-                selection.setOperator("EQ");
+                selection.setOperator(FilterOperator.EQ);
                 intent.setPlannerSource("LLM+LEXICAL");
             }
         }
@@ -216,57 +233,32 @@ public class QueryPlannerV3 {
      * 仅当模型已经选择了精确实体语义或唯一标识字段时，才用正则抽取值进行校正。
      * 不会把“与申请号 X 类似的专利”这类语义查询强行改成精确查询。
      */
-    private boolean fillExactLexicalFact(String query, QueryIntentV3.Selection selection) {
+    private boolean fillExactLexicalFact(String query, String domainCode, QueryIntentV3.Selection selection) {
         if (StrUtil.isBlank(query)) return false;
-        List<String> applicationNos = extractMatches(APPLICATION_NO, query);
-        List<String> publicationNos = extractMatches(PUBLICATION_NO, query);
+        Map<String, List<String>> identifiers = deterministicPlanner.identifierValues(query, domainCode);
         String field = upper(selection.getField());
 
-        if ("APPLICATION_NO".equals(field) && applicationNos.size() == 1) {
-            selection.setValues(List.of(applicationNos.get(0)));
-            return true;
-        }
-        if ("PUBLICATION_NO".equals(field) && publicationNos.size() == 1) {
-            selection.setValues(List.of(publicationNos.get(0)));
+        List<String> selectedValues = identifiers.getOrDefault(field, List.of());
+        if (StrUtil.isNotBlank(field) && selectedValues.size() == 1) {
+            selection.setValues(List.of(selectedValues.get(0)));
             return true;
         }
 
         // 模型已经明确选择 EXACT_ENTITY，但漏了字段时，只有在字面事实唯一且无歧义时才补字段。
         if (StrUtil.isBlank(field) && selection.getType() == QueryIntentV3.SelectionType.EXACT_ENTITY) {
-            if (applicationNos.size() == 1 && publicationNos.isEmpty()) {
-                selection.setField("APPLICATION_NO");
-                selection.setValues(List.of(applicationNos.get(0)));
-                return true;
-            }
-            if (publicationNos.size() == 1 && applicationNos.isEmpty()) {
-                selection.setField("PUBLICATION_NO");
-                selection.setValues(List.of(publicationNos.get(0)));
+            List<Map.Entry<String, List<String>>> exact = identifiers.entrySet().stream()
+                    .filter(entry -> entry.getValue().size() == 1).toList();
+            if (exact.size() == 1) {
+                selection.setField(exact.get(0).getKey());
+                selection.setValues(List.of(exact.get(0).getValue().get(0)));
                 return true;
             }
         }
         return false;
     }
 
-    private boolean isExactIdentityField(String field) {
-        String normalized = upper(field);
-        return "APPLICATION_NO".equals(normalized) || "PUBLICATION_NO".equals(normalized);
-    }
-
-    /**
-     * 接受模型常见的等价表达，但只归一化到系统白名单运算符，不放宽执行能力。
-     */
-    private String normalizeOperator(String value) {
-        if (StrUtil.isBlank(value)) return null;
-        String normalized = value.trim().toUpperCase();
-        return switch (normalized) {
-            case "=", "==", "EQUAL", "EQUALS", "IS" -> "EQ";
-            case "!=", "<>", "NOT_EQUAL", "NOT_EQUALS", "IS_NOT" -> "NE";
-            case "CONTAIN", "CONTAINS", "LIKE", "INCLUDES" -> "CONTAINS";
-            case "START_WITH", "STARTS_WITH", "PREFIX" -> "STARTS_WITH";
-            case "IN" -> "IN";
-            case "EXIST", "EXISTS", "IS_NOT_NULL", "NOT_NULL" -> "EXISTS";
-            default -> normalized;
-        };
+    private boolean isExactIdentityField(String domainCode, String field) {
+        return fieldRegistry.byCode(domainCode, upper(field)).map(FieldDefinition::isExactIdentifier).orElse(false);
     }
 
     private List<String> selectionValues(JSONObject selection) {
@@ -276,23 +268,13 @@ public class QueryPlannerV3 {
         return StrUtil.isBlank(single) ? List.of() : List.of(single.trim());
     }
 
-    private List<String> extractMatches(Pattern pattern, String query) {
-        List<String> values = new ArrayList<>();
-        Matcher matcher = pattern.matcher(query);
-        while (matcher.find()) {
-            String value = matcher.group().trim();
-            if (!values.contains(value)) values.add(value);
-        }
-        return values;
-    }
-
     private String buildInput(String query, String domainCode, List<ChatTurnDTO> history,
                               List<Long> explicitEntityIds) {
         StringBuilder sb = new StringBuilder(1200);
         sb.append("domain=").append(StrUtil.blankToDefault(domainCode, "GENERAL")).append('\n');
         sb.append("allowedFields=").append(fieldSchema(domainCode)).append('\n');
         sb.append("allowedMetrics=").append(metricSchema(domainCode)).append('\n');
-        sb.append("lexicalFacts=").append(lexicalFacts(query)).append('\n');
+        sb.append("lexicalFacts=").append(lexicalFacts(query, domainCode)).append('\n');
         sb.append("previousResultEntityIds=").append(explicitEntityIds == null ? List.of() : explicitEntityIds).append('\n');
         if (history != null && !history.isEmpty()) {
             sb.append("recentContext:\n");
@@ -314,7 +296,9 @@ public class QueryPlannerV3 {
         for (FieldDefinition f : fieldRegistry.all(domainCode)) {
             if (f == null || StrUtil.isBlank(f.getFieldCode())) continue;
             out.add(f.getFieldCode() + "(aliases=" + (f.getAliases() == null ? List.of() : f.getAliases())
-                    + ",filterable=" + f.isFilterable() + ")");
+                    + ",filterable=" + f.isFilterable()
+                    + ",exactIdentifier=" + f.isExactIdentifier()
+                    + ",operators=" + (f.getAllowedOperators() == null ? List.of() : f.getAllowedOperators()) + ")");
         }
         return out.toString();
     }
@@ -329,12 +313,10 @@ public class QueryPlannerV3 {
         return out.toString();
     }
 
-    private String lexicalFacts(String query) {
+    private String lexicalFacts(String query, String domainCode) {
         List<String> facts = new ArrayList<>();
-        Matcher app = APPLICATION_NO.matcher(query);
-        while (app.find()) facts.add("APPLICATION_NO=" + app.group());
-        Matcher pub = PUBLICATION_NO.matcher(query);
-        while (pub.find()) facts.add("PUBLICATION_NO=" + pub.group());
+        deterministicPlanner.identifierValues(query, domainCode)
+                .forEach((field, values) -> values.forEach(value -> facts.add(field + "=" + value)));
         Matcher quoted = QUOTED.matcher(query);
         while (quoted.find()) facts.add("QUOTED_LITERAL=" + quoted.group(1));
         return facts.toString();
@@ -343,17 +325,19 @@ public class QueryPlannerV3 {
     private QueryIntentV3 unavailable(String domainCode, String reason, long elapsed) {
         return QueryIntentV3.builder()
                 .version("3").domainCode(domainCode).entityType(defaultEntityType(domainCode))
-                .selection(QueryIntentV3.Selection.builder().type(QueryIntentV3.SelectionType.CURRENT_SCOPE).build())
-                .actions(List.of(QueryIntentV3.Action.builder().type(QueryIntentV3.ActionType.ANSWER).build()))
-                .requiresClarification(true)
-                .clarificationQuestion("当前查询规划服务未能生成可靠执行计划，请稍后重试。")
-                .reasonCode(reason).plannerSource("FALLBACK").plannerElapsedMs(elapsed).build();
+                .requiresClarification(false)
+                .reasonCode(reason).plannerSource("FAILED")
+                .plannerStatus(QueryIntentV3.PlannerStatus.FAILED)
+                .plannerElapsedMs(elapsed).build();
     }
 
     private QueryIntentV3 clarify(String domainCode, String question, String reason, long elapsed) {
-        QueryIntentV3 intent = unavailable(domainCode, reason, elapsed);
-        intent.setClarificationQuestion(question);
-        return intent;
+        return QueryIntentV3.builder()
+                .version("3").domainCode(domainCode).entityType(defaultEntityType(domainCode))
+                .requiresClarification(true).clarificationQuestion(question).reasonCode(reason)
+                .plannerSource("DETERMINISTIC_SCHEMA")
+                .plannerStatus(QueryIntentV3.PlannerStatus.CLARIFICATION_REQUIRED)
+                .plannerElapsedMs(elapsed).build();
     }
 
     private JSONObject parseJson(String raw) {

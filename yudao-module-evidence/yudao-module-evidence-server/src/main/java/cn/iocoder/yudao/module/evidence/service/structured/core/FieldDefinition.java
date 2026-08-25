@@ -4,6 +4,7 @@ import lombok.Builder;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * FieldDefinition(结构化字段定义, CQ-11)
@@ -23,6 +24,12 @@ public class FieldDefinition {
     private String valueType;
     /** 中文别名(公布号/公开编号 等), 最长匹配优先 */
     private List<String> aliases;
+    /** 该字段允许的过滤运算符；空集合表示不可通过 V3 结构化过滤。 */
+    private Set<FilterOperator> allowedOperators;
+    /** 是否是可唯一定位实体的业务标识符。 */
+    private boolean exactIdentifier;
+    /** 标识符的领域正则集合；由通用确定性 Planner 读取，不在 Core 硬编码领域规则。 */
+    private List<String> identifierPatterns;
     /** 单实体是否多值(如 多个申请人) */
     private boolean multiValue;
     private boolean sortable;

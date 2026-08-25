@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.evidence.service.planner.v3;
 
+import cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -34,9 +35,18 @@ public class QueryIntentV3 {
     private boolean requiresClarification;
     private String clarificationQuestion;
     private String reasonCode;
-    /** LLM / LLM+LEXICAL / FALLBACK */
+    /** DETERMINISTIC_SCHEMA / LLM / LLM+LEXICAL / FAILED */
     private String plannerSource;
     private Long plannerElapsedMs;
+
+    @Builder.Default
+    private PlannerStatus plannerStatus = PlannerStatus.EXECUTABLE;
+
+    public enum PlannerStatus {
+        EXECUTABLE,
+        CLARIFICATION_REQUIRED,
+        FAILED
+    }
 
     public enum SelectionType {
         CURRENT_SCOPE,
@@ -68,10 +78,12 @@ public class QueryIntentV3 {
         /** STRUCTURED_FILTER / EXACT_ENTITY 使用。 */
         private String field;
         /**
-         * STRUCTURED_FILTER 使用的白名单运算符：EQ / NE / CONTAINS / STARTS_WITH / IN / EXISTS。
+         * STRUCTURED_FILTER 使用 FilterOperator 强类型白名单。
          * EXACT_ENTITY 的业务语义天然是精确相等，执行时固定为 EQ，不依赖模型输出该字段。
          */
-        private String operator;
+        private FilterOperator operator;
+        /** 仅用于边界校验和 Trace；Executor 永远不读取该原始字符串。 */
+        private String operatorRaw;
         @Builder.Default
         private List<String> values = new ArrayList<>();
         /** Planner 给第一轮检索的有限改写；不是下游重新分析。 */

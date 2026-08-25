@@ -5,10 +5,10 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
+import cn.iocoder.yudao.module.evidence.service.structured.patent.PatentIdentifierSupport;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Pattern;
 
 /**
  * 专利强结构著录信息确定性回答器。
@@ -18,16 +18,13 @@ import java.util.regex.Pattern;
  */
 final class PatentExactMetadataAnswerer {
 
-    private static final Pattern APPLICATION_NO = Pattern.compile("(?<!\\d)20\\d{10}\\.\\d(?!\\d)");
-    private static final Pattern PUBLICATION_NO = Pattern.compile("(?i)\\bCN\\s*\\d{8,12}\\s*[A-Z]\\b");
-
     private PatentExactMetadataAnswerer() {
     }
 
     static DirectAnswer tryAnswer(String query, List<Evidence> evidences) {
         if (StrUtil.isBlank(query) || evidences == null || evidences.isEmpty()) return null;
-        boolean hasApplicationIdentifier = APPLICATION_NO.matcher(query).find();
-        boolean hasPublicationIdentifier = PUBLICATION_NO.matcher(query).find();
+        boolean hasApplicationIdentifier = PatentIdentifierSupport.APPLICATION_NO.matcher(query).find();
+        boolean hasPublicationIdentifier = PatentIdentifierSupport.PUBLICATION_NO.matcher(query).find();
         if (!hasApplicationIdentifier && !hasPublicationIdentifier) return null;
 
         List<Field> fields = requestedFields(query, hasApplicationIdentifier, hasPublicationIdentifier);
@@ -51,8 +48,8 @@ final class PatentExactMetadataAnswerer {
     static boolean isMetadataQuery(String query) {
         if (StrUtil.isBlank(query)) return false;
         // 含合法申请号/公布号格式或"申请号/公布号/公开号"文本, 均视为编号定位(非法编号也需被识别, 供 fail closed 拒答)
-        boolean hasApplicationIdentifier = APPLICATION_NO.matcher(query).find() || query.contains("申请号");
-        boolean hasPublicationIdentifier = PUBLICATION_NO.matcher(query).find()
+        boolean hasApplicationIdentifier = PatentIdentifierSupport.APPLICATION_NO.matcher(query).find() || query.contains("申请号");
+        boolean hasPublicationIdentifier = PatentIdentifierSupport.PUBLICATION_NO.matcher(query).find()
                 || query.contains("公布号") || query.contains("公开号");
         if (!hasApplicationIdentifier && !hasPublicationIdentifier) return false;
         return !requestedFields(query, hasApplicationIdentifier, hasPublicationIdentifier).isEmpty();

@@ -12,6 +12,12 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.Set;
 
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.CONTAINS;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.EQ;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.EXISTS;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.IN;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.STARTS_WITH;
+
 /**
  * Product Domain Pack(CQ-48 Fake PRODUCT): 向 Platform Core 注册产品实体/指标/字段。
  * <p>
@@ -62,14 +68,17 @@ public class ProductStructuredPack {
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_PRODUCT_NAME).domainCode(DOMAIN_CODE).entityType(ENTITY_PRODUCT)
                 .valueType("STRING").aliases(List.of("产品名", "名称"))
+                .allowedOperators(Set.of(EQ, IN, CONTAINS, STARTS_WITH, EXISTS))
                 .filterable(true).groupable(true).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_CATEGORY).domainCode(DOMAIN_CODE).entityType(ENTITY_PRODUCT)
                 .valueType("STRING").aliases(List.of("品类", "分类", "类别"))
+                .allowedOperators(Set.of(EQ, IN, CONTAINS, EXISTS))
                 .filterable(true).groupable(true).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_SKU).domainCode(DOMAIN_CODE).entityType(ENTITY_PRODUCT)
                 .valueType("STRING").aliases(List.of("SKU", "编码", "货号"))
+                .allowedOperators(Set.of(EQ, IN)).exactIdentifier(true)
                 .sortable(true).filterable(true).build());
     }
 }

@@ -13,6 +13,17 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.Set;
 
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.CONTAINS;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.EQ;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.EXISTS;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.IN;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.GT;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.GTE;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.LT;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.LTE;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.BETWEEN;
+import static cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator.STARTS_WITH;
+
 /** Patent Domain Pack：注册专利实体、业务指标和结构化字段。 */
 @Component
 public class PatentStructuredPack {
@@ -89,30 +100,39 @@ public class PatentStructuredPack {
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_PUBLICATION_NO).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
                 .valueType("STRING").aliases(List.of("公布号", "公开编号", "公开号"))
+                .allowedOperators(Set.of(EQ, IN)).exactIdentifier(true)
+                .identifierPatterns(PatentIdentifierSupport.publicationPatterns())
                 .sortable(true).filterable(true).groupable(true).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_APPLICATION_NO).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
-                .valueType("STRING").aliases(List.of("申请号", "专利号"))
+                .valueType("STRING").aliases(List.of("申请号", "申请编号", "专利号"))
+                .allowedOperators(Set.of(EQ, IN)).exactIdentifier(true)
+                .identifierPatterns(PatentIdentifierSupport.applicationPatterns())
                 .sortable(true).filterable(true).groupable(true).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_APPLICANT).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
                 .valueType("STRING").multiValue(true).aliases(List.of("申请人", "申请单位"))
+                .allowedOperators(Set.of(EQ, IN, CONTAINS, EXISTS))
                 .filterable(true).groupable(true).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_INVENTOR).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
                 .valueType("STRING").multiValue(true).aliases(List.of("发明人", "发明者"))
+                .allowedOperators(Set.of(EQ, IN, CONTAINS, EXISTS))
                 .filterable(true).groupable(true).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_TITLE).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
                 .valueType("STRING").aliases(List.of("标题", "专利名称", "发明名称"))
+                .allowedOperators(Set.of(EQ, CONTAINS, STARTS_WITH, EXISTS))
                 .filterable(true).groupable(true).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_FILING_DATE).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
                 .valueType("DATE").aliases(List.of("申请日", "申请日期"))
+                .allowedOperators(Set.of(EQ, IN, EXISTS, GT, GTE, LT, LTE, BETWEEN))
                 .sortable(true).filterable(true).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_PUBLICATION_DATE).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
                 .valueType("DATE").aliases(List.of("公开日", "公告日", "公开日期"))
+                .allowedOperators(Set.of(EQ, IN, EXISTS, GT, GTE, LT, LTE, BETWEEN))
                 .sortable(true).filterable(true).build());
     }
 

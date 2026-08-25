@@ -7,6 +7,8 @@ import cn.iocoder.yudao.module.knowledge.controller.admin.knowledge.vo.AiDocumen
 import cn.iocoder.yudao.module.knowledge.dal.dataobject.knowledge.AiDocumentDO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 
@@ -39,5 +41,27 @@ public interface AiDocumentMapper extends BaseMapperX<AiDocumentDO> {
         if (kbIds == null || kbIds.isEmpty()) return List.of();
         return selectList(new LambdaQueryWrapperX<AiDocumentDO>().in(AiDocumentDO::getKbId, kbIds));
     }
+
+    /**
+     * 专利业务标识符走生成列联合索引，避免按知识库加载全部 domain_metadata 后在 JVM 扫描。
+     * 对应迁移：migrate-20260825-patent-identifier-index.sql。
+     */
+    @Select({
+            "<script>",
+            "SELECT id FROM ai_document",
+            "WHERE deleted = 0",
+            "AND kb_id IN",
+            "<foreach collection='kbIds' item='kbId' open='(' separator=',' close=')'>#{kbId}</foreach>",
+            "<if test='applicationNo != null and applicationNo != \"\"'>",
+            "AND patent_application_no_norm = #{applicationNo}",
+            "</if>",
+            "<if test='publicationNo != null and publicationNo != \"\"'>",
+            "AND patent_publication_no_norm = #{publicationNo}",
+            "</if>",
+            "</script>"
+    })
+    List<Long> selectPatentDocumentIdsByIdentifier(@Param("kbIds") List<Long> kbIds,
+                                                   @Param("applicationNo") String applicationNo,
+                                                   @Param("publicationNo") String publicationNo);
 
 }

@@ -8,6 +8,7 @@ import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
 import cn.iocoder.yudao.module.evidence.service.assemble.PlannedEvidenceRetriever;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
 import cn.iocoder.yudao.module.evidence.service.semantics.DomainEntityIdentityProvider;
+import cn.iocoder.yudao.module.evidence.service.structured.core.DomainEntityResolver;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainFieldRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainMetricRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.FieldDefinition;
@@ -55,6 +56,7 @@ public class QueryEngineV3 {
     private final DomainFieldRegistry fieldRegistry;
     private final DomainMetricRegistry metricRegistry;
     private final List<DomainEntityIdentityProvider> identityProviders;
+    private final List<DomainEntityResolver> entityResolvers;
     private final KnowledgeApi knowledgeApi;
     private final AnswerPipeline answerPipeline;
 
@@ -66,6 +68,7 @@ public class QueryEngineV3 {
                          DomainFieldRegistry fieldRegistry,
                          DomainMetricRegistry metricRegistry,
                          List<DomainEntityIdentityProvider> identityProviders,
+                         List<DomainEntityResolver> entityResolvers,
                          KnowledgeApi knowledgeApi,
                          AnswerPipeline answerPipeline) {
         this.planner = planner;
@@ -76,6 +79,7 @@ public class QueryEngineV3 {
         this.fieldRegistry = fieldRegistry;
         this.metricRegistry = metricRegistry;
         this.identityProviders = identityProviders == null ? List.of() : identityProviders;
+        this.entityResolvers = entityResolvers == null ? List.of() : entityResolvers;
         this.knowledgeApi = knowledgeApi;
         this.answerPipeline = answerPipeline;
     }
@@ -92,12 +96,24 @@ public class QueryEngineV3 {
                 "historyTurns=" + size(history) + "; previousEntityIds=" + compactIds(explicitEntityIds)));
 
         QueryIntentV3 intent = planner.plan(query, domainCode, history, explicitEntityIds, traceId);
-        stages.add(stage("SEMANTIC_PLAN", intent == null || intent.getPlannerElapsedMs() == null ? 0 : intent.getPlannerElapsedMs(),
-                "自然语言 + Domain Schema + lexical facts + context", summarizeIntent(intent)));
+        boolean plannerFailed = intent == null || intent.getPlannerStatus() == QueryIntentV3.PlannerStatus.FAILED;
+        stages.add(plannerFailed
+                ? failedStage("SEMANTIC_PLAN", intent == null || intent.getPlannerElapsedMs() == null
+                                ? 0 : intent.getPlannerElapsedMs(),
+                        "自然语言 + Domain Schema + lexical facts + context", summarizeIntent(intent),
+                        intent == null ? "EMPTY_INTENT" : intent.getReasonCode(), "查询规划失败")
+                : stage("SEMANTIC_PLAN", intent.getPlannerElapsedMs() == null ? 0 : intent.getPlannerElapsedMs(),
+                        "自然语言 + Domain Schema + lexical facts + context", summarizeIntent(intent)));
         QueryIntentValidatorV3.Validation validation = validator.validate(intent);
-        stages.add(stage("PLAN_VALIDATE", 0, "typed QueryIntentV3",
-                validation.valid() ? "PASS" : "FAIL reason=" + validation.reasonCode()));
-        if (!validation.valid()) return fail(validation.reasonCode(), "查询计划未通过白名单校验。", intent, stages);
+        stages.add(validation.valid()
+                ? stage("PLAN_VALIDATE", 0, "typed QueryIntentV3", "PASS")
+                : failedStage("PLAN_VALIDATE", 0, "typed QueryIntentV3",
+                        "FAIL reason=" + validation.reasonCode(), validation.reasonCode(), "计划契约校验失败"));
+        if (!validation.valid()) {
+            String message = intent != null && intent.getPlannerStatus() == QueryIntentV3.PlannerStatus.FAILED
+                    ? "查询规划服务未能生成可执行计划。" : "查询计划未通过统一 Schema 契约校验。";
+            return fail(validation.reasonCode(), message, intent, stages);
+        }
         if (intent.isRequiresClarification()) {
             return clarify(StrUtil.blankToDefault(intent.getReasonCode(), "PLANNER_CLARIFY"),
                     StrUtil.blankToDefault(intent.getClarificationQuestion(), "请补充查询条件。"), intent, stages);
@@ -137,10 +153,37 @@ public class QueryEngineV3 {
             case RESULT_SET -> contextIds == null || contextIds.isEmpty()
                     ? SelectionResult.clarify("MISSING_RESULT_SET", "当前没有可复用的上一轮对象集合。")
                     : SelectionResult.ok(contextIds, List.of(), "CONTEXT_COMPLETE", null, null, null);
-            case EXACT_ENTITY, STRUCTURED_FILTER -> structuredSelect(selection, intent, kbId, stages);
+            case EXACT_ENTITY -> exactEntitySelect(selection, intent, kbId, stages);
+            case STRUCTURED_FILTER -> structuredSelect(selection, intent, kbId, stages);
             case SEMANTIC -> semanticSelect(selection, intent.getDomainCode(), kbIds, tenantId, userId, traceId, stages);
             case EXACT_TEXT -> exactTextSelect(selection, intent.getDomainCode(), kbIds, tenantId, userId, traceId, stages);
         };
+    }
+
+    private SelectionResult exactEntitySelect(QueryIntentV3.Selection selection, QueryIntentV3 intent,
+                                               Long kbId, List<QueryStageTimingDTO> stages) {
+        if (kbId == null) return SelectionResult.clarify("MULTI_KB_FILTER_UNSUPPORTED", "精确实体查询需要单知识库范围。");
+        DomainEntityResolver resolver = entityResolvers.stream()
+                .filter(candidate -> intent.getDomainCode() != null
+                        && intent.getDomainCode().equalsIgnoreCase(candidate.domainCode()))
+                .findFirst().orElse(null);
+        if (resolver == null) return structuredSelect(selection, intent, kbId, stages);
+
+        List<DomainEntityResolver.ResolvedEntity> unresolved = selection.getValues().stream()
+                .filter(StrUtil::isNotBlank)
+                .map(value -> new DomainEntityResolver.ResolvedEntity(value, null, null))
+                .toList();
+        long start = System.currentTimeMillis();
+        List<DomainEntityResolver.ResolvedEntity> resolved = resolver.resolveToEntities(unresolved, kbId);
+        List<Long> ids = resolved == null ? List.of() : resolved.stream()
+                .map(DomainEntityResolver.ResolvedEntity::entityId).filter(Objects::nonNull).distinct().toList();
+        stages.add(stage("EXACT_ENTITY_SELECT", System.currentTimeMillis() - start,
+                "field=" + selection.getField() + "; operator=" + selection.getOperator()
+                        + "; values=" + selection.getValues(),
+                "entityIds=" + compactIds(ids) + "; count=" + ids.size()));
+        return ids.isEmpty()
+                ? SelectionResult.fail("EXACT_ENTITY_NOT_FOUND", "没有找到与该业务标识符完全匹配的对象。")
+                : SelectionResult.ok(ids, List.of(), "EXACT_ENTITY_COMPLETE", null, null, null);
     }
 
     private SelectionResult currentScope(List<Long> kbIds, String domainCode, List<QueryStageTimingDTO> stages) {
@@ -167,12 +210,7 @@ public class QueryEngineV3 {
         if (field == null || !field.isFilterable()) return SelectionResult.fail("FILTER_FIELD_UNAVAILABLE", "过滤字段不可执行。");
         MetricDefinition metric = syntheticMetric(field, intent.getDomainCode());
         metricRegistry.register(metric);
-        FilterOperator op;
-        try {
-            op = FilterOperator.valueOf(selection.getOperator().toUpperCase());
-        } catch (Exception e) {
-            return SelectionResult.fail("INVALID_FILTER_OPERATOR", "过滤运算符不可执行。");
-        }
+        FilterOperator op = selection.getOperator();
         StructuredQueryPlan plan = StructuredQueryPlan.builder()
                 .route("STRUCTURED_QUERY").queryType(QueryType.LIST)
                 .domainCode(intent.getDomainCode()).entityType(field.getEntityType())
@@ -277,7 +315,7 @@ public class QueryEngineV3 {
                     answers.add(ar.answer());
                     lastStructured = ar.structured();
                 }
-                case LIST -> answers.add(renderList(entityIds));
+                case LIST -> answers.add(renderList(entityIds, selected.structured(), intent.getDomainCode()));
                 case COUNT -> answers.add(renderCount(entityIds.size(), selected.guarantee(), intent.getDomainCode()));
                 case AGGREGATE -> {
                     ActionResult ar = aggregate(intent, kbId, entityIds, action, stages);
@@ -487,12 +525,29 @@ public class QueryEngineV3 {
         return sb.toString().trim();
     }
 
-    private String renderList(List<Long> ids) {
+    private String renderList(List<Long> ids, StructuredQueryResult selected, String domainCode) {
         if (ids.isEmpty()) return "当前范围内没有匹配对象。";
+        Map<Long, String> selectedNames = rows(selected).stream()
+                .filter(row -> row.getEntityId() != null && StrUtil.isNotBlank(row.getEntityName()))
+                .collect(Collectors.toMap(StructuredQueryResult.Row::getEntityId,
+                        StructuredQueryResult.Row::getEntityName, (left, right) -> left, LinkedHashMap::new));
         Map<Long, KnowledgeDocumentRespDTO> docs = documentMap(ids);
-        String names = ids.stream().map(id -> docs.get(id) != null && StrUtil.isNotBlank(docs.get(id).getName())
-                ? docs.get(id).getName() : "对象 #" + id).collect(Collectors.joining("、"));
+        String names = ids.stream().map(id -> StrUtil.blankToDefault(selectedNames.get(id),
+                        documentDisplayName(docs.get(id), id, domainCode)))
+                .collect(Collectors.joining("、"));
         return "找到 " + ids.size() + " 个匹配对象：" + names + "。";
+    }
+
+    private String documentDisplayName(KnowledgeDocumentRespDTO doc, Long id, String domainCode) {
+        if (doc != null && "PATENT".equalsIgnoreCase(domainCode) && StrUtil.isNotBlank(doc.getDomainMetadata())) {
+            try {
+                String title = JSONUtil.parseObj(doc.getDomainMetadata()).getStr("title");
+                if (StrUtil.isNotBlank(title)) return title;
+            } catch (Exception ignore) {
+                // 历史脏元数据仅影响展示名，继续回退上传文件名。
+            }
+        }
+        return doc != null && StrUtil.isNotBlank(doc.getName()) ? doc.getName() : "对象 #" + id;
     }
 
     private String renderCount(int count, String guarantee, String domainCode) {
@@ -545,6 +600,15 @@ public class QueryEngineV3 {
         stage.setSkipped(false);
         stage.setInputSummary(cut(input, 950));
         stage.setOutputSummary(cut(output, 950));
+        return stage;
+    }
+
+    private QueryStageTimingDTO failedStage(String name, long elapsedMs, String input, String output,
+                                            String errorCode, String errorMessage) {
+        QueryStageTimingDTO stage = stage(name, elapsedMs, input, output);
+        stage.setStatus("FAILED");
+        stage.setErrorCode(errorCode);
+        stage.setErrorMessage(errorMessage);
         return stage;
     }
 
@@ -647,7 +711,9 @@ public class QueryEngineV3 {
     }
 
     private Result fail(String reason, String message, QueryIntentV3 intent, List<QueryStageTimingDTO> stages) {
-        stages.add(stage("ANSWER", 0, "execution stopped", "unanswerable=“" + cut(message, 600) + "”; reason=" + reason));
+        stages.add(failedStage("ANSWER", 0, "execution stopped",
+                "unanswerable=“" + cut(message, 600) + "”; reason=" + reason,
+                reason, message));
         renumber(stages);
         return new Result(State.UNANSWERABLE, null, null, reason, "COMPOSITE", intent,
                 List.of(), List.of(), null, null, null, null, stages, null);

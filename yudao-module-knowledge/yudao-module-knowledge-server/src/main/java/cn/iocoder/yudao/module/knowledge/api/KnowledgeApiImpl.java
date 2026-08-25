@@ -246,6 +246,18 @@ public class KnowledgeApiImpl implements KnowledgeApi {
         }
         String expectedApplicationNo = normalizeIdentifier(req.getApplicationNo());
         String expectedPublicationNo = normalizeIdentifier(req.getPublicationNo());
+        try {
+            List<Long> indexed = aiDocumentMapper.selectPatentDocumentIdsByIdentifier(
+                    req.getKbIds(), expectedApplicationNo, expectedPublicationNo);
+            return success(validPublishedDocumentIds(indexed));
+        } catch (Exception e) {
+            if (!isIdentifierIndexMissing(e)) {
+                if (e instanceof RuntimeException runtimeException) throw runtimeException;
+                throw new IllegalStateException("专利标识符索引查询失败", e);
+            }
+            // 只兼容应用先发布、DDL 后执行的滚动升级；数据库故障禁止回退全扫描，避免故障放大。
+            log.warn("[lookupPatentDocuments][专利标识符索引列尚未迁移，兼容回退旧扫描: {}]", e.getMessage());
+        }
         List<Long> result = new ArrayList<>();
         for (AiDocumentDO doc : aiDocumentMapper.selectListByKbIds(req.getKbIds())) {
             if (StrUtil.isBlank(doc.getDomainMetadata())) continue;
@@ -262,7 +274,34 @@ public class KnowledgeApiImpl implements KnowledgeApi {
                 // 单个历史脏元数据不影响其它文档定位
             }
         }
-        return success(result.stream().distinct().toList());
+        return success(validPublishedDocumentIds(result));
+    }
+
+    private List<Long> validPublishedDocumentIds(List<Long> candidateIds) {
+        if (CollUtil.isEmpty(candidateIds)) return List.of();
+        LocalDateTime now = LocalDateTime.now();
+        Set<Long> candidates = Set.copyOf(candidateIds);
+        return aiDocVersionMapper.selectPublishedByDocIds(candidates).stream()
+                .filter(version -> version != null && candidates.contains(version.getDocId()))
+                .filter(version -> version.getEffectiveFrom() == null || !version.getEffectiveFrom().isAfter(now))
+                .filter(version -> version.getEffectiveTo() == null || !version.getEffectiveTo().isBefore(now))
+                .map(AiDocVersionDO::getDocId).distinct().toList();
+    }
+
+    private boolean isIdentifierIndexMissing(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase();
+                if ((lower.contains("unknown column") || lower.contains("doesn't exist")
+                        || lower.contains("does not exist"))
+                        && (lower.contains("patent_application_no_norm")
+                        || lower.contains("patent_publication_no_norm"))) return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private String normalizeIdentifier(String value) {
@@ -413,17 +452,52 @@ public class KnowledgeApiImpl implements KnowledgeApi {
                 StructuredQueryRowDTO row = new StructuredQueryRowDTO();
                 row.setDocumentId(doc.getId());
                 row.setDocumentName(doc.getName());
-                row.setApplicationNo(docApplicationNo(doc));
-                row.setPublicationNo(docPublicationNo(doc));
+                JSONObject metadata = docMetadata(doc);
+                row.setTitle(metadataValue(metadata, "title"));
+                row.setApplicationNo(metadataValue(metadata, "applicationNo"));
+                row.setPublicationNo(metadataValue(metadata, "publicationNo"));
+                row.setApplicant(metadataListValue(metadata, "applicants", "applicant"));
+                row.setInventor(metadataListValue(metadata, "inventors", "inventor"));
+                row.setFilingDate(metadataValue(metadata, "filingDate", "applicationDate"));
+                row.setPublicationDate(metadataValue(metadata, "publicationDate", "publishDate"));
                 row.setValue(metricValue(doc, req.getMetricCode()));
                 resp.getRows().add(row);
             }
             return success(resp);
         } catch (Exception e) {
-            log.warn("[structuredQuery][kbId({}) metric({}) 失败, 返回空: {}]",
-                    req.getKbId(), req.getMetricCode(), e.getMessage());
-            return success(resp);
+            // 数据源故障与“完整数据集确实为空”是两种不同事实。这里必须失败关闭，
+            // 由上层转成 UNSUPPORTED，禁止把数据库/RPC 异常包装成可信空集。
+            log.error("[structuredQuery][kbId({}) metric({}) 结构化数据读取失败]",
+                    req.getKbId(), req.getMetricCode(), e);
+            throw new IllegalStateException("结构化数据读取失败", e);
         }
+    }
+
+    private JSONObject docMetadata(AiDocumentDO doc) {
+        if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return new JSONObject();
+        return JSONUtil.parseObj(doc.getDomainMetadata());
+    }
+
+    private String metadataValue(JSONObject metadata, String... keys) {
+        if (metadata == null) return null;
+        for (String key : keys) {
+            String value = metadata.getStr(key);
+            if (StrUtil.isNotBlank(value)) return value;
+        }
+        return null;
+    }
+
+    private String metadataListValue(JSONObject metadata, String pluralKey, String singularKey) {
+        if (metadata == null) return null;
+        Object raw = metadata.get(pluralKey);
+        if (raw instanceof Iterable<?> values) {
+            List<String> items = new ArrayList<>();
+            for (Object value : values) {
+                if (value != null && StrUtil.isNotBlank(String.valueOf(value))) items.add(String.valueOf(value));
+            }
+            if (!items.isEmpty()) return String.join("、", items);
+        }
+        return metadataValue(metadata, singularKey);
     }
 
     private Double metricValue(AiDocumentDO doc, String metricCode) {

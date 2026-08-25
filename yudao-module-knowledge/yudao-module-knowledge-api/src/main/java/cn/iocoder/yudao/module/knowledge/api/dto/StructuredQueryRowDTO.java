@@ -8,8 +8,10 @@ public class StructuredQueryRowDTO {
 
     /** 对象编号(documentId) */
     private Long documentId;
-    /** 对象名(文档名/专利标题) */
+    /** 物理文档名/上传文件名；领域实体标题必须使用 title。 */
     private String documentName;
+    /** 领域实体标题；PATENT 为 domain_metadata.title，不等同于上传文件名。 */
+    private String title;
     /** 对象键(如申请号; COUNT_DISTINCT 去重用) */
     private String applicationNo;
     /** 公布号 */

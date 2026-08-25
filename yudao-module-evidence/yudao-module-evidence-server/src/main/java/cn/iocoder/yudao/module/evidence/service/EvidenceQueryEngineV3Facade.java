@@ -215,6 +215,13 @@ public class EvidenceQueryEngineV3Facade {
     }
 
     private String reasonMessage(QueryEngineV3.Result result) {
+        if (result.intent() != null
+                && result.intent().getPlannerStatus() == QueryIntentV3.PlannerStatus.FAILED) {
+            return "查询规划服务未能生成通过 Schema 契约的执行计划（" + result.reasonCode() + "）。";
+        }
+        if ("EXACT_ENTITY_NOT_FOUND".equals(result.reasonCode())) {
+            return "当前知识库中没有找到与该业务标识符完全匹配的已发布对象。";
+        }
         return "当前查询无法可靠完成" + (StrUtil.isBlank(result.reasonCode()) ? "。" : "（" + result.reasonCode() + "）。");
     }
 

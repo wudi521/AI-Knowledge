@@ -7,6 +7,7 @@ import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainEntityResolver;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainStructuredDataAdapter;
+import cn.iocoder.yudao.module.evidence.service.structured.core.FilterExpression;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
@@ -25,15 +26,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /** Patent Domain Pack 的白名单结构化数据适配器。 */
 @Slf4j
 @Component
 public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter, DomainEntityResolver {
-
-    private static final Pattern APPLICATION_NO = Pattern.compile("(?<!\\d)20\\d{10}\\.\\d(?!\\d)");
-    private static final Pattern PUBLICATION_NO = Pattern.compile("(?i)\\bCN\\s*\\d{8,12}\\s*[A-Z]\\b");
 
     private static final Set<String> EXECUTABLE_METRICS = Set.of(
             PatentStructuredPack.METRIC_PATENT_COUNT,
@@ -128,6 +125,14 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                 rows = dedupePatentRows(rows);
             }
 
+            // 专利标题属于发布后应完整的核心著录字段。只要当前全集中存在标题缺失，
+            // TITLE 条件的零结果就不能被证明，必须失败关闭而不是返回可信空集。
+            if (referencesField(plan.getFilterExpression(), PatentStructuredPack.FIELD_TITLE)
+                    && rows.stream().anyMatch(row -> row.getFields() == null
+                    || StrUtil.isBlank(row.getFields().get(PatentStructuredPack.FIELD_TITLE)))) {
+                return StructuredQueryResult.unsupported("专利标题结构化数据不完整，无法保证标题过滤结果完整");
+            }
+
             return StructuredQueryResult.builder()
                     .metricCode(plan.getMetricCode())
                     .operation(plan.getOperation())
@@ -139,6 +144,15 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             log.warn("[execute][metric({}) 数据访问失败: {}]", plan.getMetricCode(), e.getMessage());
             return StructuredQueryResult.unsupported("知识库结构化数据访问异常");
         }
+    }
+
+    private boolean referencesField(FilterExpression expression, String fieldCode) {
+        if (expression == null || expression.getType() == null || StrUtil.isBlank(fieldCode)) return false;
+        if (expression.getType() == FilterExpression.Type.CONDITION) {
+            return fieldCode.equalsIgnoreCase(expression.getFieldCode());
+        }
+        return expression.getChildren() != null
+                && expression.getChildren().stream().anyMatch(child -> referencesField(child, fieldCode));
     }
 
     private Map<Long, KnowledgeDocumentRespDTO> safeDocumentMap(List<Long> ids) {
@@ -192,7 +206,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
     }
 
     private String normalize(String value) {
-        return value == null ? null : value.replaceAll("\\s+", "").toUpperCase();
+        return PatentIdentifierSupport.normalize(value);
     }
 
     private String fieldValueOf(StructuredQueryRowDTO r, KnowledgeDocumentRespDTO doc, String fieldCode) {
@@ -200,13 +214,24 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         return switch (fieldCode) {
             case PatentStructuredPack.FIELD_PUBLICATION_NO -> r.getPublicationNo();
             case PatentStructuredPack.FIELD_APPLICATION_NO -> r.getApplicationNo();
-            case PatentStructuredPack.FIELD_TITLE -> r.getDocumentName();
-            case PatentStructuredPack.FIELD_APPLICANT -> metadataText(doc, "applicants", "applicant");
-            case PatentStructuredPack.FIELD_INVENTOR -> metadataText(doc, "inventors", "inventor");
-            case PatentStructuredPack.FIELD_FILING_DATE -> metadataText(doc, "filingDate", "applicationDate");
-            case PatentStructuredPack.FIELD_PUBLICATION_DATE -> metadataText(doc, "publicationDate", "publishDate");
+            // 上传文件名不是发明名称；标题缺失时保持 null，禁止制造“文件名不包含关键词”的假阴性。
+            case PatentStructuredPack.FIELD_TITLE -> firstNonBlank(r.getTitle(), metadataText(doc, "title"));
+            case PatentStructuredPack.FIELD_APPLICANT -> firstNonBlank(r.getApplicant(),
+                    metadataText(doc, "applicants", "applicant"));
+            case PatentStructuredPack.FIELD_INVENTOR -> firstNonBlank(r.getInventor(),
+                    metadataText(doc, "inventors", "inventor"));
+            case PatentStructuredPack.FIELD_FILING_DATE -> firstNonBlank(r.getFilingDate(),
+                    metadataText(doc, "filingDate", "applicationDate"));
+            case PatentStructuredPack.FIELD_PUBLICATION_DATE -> firstNonBlank(r.getPublicationDate(),
+                    metadataText(doc, "publicationDate", "publishDate"));
             default -> null;
         };
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) return null;
+        for (String value : values) if (StrUtil.isNotBlank(value)) return value;
+        return null;
     }
 
     private String metadataText(KnowledgeDocumentRespDTO doc, String... keys) {
@@ -240,19 +265,20 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
     }
 
     private String buildEntityName(StructuredQueryRowDTO r, KnowledgeDocumentRespDTO doc, String fieldCode) {
-        String name = StrUtil.isNotBlank(r.getDocumentName()) ? r.getDocumentName()
+        String name = firstNonBlank(r.getTitle(), metadataText(doc, "title"), r.getDocumentName());
+        name = StrUtil.isNotBlank(name) ? name
                 : (StrUtil.isNotBlank(r.getPublicationNo()) ? r.getPublicationNo() : "文档" + r.getDocumentId());
         String fieldValue = fieldValueOf(r, doc, fieldCode);
-        return StrUtil.isBlank(fieldValue) ? name : name + " · " + fieldValue;
+        return StrUtil.isBlank(fieldValue) || fieldValue.equals(name) ? name : name + " · " + fieldValue;
     }
 
     @Override
     public List<ResolvedEntity> extractEntities(String text) {
         List<ResolvedEntity> result = new ArrayList<>();
         if (StrUtil.isBlank(text)) return result;
-        Matcher app = APPLICATION_NO.matcher(text);
+        Matcher app = PatentIdentifierSupport.APPLICATION_NO.matcher(text);
         while (app.find()) result.add(new ResolvedEntity(app.group(), null, null));
-        Matcher pub = PUBLICATION_NO.matcher(text);
+        Matcher pub = PatentIdentifierSupport.PUBLICATION_NO.matcher(text);
         while (pub.find()) result.add(new ResolvedEntity(pub.group(), null, null));
         return result;
     }
@@ -265,8 +291,8 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             if (e == null || e.identifier() == null) continue;
             PatentDocumentLookupReqDTO req = new PatentDocumentLookupReqDTO();
             req.setKbIds(List.of(kbId));
-            if (APPLICATION_NO.matcher(e.identifier()).matches()) req.setApplicationNo(e.identifier());
-            else if (PUBLICATION_NO.matcher(e.identifier()).matches()) req.setPublicationNo(e.identifier());
+            if (PatentIdentifierSupport.APPLICATION_NO.matcher(e.identifier()).matches()) req.setApplicationNo(e.identifier());
+            else if (PatentIdentifierSupport.PUBLICATION_NO.matcher(e.identifier()).matches()) req.setPublicationNo(e.identifier());
             else continue;
             try {
                 List<Long> docIds = knowledgeApi.lookupPatentDocuments(req).getCheckedData();

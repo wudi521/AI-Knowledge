@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.evidence.service.structured.core;
 
 import cn.hutool.core.util.StrUtil;
+import cn.iocoder.yudao.module.evidence.service.structured.patent.PatentIdentifierSupport;
 import org.springframework.stereotype.Component;
 
 import java.util.regex.Pattern;
@@ -32,8 +33,6 @@ public class CompletenessGuard {
             "原文出现", "原文中出现", "原文包含", "原文中包含", "精确搜索", "精确匹配", "查找原文", "出现过"
     };
 
-    private static final Pattern APPLICATION_NO = Pattern.compile("(?<!\\d)20\\d{10}\\.\\d(?!\\d)");
-    private static final Pattern PUBLICATION_NO = Pattern.compile("(?i)\\bCN\\s*\\d{8,12}\\s*[A-Z]\\b");
     private static final Pattern BARE_SCOPE_FOLLOW_UP = Pattern.compile(
             "^(这(个|些|几个|几件|两个|两件|三个|三件|几篇)|它们|上述|前面|上面|其中|那(些|几个|几件|几篇))[呢啊呀]?[？?]?$");
     private static final String[] LIST_CONTEXT_WORDS = {
@@ -52,7 +51,8 @@ public class CompletenessGuard {
     }
 
     private boolean isExactLookup(String query) {
-        if (APPLICATION_NO.matcher(query).find() || PUBLICATION_NO.matcher(query).find()) return true;
+        if (PatentIdentifierSupport.APPLICATION_NO.matcher(query).find()
+                || PatentIdentifierSupport.PUBLICATION_NO.matcher(query).find()) return true;
         if (query.contains("申请号") || query.contains("公布号") || query.contains("公开号")) {
             return !containsAny(query, LIST_CONTEXT_WORDS);
         }
