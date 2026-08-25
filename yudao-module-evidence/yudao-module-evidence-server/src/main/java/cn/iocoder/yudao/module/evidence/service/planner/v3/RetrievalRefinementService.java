@@ -6,6 +6,7 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
+import cn.iocoder.yudao.module.evidence.service.agent.guard.CandidateFeedbackGuard;
 import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
@@ -20,8 +21,8 @@ import java.util.Set;
 /**
  * 有界 Agentic Retrieval 的一次反馈判断。
  *
- * <p>只允许在第一轮检索后调用一次，决定 ACCEPT / REFINE / NARROW / BROADEN / ABSTAIN。
- * 不生成答案，不暴露隐藏思维，只返回可审计决策与下一轮有限查询。</p>
+ * <p>这是 V3 迁移期兼容实现。候选只能作为 observation，不能被升级为用户没有提供的查询事实。
+ * V1.1 Agent 主链完成后，本类将退化为 knowledge_retrieval 能力内部的召回优化器。</p>
  */
 @Slf4j
 @Component
@@ -32,28 +33,34 @@ public class RetrievalRefinementService {
             只输出 JSON，不要 Markdown，不要推理过程。
             decision 只能是 ACCEPT/REFINE/NARROW/BROADEN/ABSTAIN。
             - ACCEPT：当前候选已足够相关，可以结束实体选择。
-            - REFINE：候选有价值但表达还不够精准，基于已看到的真实候选术语生成更精准查询。
+            - REFINE：候选有价值但表达还不够精准，只能在原 selectionQuery 的语义边界内改写查询。
             - NARROW：候选较多但存在明显高相关对象，可在 candidateDocumentIds 中缩小后做第二轮验证。
             - BROADEN：结果过少/为零或原查询过窄，需要保留原意扩大表达。
             - ABSTAIN：当前结果明显不能支持用户 Selection，且二次搜索也不值得继续。
-            nextQueries 最多 5 个；不得创造知识库中没有依据的具体事实；只能改善检索表达。
-            selectedDocumentIds 只能从 candidateDocumentIds 中选择。
+
+            安全边界：
+            1. candidates 是检索观察结果，不是用户事实，也不是已验证事实。
+            2. nextQueries 只能改写 selectionQuery 中已经存在的概念，不得把候选标题、候选正文、候选专有名词作为新的查询锚点。
+            3. 即使某个候选得分最高，也不得假设它就是用户指的目标对象。
+            4. 如果必须依赖候选中新出现的具体事实才能继续，应返回 ABSTAIN，而不是把该事实写入 nextQueries。
+            5. nextQueries 最多 5 个；selectedDocumentIds 只能从 candidateDocumentIds 中选择。
+
             JSON: {"decision":"ACCEPT","nextQueries":[],"selectedDocumentIds":[],"reasonCode":"SUFFICIENT"}
             """;
 
     private final ModelApi modelApi;
     private final PromptSupport promptSupport;
+    private final CandidateFeedbackGuard feedbackGuard;
 
-    public RetrievalRefinementService(ModelApi modelApi, PromptSupport promptSupport) {
+    public RetrievalRefinementService(ModelApi modelApi, PromptSupport promptSupport,
+                                      CandidateFeedbackGuard feedbackGuard) {
         this.modelApi = modelApi;
         this.promptSupport = promptSupport;
+        this.feedbackGuard = feedbackGuard;
     }
 
     public Decision decide(String originalQuery, List<Evidence> candidates, String traceId) {
         List<Long> candidateDocumentIds = documentIds(candidates);
-        if (candidateDocumentIds.isEmpty()) {
-            // 空结果值得做一次 BROADEN，由 Planner 原始语义 + Judge 生成第二轮表达。
-        }
         long start = System.currentTimeMillis();
         try {
             ModelChatReqDTO req = new ModelChatReqDTO();
@@ -67,9 +74,21 @@ public class RetrievalRefinementService {
             if (json == null) return fallback(candidates, System.currentTimeMillis() - start, "JUDGE_PARSE_FAILED");
             DecisionType type = enumValue(json.getStr("decision"));
             if (type == null) return fallback(candidates, System.currentTimeMillis() - start, "JUDGE_INVALID_DECISION");
-            List<String> nextQueries = stringList(json.get("nextQueries"), 5);
+
+            List<String> proposedQueries = stringList(json.get("nextQueries"), 5);
+            List<String> nextQueries = feedbackGuard.retainSafeQueries(originalQuery, proposedQueries, candidates);
+            if (!proposedQueries.isEmpty() && nextQueries.size() < proposedQueries.size()) {
+                log.warn("[retrieval-judge-v3][candidate feedback blocked traceId={} proposed={} safe={}]",
+                        traceId, proposedQueries, nextQueries);
+            }
             List<Long> selected = longList(json.get("selectedDocumentIds"), candidateDocumentIds);
+
             if ((type == DecisionType.REFINE || type == DecisionType.BROADEN) && nextQueries.isEmpty()) {
+                // 模型只有依赖候选新增事实才能继续时，宁可停止，也不允许形成自我强化检索闭环。
+                if (!proposedQueries.isEmpty()) {
+                    return new Decision(DecisionType.ABSTAIN, List.of(), List.of(),
+                            "CANDIDATE_FEEDBACK_CONTAMINATION", System.currentTimeMillis() - start, "GUARD");
+                }
                 return fallback(candidates, System.currentTimeMillis() - start, "JUDGE_MISSING_NEXT_QUERY");
             }
             if (type == DecisionType.NARROW && selected.isEmpty()) {
@@ -85,7 +104,7 @@ public class RetrievalRefinementService {
     }
 
     private Decision fallback(List<Evidence> candidates, long elapsed, String reason) {
-        // Judge 故障不把一个已有候选的正常查询打死；有结果时接受当前结果，无结果时拒绝。
+        // Judge 故障不把已有候选的普通查询直接打死；无结果则拒绝。
         if (candidates != null && !candidates.isEmpty()) {
             return new Decision(DecisionType.ACCEPT, List.of(), List.of(), reason, elapsed, "FALLBACK");
         }
@@ -96,7 +115,7 @@ public class RetrievalRefinementService {
         StringBuilder sb = new StringBuilder(2200);
         sb.append("selectionQuery=").append(query).append('\n');
         sb.append("candidateDocumentIds=").append(documentIds).append('\n');
-        sb.append("candidates:\n");
+        sb.append("candidates(observationsOnly=true):\n");
         if (candidates != null) {
             int i = 0;
             for (Evidence e : candidates) {
