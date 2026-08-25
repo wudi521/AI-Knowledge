@@ -10,7 +10,6 @@ import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -86,11 +85,11 @@ public class StructuredValueEvaluator {
         List<String> source;
         boolean valueCount = expression.transforms().contains(StructuredValueTransform.VALUE_COUNT);
         if (valueCount) {
-            source = List.of(String.valueOf(splitMulti(raw).size()));
+            source = List.of(String.valueOf(MultiValueSupport.split(raw, validation.field()).size()));
         } else if (validation.field().isMultiValue() && expression.explode()) {
-            source = splitMulti(raw);
+            source = MultiValueSupport.split(raw, validation.field());
         } else if (validation.field().isMultiValue()) {
-            source = List.of(canonicalMulti(raw));
+            source = List.of(MultiValueSupport.canonical(raw, validation.field()));
         } else {
             source = List.of(raw.trim());
         }
@@ -222,20 +221,6 @@ public class StructuredValueEvaluator {
             case VALUE_COUNT -> value;
             case PERSON_SURNAME -> surname(value);
         };
-    }
-
-    private List<String> splitMulti(String raw) {
-        if (StrUtil.isBlank(raw)) return List.of();
-        String[] parts = raw.split("[、；;，,\\n\\r]+");
-        List<String> values = new ArrayList<>();
-        for (String part : parts) if (StrUtil.isNotBlank(part)) values.add(part.trim());
-        return values.isEmpty() ? List.of(raw.trim()) : List.copyOf(values);
-    }
-
-    private String canonicalMulti(String raw) {
-        List<String> items = new ArrayList<>(new LinkedHashSet<>(splitMulti(raw)));
-        items.sort(Comparator.comparing(v -> v.toLowerCase(Locale.ROOT)));
-        return String.join("、", items);
     }
 
     private String surname(String raw) {
