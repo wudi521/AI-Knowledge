@@ -85,6 +85,35 @@ class AgenticQueryEngineTrustedScopeTest {
     }
 
     @Test
+    void valueProjectionMustNotPromoteRepresentativeEntitiesIntoTrustedScope() {
+        AtomicInteger plannerCalls = new AtomicInteger();
+        AgentPlanner planner = (state, context, observations, history) -> {
+            int call = plannerCalls.getAndIncrement();
+            if (call == 0) {
+                return new AgentDecision(AgentActionType.CALL_CAPABILITY, "value-projection",
+                        Map.of("query", "不同申请人"), "返回去重后的字段值集合", null);
+            }
+            assertTrue(context.contextEntityIds().isEmpty(),
+                    "DISTINCT/exploded field values are values, not pronoun-addressable entity scope");
+            return new AgentDecision(AgentActionType.ANSWER, null, Map.of(), "回答值集合", null);
+        };
+
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
+                List.of(new ValueProjectionCapability()), List.of()));
+        try {
+            AgenticQueryEngine engine = new AgenticQueryEngine(planner, invoker, null);
+            AgenticQueryEngine.Result result = engine.execute(
+                    "有哪些不同申请人？", 6L, "PATENT", 1L, 2L,
+                    "trace-value-projection", List.of());
+            assertEquals(AgenticQueryEngine.State.ANSWER, result.state());
+            assertEquals("申请人=甲、乙", result.answer());
+            assertTrue(result.verifiedEntityIds().isEmpty());
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
     void semanticCandidateDocumentIdMustNeverBecomeTrustedScope() {
         AtomicInteger plannerCalls = new AtomicInteger();
         AgentPlanner planner = (state, context, observations, history) -> {
@@ -188,6 +217,26 @@ class AgenticQueryEngineTrustedScopeTest {
                 @Override public String deterministicAnswer() { return "专利数量=2"; }
             };
             return CapabilityResult.success(output, Map.of("task", "COUNT", "outputCount", 1));
+        }
+    }
+
+    private static final class ValueProjectionCapability implements KnowledgeCapability {
+        private final CapabilityDefinition definition = new CapabilityDefinition(
+                "value-projection", "1", "值投影 trusted scope 防污染测试能力", Set.of("query"), true, 1000, 10);
+
+        @Override public CapabilityDefinition definition() { return definition; }
+
+        @Override
+        public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+            AgentCapabilityOutput output = new AgentCapabilityOutput() {
+                @Override public String summary() { return "distinct applicants from entities 74,75"; }
+                @Override public String progressHash() { return "applicants-a-b"; }
+                @Override public List<Long> verifiedEntityIds() { return List.of(74L, 75L); }
+                @Override public String deterministicAnswer() { return "申请人=甲、乙"; }
+            };
+            return CapabilityResult.success(output, Map.of(
+                    "valueProjection", true,
+                    "outputCount", 2));
         }
     }
 
