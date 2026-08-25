@@ -246,7 +246,8 @@ public class AgenticQueryEngine {
                         state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
                         traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
                                 decision.purpose(), decisionArgs, "FAILED", 0L,
-                                "evidenceCount=0; no reliable evidence to answer", AgentStopReason.NO_RELIABLE_EVIDENCE));
+                                "evidenceCount=0; no reliable evidence to answer immutable originalGoal",
+                                AgentStopReason.NO_RELIABLE_EVIDENCE));
                         return Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE, "没有可靠证据支持回答。",
                                 List.of(), state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
                     }
@@ -279,7 +280,7 @@ public class AgenticQueryEngine {
                             : verdict == AgentGoalEvaluator.Verdict.NEED_MORE_INFO ? "STOPPED" : "FAILED";
                     traceSteps.add(trace(traceSteps, "GOAL_EVALUATOR", decision.action().name(), null,
                             decision.purpose(), null, evaluatorStatus, evaluatorElapsed,
-                            "verdict=" + verdict + "; " + StrUtil.maxLength(evaluatorReason, 380),
+                            "verdict=" + verdict + "; originalGoal checked; " + StrUtil.maxLength(evaluatorReason, 350),
                             verdict == AgentGoalEvaluator.Verdict.SATISFIED ? null
                                     : verdict == AgentGoalEvaluator.Verdict.NEED_MORE_INFO
                                     ? AgentStopReason.NEED_USER_INPUT : AgentStopReason.NO_RELIABLE_EVIDENCE));
@@ -330,7 +331,7 @@ public class AgenticQueryEngine {
                         traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
                                 decision.purpose(), decisionArgs, "SUCCEEDED", 0L,
                                 "evidenceCount=0; verifiedEntityCount=" + trustedEntityIds.size()
-                                        + "; independent goal evaluator accepted deterministic result",
+                                        + "; independent goal evaluator accepted deterministic result for immutable originalGoal",
                                 AgentStopReason.ENOUGH_EVIDENCE));
                         return new Result(State.ANSWER, String.join("\n", deterministicAnswers), null,
                                 AgentStopReason.ENOUGH_EVIDENCE, List.of(), state.getStep(), state.getLlmCalls(),
@@ -346,7 +347,8 @@ public class AgenticQueryEngine {
                         state.stop(AgentStopReason.NO_RELIABLE_EVIDENCE);
                         traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
                                 decision.purpose(), decisionArgs, "FAILED", answerElapsed,
-                                "evidenceCount=" + gatheredEvidence.size() + "; answer failed evidence/claim validation",
+                                "evidenceCount=" + gatheredEvidence.size()
+                                        + "; immutable originalGoal answer failed evidence/claim validation",
                                 AgentStopReason.NO_RELIABLE_EVIDENCE));
                         return Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE, "最终回答未通过证据验证。",
                                 gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps, trusted(trustedEntityIds));
@@ -358,7 +360,8 @@ public class AgenticQueryEngine {
                     state.stop(AgentStopReason.ENOUGH_EVIDENCE);
                     traceSteps.add(trace(traceSteps, "ANSWER", decision.action().name(), null,
                             decision.purpose(), decisionArgs, "SUCCEEDED", answerElapsed,
-                            "evidenceCount=" + gatheredEvidence.size() + "; independent goal evaluation + claim validation passed",
+                            "evidenceCount=" + gatheredEvidence.size()
+                                    + "; immutable originalGoal passed independent goal evaluation + claim validation",
                             AgentStopReason.ENOUGH_EVIDENCE));
                     return new Result(State.ANSWER, finalAnswer, null, AgentStopReason.ENOUGH_EVIDENCE,
                             List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(),
