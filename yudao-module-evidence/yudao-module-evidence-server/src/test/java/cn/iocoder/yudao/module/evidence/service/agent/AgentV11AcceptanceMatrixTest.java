@@ -5,10 +5,14 @@ import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.AgenticEvidenceFacade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryEngineV3Facade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryRouter;
+import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResultStatus;
+import cn.iocoder.yudao.module.evidence.service.agent.runtime.ProvenanceRecord;
+import cn.iocoder.yudao.module.evidence.service.agent.runtime.ReferenceRecord;
 import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -37,6 +41,13 @@ class AgentV11AcceptanceMatrixTest {
         EvidenceRecorder recorder = mock(EvidenceRecorder.class);
         AgenticEvidenceFacade facade = new AgenticEvidenceFacade(engine, recorder);
 
+        ReferenceRecord reference = new ReferenceRecord(
+                "ref-1", "plan-1", "n1", "structured_query", CapabilityResultStatus.SUCCESS,
+                "申请号X唯一匹配到专利74，并投影公布号CN123", "公布号=CN123",
+                List.of(), List.of(74L), Map.of("completeDataset", true, "outputComplete", true));
+        ProvenanceRecord provenance = new ProvenanceRecord(
+                "ref-1", "plan-1", "n1", "structured_query",
+                1L, 2L, 6L, "PATENT", "ag-contract-1", Map.of("source", "structured"));
         AgenticKnowledgeRuntimeEngine.Result result = new AgenticKnowledgeRuntimeEngine.Result(
                 AgenticKnowledgeRuntimeEngine.State.ANSWER,
                 "公布号=CN123",
@@ -52,7 +63,7 @@ class AgentV11AcceptanceMatrixTest {
                         "deterministic references satisfy immutable OriginalGoal",
                         AgentStopReason.ENOUGH_EVIDENCE)),
                 List.of(74L),
-                List.of(), List.of(), List.of());
+                List.of(), List.of(reference), List.of(provenance));
         when(engine.execute(eq("申请号X的公布号是什么？"), eq(6L), eq("PATENT"), eq(1L), eq(2L),
                 any(), anyList(), anyList())).thenReturn(result);
 
@@ -71,6 +82,11 @@ class AgentV11AcceptanceMatrixTest {
         assertEquals(List.of(74L), resp.getStructuredResult().getEntityIds());
         assertEquals("ENOUGH_EVIDENCE", resp.getReasonCode());
         assertEquals("AGENTIC_KNOWLEDGE_RUNTIME", resp.getExecutionMode());
+        assertTrue(resp.getStages().stream().anyMatch(s -> "AGENT_REFERENCE_RECORD".equals(s.getStage())
+                && s.getOutputSummary().contains("referenceId=ref-1")));
+        assertTrue(resp.getStages().stream().anyMatch(s -> "AGENT_PROVENANCE_RECORD".equals(s.getStage())
+                && s.getOutputSummary().contains("kbId=6")
+                && !s.getOutputSummary().contains("userId")));
     }
 
     @Test
