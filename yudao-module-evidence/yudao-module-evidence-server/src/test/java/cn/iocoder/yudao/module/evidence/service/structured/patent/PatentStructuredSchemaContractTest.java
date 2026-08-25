@@ -8,7 +8,9 @@ import cn.iocoder.yudao.module.evidence.service.structured.core.DefaultDomainEnt
 import cn.iocoder.yudao.module.evidence.service.structured.core.DefaultDomainFieldRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DefaultDomainMetricRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.FieldDefinition;
+import cn.iocoder.yudao.module.evidence.service.structured.core.FilterOperator;
 import cn.iocoder.yudao.module.evidence.service.structured.core.MetricDefinition;
+import cn.iocoder.yudao.module.evidence.service.structured.core.Operation;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredPipelineExecutor;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredValueEvaluator;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredValueExpression;
@@ -28,10 +30,10 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 /**
- * Domain Schema 声明即契约：声明可排序/分组/变换/指标运算后，Agent Pipeline 必须真实可执行。
+ * Domain Schema 声明即契约：声明可排序/分组/过滤/变换/指标运算后，Agent Pipeline 必须真实可执行。
  */
 @ExtendWith(MockitoExtension.class)
 class PatentStructuredSchemaContractTest {
@@ -61,7 +63,8 @@ class PatentStructuredSchemaContractTest {
                 row(1L, "短标题", "202300000001.1", "CN1A", "2023-01-01", "2023-02-01", "张三、李四", "甲公司", 3d),
                 row(2L, "更长一些的标题", "202300000002.2", "CN2A", "2024-03-01", "2024-04-01", "张伟、欧阳明", "乙公司", 8d)
         )));
-        when(knowledgeApi.structuredQuery(any())).thenReturn(CommonResult.success(data));
+        // 部分纯 Registry 契约测试不会访问数据源；lenient 避免 Mockito 把这种共享 fixture 当成失败。
+        lenient().when(knowledgeApi.structuredQuery(any())).thenReturn(CommonResult.success(data));
     }
 
     @Test
@@ -82,13 +85,15 @@ class PatentStructuredSchemaContractTest {
                 .filter(FieldDefinition::isSortable)
                 .sorted(Comparator.comparing(FieldDefinition::getFieldCode)).toList();
         for (FieldDefinition field : sortable) {
-            CapabilityResult result = delegate.execute(context, Map.of(
-                    "select", List.of(field.getFieldCode()),
-                    "orderBy", Map.of("field", field.getFieldCode(), "direction", "ASC"),
-                    "limit", 1
-            ));
-            assertThat(result.success()).as("sortable=true must execute: %s -> %s",
-                    field.getFieldCode(), result.message()).isTrue();
+            for (String direction : List.of("ASC", "DESC")) {
+                CapabilityResult result = delegate.execute(context, Map.of(
+                        "select", List.of(field.getFieldCode()),
+                        "orderBy", Map.of("field", field.getFieldCode(), "direction", direction),
+                        "limit", 1
+                ));
+                assertThat(result.success()).as("sortable=true must execute: %s %s -> %s",
+                        field.getFieldCode(), direction, result.message()).isTrue();
+            }
         }
     }
 
@@ -104,6 +109,27 @@ class PatentStructuredSchemaContractTest {
             ));
             assertThat(result.success()).as("groupable=true must execute: %s -> %s",
                     field.getFieldCode(), result.message()).isTrue();
+        }
+    }
+
+    @Test
+    void everyDeclaredFilterOperatorActuallyExecutes() {
+        for (FieldDefinition field : fields.all("PATENT")) {
+            if (!field.isFilterable() || field.getAllowedOperators() == null) continue;
+            for (FilterOperator operator : field.getAllowedOperators()) {
+                Map<String, Object> condition = new java.util.LinkedHashMap<>();
+                condition.put("field", field.getFieldCode());
+                condition.put("operator", operator.name());
+                condition.put("explode", field.isMultiValue());
+                if (operator != FilterOperator.EXISTS) condition.put("values", expectedValues(field, operator));
+                CapabilityResult result = delegate.execute(context, Map.of(
+                        "select", List.of(field.getFieldCode()),
+                        "filter", condition,
+                        "limit", 10
+                ));
+                assertThat(result.success()).as("declared operator must execute: %s.%s -> %s",
+                        field.getFieldCode(), operator, result.message()).isTrue();
+            }
         }
     }
 
@@ -129,6 +155,36 @@ class PatentStructuredSchemaContractTest {
                         field.getFieldCode(), transform, result.message()).isTrue();
             }
         }
+    }
+
+    @Test
+    void everyDeclaredMetricOperationActuallyExecutes() {
+        for (MetricDefinition metric : metrics.all("PATENT")) {
+            if (metric.getSupportedOperations() == null) continue;
+            for (Operation operation : metric.getSupportedOperations()) {
+                CapabilityResult result = delegate.execute(context, Map.of(
+                        "aggregate", Map.of("operation", operation.name(), "metric", metric.getMetricCode())
+                ));
+                assertThat(result.success()).as("declared metric operation must execute: %s.%s -> %s",
+                        metric.getMetricCode(), operation, result.message()).isTrue();
+            }
+        }
+    }
+
+    private List<String> expectedValues(FieldDefinition field, FilterOperator operator) {
+        if (operator == FilterOperator.BETWEEN) {
+            if ("DATE".equalsIgnoreCase(field.getValueType())) return List.of("2022-01-01", "2025-12-31");
+            return List.of("0", "9999999999");
+        }
+        if ("DATE".equalsIgnoreCase(field.getValueType())) return List.of("2023-01-01");
+        return switch (field.getFieldCode()) {
+            case PatentStructuredPack.FIELD_APPLICATION_NO -> List.of("202300000001.1");
+            case PatentStructuredPack.FIELD_PUBLICATION_NO -> List.of("CN1A");
+            case PatentStructuredPack.FIELD_TITLE -> List.of("短标题");
+            case PatentStructuredPack.FIELD_INVENTOR -> List.of("张三");
+            case PatentStructuredPack.FIELD_APPLICANT -> List.of("甲公司");
+            default -> List.of("测试");
+        };
     }
 
     private StructuredQueryRowDTO row(Long id, String title, String app, String pub,
