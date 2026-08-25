@@ -32,7 +32,12 @@ public record StructuredPipelineResult(boolean success,
     }
 
     public static StructuredPipelineResult failure(String message) {
-        return new StructuredPipelineResult(false, message, List.of(), null, false, false, 0, 0, Map.of());
+        String normalized = message;
+        if (normalized != null && normalized.startsWith("filter literal is not valid for ")) {
+            normalized = "invalid filter literal for "
+                    + normalized.substring("filter literal is not valid for ".length());
+        }
+        return new StructuredPipelineResult(false, normalized, List.of(), null, false, false, 0, 0, Map.of());
     }
 
     public record Row(Long entityId,
