@@ -20,6 +20,9 @@ import java.util.Set;
  */
 @Component
 public class StructuredPipelineExecutor {
+    private static final int MAX_GROUP_COMBINATIONS_PER_ENTITY = 256;
+    private static final int MAX_GROUP_BUCKETS = 5_000;
+
     private final DomainFieldRegistry fieldRegistry;
     private final DomainMetricRegistry metricRegistry;
     private final List<DomainStructuredDataAdapter> adapters;
@@ -130,15 +133,24 @@ public class StructuredPipelineExecutor {
         for (StructuredQueryResult.Row row : rows) {
             List<List<String>> dimensions = new ArrayList<>();
             boolean rowMissing = false;
+            long combinations = 1L;
             for (StructuredValueExpression expression : plan.getGroupBy()) {
                 List<String> result = values.values(plan.getDomainCode(), row, expression);
                 if (result.isEmpty()) { rowMissing = true; break; }
+                if (combinations > MAX_GROUP_COMBINATIONS_PER_ENTITY / Math.max(1, result.size())) {
+                    return StructuredPipelineResult.failure("group-by expansion exceeds per-entity safety limit: "
+                            + MAX_GROUP_COMBINATIONS_PER_ENTITY);
+                }
+                combinations *= result.size();
                 dimensions.add(result);
             }
             if (rowMissing) { missing++; continue; }
             for (List<String> tuple : cartesian(dimensions)) {
                 String key = String.join(" | ", tuple);
                 groups.computeIfAbsent(key, k -> new GroupBucket(tuple)).rows.add(row);
+                if (groups.size() > MAX_GROUP_BUCKETS) {
+                    return StructuredPipelineResult.failure("group-by result exceeds safety limit: " + MAX_GROUP_BUCKETS);
+                }
             }
         }
         if (missing > 0) {
@@ -248,7 +260,11 @@ public class StructuredPipelineExecutor {
             keys.put(row, rowKeys);
         }
         List<StructuredQueryResult.Row> out = new ArrayList<>(rows);
-        out.sort((a, b) -> compareOrderKeys(domainCode, a, b, keys, specs));
+        try {
+            out.sort((a, b) -> compareOrderKeys(domainCode, a, b, keys, specs));
+        } catch (IllegalArgumentException e) {
+            return SortRows.failure(e.getMessage());
+        }
         return SortRows.success(out);
     }
 
@@ -284,22 +300,26 @@ public class StructuredPipelineExecutor {
         }
 
         List<StructuredPipelineResult.Row> out = new ArrayList<>(rows);
-        out.sort((a, b) -> {
-            for (StructuredOrderSpec spec : specs) {
-                int cmp;
-                if (spec.aggregateValue()) {
-                    double av = a.value() == null ? 0D : a.value();
-                    double bv = b.value() == null ? 0D : b.value();
-                    cmp = Double.compare(av, bv);
-                } else {
-                    String key = expressionKey(spec.value());
-                    String type = values.outputType(domainCode, spec.value());
-                    cmp = values.compare(a.fields().get(key), b.fields().get(key), type);
+        try {
+            out.sort((a, b) -> {
+                for (StructuredOrderSpec spec : specs) {
+                    int cmp;
+                    if (spec.aggregateValue()) {
+                        double av = a.value() == null ? 0D : a.value();
+                        double bv = b.value() == null ? 0D : b.value();
+                        cmp = Double.compare(av, bv);
+                    } else {
+                        String key = expressionKey(spec.value());
+                        String type = values.outputType(domainCode, spec.value());
+                        cmp = values.compare(a.fields().get(key), b.fields().get(key), type);
+                    }
+                    if (cmp != 0) return spec.direction() == SortDirection.ASC ? cmp : -cmp;
                 }
-                if (cmp != 0) return spec.direction() == SortDirection.ASC ? cmp : -cmp;
-            }
-            return String.valueOf(a.groupKey()).compareTo(String.valueOf(b.groupKey()));
-        });
+                return String.valueOf(a.groupKey()).compareTo(String.valueOf(b.groupKey()));
+            });
+        } catch (IllegalArgumentException e) {
+            return GroupSort.failure(e.getMessage());
+        }
         return GroupSort.success(out);
     }
 
@@ -432,14 +452,19 @@ public class StructuredPipelineExecutor {
         if (node.value() == null || node.operator() == null) return "filter condition requires value/operator";
         FieldDefinition field = fieldRegistry.byCode(domainCode, node.value().fieldCode()).orElse(null);
         if (field == null || !field.isFilterable()) return "field is not filterable: " + node.value().fieldCode();
+        String outputType = values.outputType(domainCode, node.value());
         if (node.value().transforms().isEmpty()) {
             if (field.getAllowedOperators() == null || !field.getAllowedOperators().contains(node.operator())) {
                 return "operator " + node.operator() + " is not allowed for field " + field.getFieldCode();
             }
-        } else if (!operatorCompatible(node.operator(), values.outputType(domainCode, node.value()))) {
+        } else if (!operatorCompatible(node.operator(), outputType)) {
             return "operator " + node.operator() + " is not compatible with transformed value " + expressionKey(node.value());
         }
         if (node.operator() != FilterOperator.EXISTS && node.expected().isEmpty()) return "filter values are required";
+        if (node.operator() == FilterOperator.BETWEEN && node.expected().size() != 2) return "BETWEEN requires exactly two values";
+        if (node.operator() != FilterOperator.EXISTS && !values.literalsValid(outputType, node.expected())) {
+            return "filter literal is not valid for " + outputType + " expression " + expressionKey(node.value());
+        }
         return null;
     }
 
