@@ -101,13 +101,13 @@ public class PatentStructuredPack {
                 .fieldCode(FIELD_APPLICANT).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
                 .valueType("STRING").multiValue(true).aliases(List.of("申请人", "申请单位"))
                 .allowedOperators(Set.of(EQ, IN, CONTAINS, EXISTS))
-                .filterable(true).groupable(true)
+                .sortable(true).filterable(true).groupable(true)
                 .allowedTransforms(Set.of(StructuredValueTransform.LENGTH, StructuredValueTransform.VALUE_COUNT)).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_INVENTOR).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
                 .valueType("STRING").multiValue(true).aliases(List.of("发明人", "发明者"))
                 .allowedOperators(Set.of(EQ, IN, CONTAINS, EXISTS))
-                .filterable(true).groupable(true)
+                .sortable(true).filterable(true).groupable(true)
                 .allowedTransforms(Set.of(StructuredValueTransform.LENGTH, StructuredValueTransform.VALUE_COUNT,
                         StructuredValueTransform.PERSON_SURNAME)).build());
         fieldRegistry.register(FieldDefinition.builder()
