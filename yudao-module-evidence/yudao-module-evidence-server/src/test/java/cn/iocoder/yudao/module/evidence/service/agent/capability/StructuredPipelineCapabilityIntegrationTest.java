@@ -151,6 +151,23 @@ class StructuredPipelineCapabilityIntegrationTest {
     }
 
     @Test
+    void explicitProjectionMissingValueMustNotBePresentedAsFullAnswer() {
+        rows(
+                row(1L, "有公开日", "202300000001.1", "CN1A", "2023-01-01", "2023-02-01", "张三", 1d),
+                row(2L, "缺公开日", "202300000002.2", "CN2A", "2023-01-02", null, "李四", 1d)
+        );
+
+        CapabilityResult result = delegate.execute(context, Map.of(
+                "select", List.of("TITLE", "PUBLICATION_DATE"),
+                "limit", 10
+        ));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.recoverable()).isFalse();
+        assertThat(result.message()).contains("PARTIAL").contains("missing");
+    }
+
+    @Test
     void ordersByDerivedTitleLength() {
         rows(
                 row(1L, "短标题", "202300000001.1", "CN1A", "2023-01-01", "2023-02-01", "张三", 1d),
@@ -203,6 +220,26 @@ class StructuredPipelineCapabilityIntegrationTest {
         assertThat(result.success()).isFalse();
         assertThat(result.recoverable()).isFalse();
         assertThat(result.message()).contains("FILING_DATE").contains("冲突");
+    }
+
+    @Test
+    void duplicateLogicalPatentMultiValueOrderDifferenceIsNotConflict() {
+        rows(
+                row(1L, "同一专利", "202300000001.1", "CN1A", "2023-01-01", "2023-02-01", "张三、李四", 1d),
+                row(9L, "同一专利", "202300000001.1", "CN1A", "2023-01-01", "2023-02-01", "李四,张三", 1d)
+        );
+
+        CapabilityResult result = delegate.execute(context, Map.of(
+                "aggregate", Map.of(
+                        "operation", "COUNT_DISTINCT",
+                        "field", "INVENTOR",
+                        "explode", true
+                )
+        ));
+
+        assertThat(result.success()).isTrue();
+        StructuredPipelineCapabilityDelegate.Output output = (StructuredPipelineCapabilityDelegate.Output) result.data();
+        assertThat(output.value()).isEqualTo(2d);
     }
 
     private void rows(StructuredQueryRowDTO... rows) {
