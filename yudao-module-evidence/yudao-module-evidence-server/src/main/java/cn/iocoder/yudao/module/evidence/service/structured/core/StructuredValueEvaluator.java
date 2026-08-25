@@ -80,7 +80,13 @@ public class StructuredValueEvaluator {
             String current = value;
             String currentType = valueCount ? "INTEGER" : validation.field().getValueType();
             boolean failed = false;
+
+            // Source of Truth 声明了 DATE/INTEGER/DECIMAL 就必须真的是该类型。
+            // 非法源数据不允许退化成字符串比较；返回空值让上层完整性规则 fail-closed。
+            if (!literalValid(currentType, current)) failed = true;
+
             for (StructuredValueTransform transform : transforms) {
+                if (failed) break;
                 current = apply(transform, current, currentType);
                 if (current == null) { failed = true; break; }
                 currentType = outputType(transform);
@@ -108,11 +114,14 @@ public class StructuredValueEvaluator {
         if (right == null) return 1;
         if ("INTEGER".equalsIgnoreCase(valueType) || "DECIMAL".equalsIgnoreCase(valueType)) {
             try { return new BigDecimal(left.trim()).compareTo(new BigDecimal(right.trim())); }
-            catch (NumberFormatException ignore) { return left.compareToIgnoreCase(right); }
+            catch (NumberFormatException e) {
+                throw new IllegalArgumentException("invalid numeric value for typed comparison");
+            }
         }
         if ("DATE".equalsIgnoreCase(valueType)) {
             LocalDate a = date(left), b = date(right);
-            if (a != null && b != null) return a.compareTo(b);
+            if (a == null || b == null) throw new IllegalArgumentException("invalid date value for typed comparison");
+            return a.compareTo(b);
         }
         return left.trim().toLowerCase(Locale.ROOT).compareTo(right.trim().toLowerCase(Locale.ROOT));
     }
@@ -185,7 +194,7 @@ public class StructuredValueEvaluator {
 
     private List<String> splitMulti(String raw) {
         if (StrUtil.isBlank(raw)) return List.of();
-        String[] parts = raw.split("[、；;\\n\\r]+");
+        String[] parts = raw.split("[、；;，,\\n\\r]+");
         List<String> values = new ArrayList<>();
         for (String part : parts) if (StrUtil.isNotBlank(part)) values.add(part.trim());
         return values.isEmpty() ? List.of(raw.trim()) : List.copyOf(values);
