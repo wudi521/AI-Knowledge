@@ -29,13 +29,16 @@ public class CapabilityRegistry {
     public KnowledgeCapability getVisible(String name, CapabilityInvocationContext context) {
         KnowledgeCapability capability = capabilities.get(name);
         if (capability == null) return null;
-        return isVisible(capability.definition(), context) ? capability : null;
+        CapabilityDefinition plannerDefinition = capability.plannerDefinition(context);
+        return plannerDefinition != null && isVisible(plannerDefinition, context) ? capability : null;
     }
 
+    /** Planner 只能看到当前 scope/domain 下真实可用、并已按上下文收窄后的 Tool Contract。 */
     public List<CapabilityDefinition> listDefinitions(CapabilityInvocationContext context) {
         List<CapabilityDefinition> out = new ArrayList<>();
         for (KnowledgeCapability capability : capabilities.values()) {
-            if (isVisible(capability.definition(), context)) out.add(capability.definition());
+            CapabilityDefinition plannerDefinition = capability.plannerDefinition(context);
+            if (plannerDefinition != null && isVisible(plannerDefinition, context)) out.add(plannerDefinition);
         }
         return Collections.unmodifiableList(out);
     }
