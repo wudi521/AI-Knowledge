@@ -135,6 +135,25 @@ public class AgenticQueryEngine {
                     String safeArgs = argumentsSummary(call.arguments());
                     AgentExecutionGuard.GuardResult callGuard = guard.beforeCapabilityCall(state, call.fingerprint());
                     if (!callGuard.allowed()) {
+                        if (callGuard.stopReason() == AgentStopReason.REPEATED_CALL
+                                && recoverableErrors < MAX_RECOVERABLE_CAPABILITY_ERRORS) {
+                            recoverableErrors++;
+                            String progress = "EQUIVALENT_PLAN:" + StrUtil.nullToEmpty(call.fingerprint());
+                            state.markProgress(progress);
+                            String message = "equivalent execution plan was already executed; choose a materially different "
+                                    + "operator/transform/filter/aggregate/orderBy, or answer/clarify/stop from existing observations";
+                            observations.add(AgentObservation.recoverableError(
+                                    decision.capability(), decision.purpose(), message, progress,
+                                    AgentStopReason.REPEATED_CALL,
+                                    Map.of("errorKind", "EQUIVALENT_PLAN")));
+                            traceSteps.add(trace(traceSteps, "CAPABILITY_PREPARE", decision.action().name(), decision.capability(),
+                                    decision.purpose(), safeArgs, "RETRYABLE", 0L,
+                                    "evidenceCount=" + gatheredEvidence.size() + "; recoverableError="
+                                            + recoverableErrors + "/" + MAX_RECOVERABLE_CAPABILITY_ERRORS
+                                            + "; equivalent normalized execution plan blocked before capability execution",
+                                    AgentStopReason.REPEATED_CALL));
+                            continue;
+                        }
                         state.stop(callGuard.stopReason());
                         traceSteps.add(trace(traceSteps, "GUARD", decision.action().name(), decision.capability(),
                                 decision.purpose(), safeArgs, "STOPPED", 0L,
