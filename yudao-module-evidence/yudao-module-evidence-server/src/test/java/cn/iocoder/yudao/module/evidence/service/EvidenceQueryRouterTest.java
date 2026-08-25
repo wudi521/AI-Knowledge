@@ -2,7 +2,6 @@ package cn.iocoder.yudao.module.evidence.service;
 
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
 import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
-import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -17,7 +16,7 @@ import static org.mockito.Mockito.when;
 class EvidenceQueryRouterTest {
 
     @Test
-    void infrastructureFailureMayFallbackToV3DuringMigration() {
+    void legacyFallbackConfigurationMustNotBypassAgentRuntime() {
         EvidenceQueryEngineV3Facade v3 = mock(EvidenceQueryEngineV3Facade.class);
         AgenticEvidenceFacade agent = mock(AgenticEvidenceFacade.class);
         EvidenceProperties properties = new EvidenceProperties();
@@ -25,32 +24,24 @@ class EvidenceQueryRouterTest {
         EvidenceQueryRouter router = new EvidenceQueryRouter(v3, agent, properties);
 
         EvidenceEvaluateRespVO agentResp = response(false, "CAPABILITY_UNAVAILABLE", "trace-1");
-        agentResp.setStages(List.of(stage(1, "AGENT_PLAN")));
-        EvidenceEvaluateRespVO v3Resp = response(true, null, "trace-1");
-        v3Resp.setStages(List.of(stage(1, "BM25")));
         when(agent.evaluateUnrecorded("q", List.of(6L), "PATENT", 1L, 2L,
                 List.of(), null, "trace-1")).thenReturn(agentResp);
-        when(v3.evaluate("q", List.of(6L), 8, 1L, 2L,
-                List.of(), false, "trace-1", "PATENT", null, null)).thenReturn(v3Resp);
 
         EvidenceEvaluateRespVO actual = router.evaluate("q", List.of(6L), 8, 1L, 2L,
                 List.of(), false, "trace-1", "PATENT", null, null);
-        assertSame(v3Resp, actual);
-        assertEquals("AGENTIC_V1_FALLBACK_V3", actual.getExecutionMode());
-        assertEquals(List.of("AGENT_PLAN", "AGENT_FALLBACK_TO_V3", "BM25"),
-                actual.getStages().stream().map(QueryStageTimingDTO::getStage).toList());
-        assertEquals(List.of(1, 2, 3), actual.getStages().stream().map(QueryStageTimingDTO::getSeq).toList());
-        verify(agent, never()).record(agentResp);
-        verify(v3).recordStages(v3Resp);
+
+        assertSame(agentResp, actual);
+        assertEquals("AGENT", router.mode());
+        verify(agent).record(agentResp);
+        verify(v3, never()).evaluate("q", List.of(6L), 8, 1L, 2L,
+                List.of(), false, "trace-1", "PATENT", null, null);
     }
 
     @Test
-    void evidenceInsufficiencyMustNotBeUndoneByV3Fallback() {
+    void evidenceInsufficiencyStaysOnAgentRuntime() {
         EvidenceQueryEngineV3Facade v3 = mock(EvidenceQueryEngineV3Facade.class);
         AgenticEvidenceFacade agent = mock(AgenticEvidenceFacade.class);
-        EvidenceProperties properties = new EvidenceProperties();
-        properties.getAgent().setMode("AGENT_WITH_V3_FALLBACK");
-        EvidenceQueryRouter router = new EvidenceQueryRouter(v3, agent, properties);
+        EvidenceQueryRouter router = new EvidenceQueryRouter(v3, agent, new EvidenceProperties());
 
         EvidenceEvaluateRespVO agentResp = response(false, "NO_RELIABLE_EVIDENCE", "trace-2");
         when(agent.evaluateUnrecorded("q", List.of(6L), "PATENT", 1L, 2L,
@@ -73,15 +64,5 @@ class EvidenceQueryRouterTest {
         resp.setEvidence(List.of());
         resp.setConflicts(List.of());
         return resp;
-    }
-
-    private QueryStageTimingDTO stage(int seq, String name) {
-        QueryStageTimingDTO stage = new QueryStageTimingDTO();
-        stage.setSeq(seq);
-        stage.setStage(name);
-        stage.setStatus("SUCCEEDED");
-        stage.setSkipped(false);
-        stage.setElapsedMs(1L);
-        return stage;
     }
 }
