@@ -3,7 +3,6 @@ package cn.iocoder.yudao.module.evidence.service;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.api.dto.QueryPlanBudgetDTO;
 import cn.iocoder.yudao.module.evidence.controller.admin.evaluate.vo.EvidenceEvaluateRespVO;
-import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -11,17 +10,14 @@ import java.util.List;
 /**
  * Evidence/Chat/Eval Runner 的统一顶层查询路由。
  *
- * <p>公共 Agentic Knowledge Runtime 已成为唯一在线主链路。V3 依赖保留在构造参数中仅用于
- * 迁移期二进制/测试兼容，不再用于 fallback；否则旧 QueryIntent 体系会掩盖新 Runtime 的
- * 能力缺口并继续诱发按场景打补丁。</p>
+ * <p>公共 Agentic Knowledge Runtime 是唯一在线查询主链。Router 不再注入或依赖 V2/V3 facade，
+ * 因此旧 QueryIntent 体系即使仍保留作迁移对照，也不能参与生产路由或成为应用主链启动依赖。</p>
  */
 @Service
 public class EvidenceQueryRouter {
     private final AgenticEvidenceFacade agentFacade;
 
-    public EvidenceQueryRouter(EvidenceQueryEngineV3Facade ignoredV3Facade,
-                               AgenticEvidenceFacade agentFacade,
-                               EvidenceProperties ignoredProperties) {
+    public EvidenceQueryRouter(AgenticEvidenceFacade agentFacade) {
         this.agentFacade = agentFacade;
     }
 
