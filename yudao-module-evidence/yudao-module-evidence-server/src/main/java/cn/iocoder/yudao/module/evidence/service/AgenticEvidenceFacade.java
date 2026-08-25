@@ -9,7 +9,7 @@ import cn.iocoder.yudao.module.evidence.domain.ClaimResult;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentTraceStep;
-import cn.iocoder.yudao.module.evidence.service.agent.AgenticQueryEngine;
+import cn.iocoder.yudao.module.evidence.service.agent.AgenticKnowledgeRuntimeEngine;
 import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredContextHint;
 import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
@@ -19,14 +19,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-/** V1.1 Agent 评估/RPC Facade；支持独立评估、顶层路由未落库执行与 traceId 事后回放。 */
+/** Public Agentic Knowledge Runtime facade and trace recorder. */
 @Service
 public class AgenticEvidenceFacade {
-    private final AgenticQueryEngine agenticQueryEngine;
+    private final AgenticKnowledgeRuntimeEngine runtimeEngine;
     private final EvidenceRecorder recorder;
 
-    public AgenticEvidenceFacade(AgenticQueryEngine agenticQueryEngine, EvidenceRecorder recorder) {
-        this.agenticQueryEngine = agenticQueryEngine;
+    public AgenticEvidenceFacade(AgenticKnowledgeRuntimeEngine runtimeEngine, EvidenceRecorder recorder) {
+        this.runtimeEngine = runtimeEngine;
         this.recorder = recorder;
     }
 
@@ -44,11 +44,11 @@ public class AgenticEvidenceFacade {
         long start = System.currentTimeMillis();
         String traceId = StrUtil.isNotBlank(incomingTraceId) ? incomingTraceId : newTraceId();
         if (kbIds == null || kbIds.size() != 1) {
-            return stopped(query, traceId, "AGENT_SINGLE_KB_REQUIRED", "V1.1 当前仅允许单知识库执行。", start);
+            return stopped(query, traceId, "AGENT_SINGLE_KB_REQUIRED", "当前公共 Runtime 仅允许单知识库执行。", start);
         }
         List<ChatTurnDTO> safeHistory = history == null ? List.of() : history;
         List<Long> contextEntityIds = contextEntityIds(contextResolutionJson);
-        AgenticQueryEngine.Result result = agenticQueryEngine.execute(query, kbIds.get(0), domainCode,
+        AgenticKnowledgeRuntimeEngine.Result result = runtimeEngine.execute(query, kbIds.get(0), domainCode,
                 tenantId, userId, traceId, safeHistory, contextEntityIds);
 
         EvidenceEvaluateRespVO resp = new EvidenceEvaluateRespVO();
@@ -57,13 +57,13 @@ public class AgenticEvidenceFacade {
         resp.setHistory(safeHistory);
         resp.setConsultable(false);
         resp.setConflicts(List.of());
-        resp.setExecutionMode("AGENTIC_V1");
-        resp.setIntent("AGENTIC_V1");
+        resp.setExecutionMode("AGENTIC_KNOWLEDGE_RUNTIME");
+        resp.setIntent("AGENTIC_RUNTIME");
         resp.setReasonCode(result.stopReason() == null ? null : result.stopReason().name());
         resp.setConfidence(null);
 
-        boolean answer = result.state() == AgenticQueryEngine.State.ANSWER;
-        boolean clarify = result.state() == AgenticQueryEngine.State.CLARIFY;
+        boolean answer = result.state() == AgenticKnowledgeRuntimeEngine.State.ANSWER;
+        boolean clarify = result.state() == AgenticKnowledgeRuntimeEngine.State.CLARIFY;
         resp.setAnswerable(answer);
         resp.setAnswer(answer ? result.answer() : null);
         resp.setClarifyQuestion(clarify ? result.clarificationQuestion() : null);
@@ -108,7 +108,7 @@ public class AgenticEvidenceFacade {
         recorder.record(resp, evidences, List.of());
     }
 
-    /** V1.1 事后回放：返回该 traceId 已持久化的 Planner/Capability/Guard/Answer 步骤。 */
+    /** Returns persisted planning/runtime/evaluation/answer steps for a traceId. */
     public List<QueryStageTimingDTO> replayTrace(String traceId) {
         return recorder.findStages(traceId);
     }
@@ -131,14 +131,14 @@ public class AgenticEvidenceFacade {
         return vo;
     }
 
-    private StructuredResultDTO structuredResult(AgenticQueryEngine.Result result) {
+    private StructuredResultDTO structuredResult(AgenticKnowledgeRuntimeEngine.Result result) {
         if (result == null || result.verifiedEntityIds() == null || result.verifiedEntityIds().isEmpty()) return null;
         StructuredResultDTO dto = new StructuredResultDTO();
         dto.setEntityIds(List.copyOf(result.verifiedEntityIds()));
         dto.setEntityCount(result.verifiedEntityIds().size());
         dto.setTruncated(false);
         dto.setScopeType("VERIFIED_ENTITY_SET");
-        dto.setQueryType("AGENT_VERIFIED_SET");
+        dto.setQueryType("AGENT_RUNTIME_VERIFIED_SET");
         return dto;
     }
 
@@ -152,8 +152,8 @@ public class AgenticEvidenceFacade {
         resp.setConsultable(false);
         resp.setRefusalReason(reason);
         resp.setRoute("ABSTAIN");
-        resp.setIntent("AGENTIC_V1");
-        resp.setExecutionMode("AGENTIC_V1");
+        resp.setIntent("AGENTIC_RUNTIME");
+        resp.setExecutionMode("AGENTIC_KNOWLEDGE_RUNTIME");
         resp.setReasonCode(reasonCode);
         resp.setEvidence(List.of());
         resp.setConflicts(List.of());
@@ -193,11 +193,11 @@ public class AgenticEvidenceFacade {
         vo.setContent(answer);
         vo.setScore(1D);
         if (entityIds.size() == 1) vo.setDocumentId(entityIds.get(0));
-        vo.setFilters("agenticV1=true,evidenceCoverage=FULL,verifiedEntityIds=" + entityIds);
+        vo.setFilters("agenticRuntime=true,evidenceCoverage=FULL,verifiedEntityIds=" + entityIds);
         return vo;
     }
 
-    private List<QueryStageTimingDTO> stages(AgenticQueryEngine.Result result) {
+    private List<QueryStageTimingDTO> stages(AgenticKnowledgeRuntimeEngine.Result result) {
         if (result.traceSteps() == null || result.traceSteps().isEmpty()) return List.of();
         return result.traceSteps().stream().map(this::stage).toList();
     }
@@ -213,9 +213,9 @@ public class AgenticEvidenceFacade {
         String input = "action=" + StrUtil.nullToEmpty(step.action())
                 + "; capability=" + StrUtil.nullToEmpty(step.capability())
                 + "; purpose=" + StrUtil.nullToEmpty(step.purpose());
-        if (StrUtil.isNotBlank(step.argumentsSummary())) input += "; arguments=" + step.argumentsSummary();
+        if (StrUtil.isNotBlank(step.argumentsSummary())) input += "; plan=" + step.argumentsSummary();
         dto.setInputSummary(StrUtil.maxLength(input, 900));
-        dto.setOutputSummary(StrUtil.maxLength(step.summary(), 500));
+        dto.setOutputSummary(StrUtil.maxLength(step.summary(), 600));
         return dto;
     }
 
