@@ -14,9 +14,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * 公共 Relation Traversal Typed Tool。具体关系由 DomainRelationProvider 提供。
- */
+/** 公共 Relation Traversal Typed Tool。具体关系由 DomainRelationProvider 提供。 */
 @Component
 public class RelationTraversalCapability implements KnowledgeCapability {
     public static final String NAME = "relation_traversal";
@@ -54,6 +52,26 @@ public class RelationTraversalCapability implements KnowledgeCapability {
                 ),
                 Set.of("sourceEntityIds", "relationType"), "RELATION_EDGE_SET", true,
                 Set.of(), supportedDomains, Set.of(), 8_000L, MAX_OUTPUT_IDS);
+    }
+
+    /** Planner 在当前领域只看到 Provider 真正注册的 relationType，不需要猜字符串。 */
+    @Override
+    public CapabilityDefinition plannerDefinition(CapabilityInvocationContext context) {
+        CapabilityDefinition base = definition();
+        DomainRelationProvider provider = provider(context);
+        if (provider == null) return base;
+        List<String> relationTypes = provider.relationTypes() == null ? List.of()
+                : provider.relationTypes().stream()
+                .filter(StrUtil::isNotBlank)
+                .map(this::normalize)
+                .distinct()
+                .sorted()
+                .toList();
+        Map<String, String> schema = new LinkedHashMap<>(base.argumentSchema());
+        schema.put("relationType", "必填。当前领域允许值：" + relationTypes);
+        return new CapabilityDefinition(base.name(), base.version(), base.description(), schema,
+                base.requiredArguments(), base.outputType(), base.readOnly(), base.requiredPermissions(),
+                base.supportedDomains(), base.requiredKbCapabilities(), base.timeoutMs(), base.maxRows());
     }
 
     @Override
