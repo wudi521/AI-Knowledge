@@ -51,9 +51,25 @@ jobs:
 
       - name: Run Agent V1.1 contract tests
         run: >-
-          mvn -B
+          mvn -B -q
           -pl yudao-module-evidence/yudao-module-evidence-server
           -am
           -Dsurefire.failIfNoSpecifiedTests=false
           -Dtest=AgentExecutionStateTest,AgentExecutionGuardTest,AgenticQueryEngineTrustedScopeTest,AgenticQueryEngineSelfRepairTest,CapabilityInvokerTest,CapabilityVisibilityPolicyTest,KnowledgeRetrievalCapabilityTest,ExactTextSearchCapabilityTest,StructuredQueryCapabilityTest,StructuredPipelineCapabilityIntegrationTest,StructuredPipelineProjectionSemanticsTest,StructuredPipelineErrorClassificationTest,StructuredValueEvaluatorTest,StructuredPipelineMultiValueMembershipTest,SimilarFieldValuesCapabilityTest,PatentClaimLookupCapabilityTest,PatentStructuredSchemaContractTest,CandidateFeedbackGuardTest,EvidenceQueryRouterTest,AgentV11AcceptanceMatrixTest,QueryTraceStageStoreTest,EvidenceRecorderConfidenceTest
           test
+
+      - name: Print failing Surefire reports
+        if: failure()
+        shell: bash
+        run: |
+          found=0
+          while IFS= read -r -d '' file; do
+            if grep -Eq 'Failures: [1-9]|Errors: [1-9]' "$file"; then
+              found=1
+              echo "===== $file ====="
+              cat "$file"
+            fi
+          done < <(find . -path '*/target/surefire-reports/*.txt' -type f -print0)
+          if [ "$found" -eq 0 ]; then
+            echo 'No failing Surefire text report found; inspect Maven failure above.'
+          fi
