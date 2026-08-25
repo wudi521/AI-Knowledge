@@ -225,7 +225,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             for (String field : EXECUTABLE_FIELDS) {
                 String a = merged.get(field), b = other.get(field);
                 if (StrUtil.isBlank(a) && StrUtil.isNotBlank(b)) merged.put(field, b);
-                else if (StrUtil.isNotBlank(a) && StrUtil.isNotBlank(b) && !sameValue(a, b)) conflicts.add(field);
+                else if (StrUtil.isNotBlank(a) && StrUtil.isNotBlank(b) && !sameValue(field, a, b)) conflicts.add(field);
             }
             existing.setFields(merged);
             if (existing.getValue() == null && incoming.getValue() != null) existing.setValue(incoming.getValue());
@@ -247,8 +247,23 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                 .build();
     }
 
-    private boolean sameValue(String a, String b) {
+    private boolean sameValue(String fieldCode, String a, String b) {
+        if (PatentStructuredPack.FIELD_APPLICANT.equals(fieldCode)
+                || PatentStructuredPack.FIELD_INVENTOR.equals(fieldCode)) {
+            return normalizeMultiValues(a).equals(normalizeMultiValues(b));
+        }
         return normalizeComparable(a).equals(normalizeComparable(b));
+    }
+
+    /** 多值字段的元素顺序不属于业务事实；“张三、李四”和“李四,张三”应视为同一集合。 */
+    private Set<String> normalizeMultiValues(String value) {
+        Set<String> normalized = new LinkedHashSet<>();
+        if (StrUtil.isBlank(value)) return normalized;
+        for (String item : value.split("[、；;，,\\n\\r]+")) {
+            String v = normalizeComparable(item);
+            if (StrUtil.isNotBlank(v)) normalized.add(v);
+        }
+        return normalized;
     }
 
     private String normalizeComparable(String value) {
