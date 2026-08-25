@@ -18,6 +18,17 @@ public record StructuredPipelineResult(boolean success,
     public StructuredPipelineResult {
         rows = rows == null ? List.of() : List.copyOf(rows);
         metadata = metadata == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(metadata));
+
+        // V1.1 当前产品策略不允许把 PARTIAL 伪装成 FULL。
+        // Executor 任一阶段只要发现用户请求依赖的投影/派生值缺失，就必须 fail-closed；
+        // 后续如果正式支持 PARTIAL，应新增显式 coverage 状态，而不是删除这条保护后静默回答。
+        if (success && missingValueCount > 0) {
+            success = false;
+            completeDataset = false;
+            authoritativeEmpty = false;
+            message = "structured result is incomplete: " + missingValueCount
+                    + " required value(s) are missing; refusing to present PARTIAL data as FULL";
+        }
     }
 
     public static StructuredPipelineResult failure(String message) {
