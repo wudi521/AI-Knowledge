@@ -116,10 +116,29 @@ public class PlannedEvidenceRetriever {
                          Long candidateTotalHits) {
         public Result {
             evidences = evidences == null ? List.of() : List.copyOf(evidences);
+            status = status == null ? (evidences.isEmpty() ? Status.EMPTY : Status.MATCHES) : status;
+        }
+
+        /**
+         * 迁移兼容构造器：旧单测/调用点没有 status 时，由 evidence 是否为空推导合法 MATCHES/EMPTY。
+         * FAILED 必须显式使用 failed(...)，避免再次把基础设施故障伪装成零命中。
+         */
+        public Result(List<Evidence> evidences,
+                      RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis,
+                      RetrievalSearchRespDTO.RetrievalChannelStatDTO channels,
+                      Long totalHits,
+                      Boolean totalHitsExact) {
+            this(evidences == null || evidences.isEmpty() ? Status.EMPTY : Status.MATCHES,
+                    null, evidences, analysis, channels, totalHits, totalHitsExact, null);
         }
 
         public static Result failed(String message) {
             return new Result(Status.FAILED, message, List.of(), null, null, null, null, null);
+        }
+
+        /** 仅为旧测试/调用兼容；合法空结果，绝不表示失败。 */
+        public static Result empty() {
+            return new Result(Status.EMPTY, null, List.of(), null, null, null, null, null);
         }
 
         public boolean failed() {
