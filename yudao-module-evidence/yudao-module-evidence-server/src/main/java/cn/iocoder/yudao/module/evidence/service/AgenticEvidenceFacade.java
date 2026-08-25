@@ -75,7 +75,7 @@ public class AgenticEvidenceFacade {
                 .map(e -> toEvidence(e, kbIds.get(0), domainCode))
                 .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
         if (answer && evidenceItems.isEmpty()) {
-            evidenceItems.add(structuredEvidence(result.answer(), kbIds.get(0), domainCode));
+            evidenceItems.add(structuredEvidence(result.answer(), kbIds.get(0), domainCode, result.verifiedEntityIds()));
         }
         resp.setEvidence(evidenceItems);
         resp.setStructuredResult(structuredResult(result));
@@ -182,14 +182,18 @@ public class AgenticEvidenceFacade {
         return vo;
     }
 
-    private EvidenceEvaluateRespVO.EvidenceItemVO structuredEvidence(String answer, Long kbId, String domainCode) {
+    private EvidenceEvaluateRespVO.EvidenceItemVO structuredEvidence(String answer, Long kbId, String domainCode,
+                                                                      List<Long> verifiedEntityIds) {
+        List<Long> entityIds = verifiedEntityIds == null ? List.of() : verifiedEntityIds.stream()
+                .filter(java.util.Objects::nonNull).distinct().toList();
         EvidenceEvaluateRespVO.EvidenceItemVO vo = new EvidenceEvaluateRespVO.EvidenceItemVO();
         vo.setEvidenceType("STRUCTURED_RESULT");
         vo.setKbId(kbId);
         vo.setDomainCode(domainCode);
         vo.setContent(answer);
         vo.setScore(1D);
-        vo.setFilters("agenticV1=true,evidenceCoverage=FULL");
+        if (entityIds.size() == 1) vo.setDocumentId(entityIds.get(0));
+        vo.setFilters("agenticV1=true,evidenceCoverage=FULL,verifiedEntityIds=" + entityIds);
         return vo;
     }
 
