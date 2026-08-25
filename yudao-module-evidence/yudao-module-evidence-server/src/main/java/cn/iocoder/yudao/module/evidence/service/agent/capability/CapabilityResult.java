@@ -21,7 +21,15 @@ public record CapabilityResult(boolean success,
     }
 
     public static CapabilityResult failure(AgentStopReason stopReason, String message) {
-        return new CapabilityResult(false, null, Collections.emptyMap(), stopReason, message);
+        return failure(stopReason, message, Collections.emptyMap());
+    }
+
+    /** 不可修复失败也保留 activity/诊断元数据，但绝不设置 recoverable=true。 */
+    public static CapabilityResult failure(AgentStopReason stopReason, String message, Map<String, Object> metadata) {
+        Map<String, Object> safe = new LinkedHashMap<>();
+        if (metadata != null) safe.putAll(metadata);
+        safe.remove("recoverable");
+        return new CapabilityResult(false, null, safe, stopReason, message);
     }
 
     /**
