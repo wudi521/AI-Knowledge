@@ -139,6 +139,13 @@ public class StructuredQueryCapability implements KnowledgeCapability {
     }
 
     @Override
+    public String canonicalExecutionKey(CapabilityInvocationContext context,
+                                        Map<String, Object> arguments) {
+        if (pipelineDelegate == null || context == null || StrUtil.isBlank(context.domainCode())) return null;
+        return pipelineDelegate.canonicalPlanKey(context.domainCode(), arguments);
+    }
+
+    @Override
     public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
         if (pipelineDelegate != null) return pipelineDelegate.execute(context, arguments);
         return executeLegacy(context, arguments);
