@@ -27,9 +27,9 @@ public record ReferenceRecord(String referenceId,
                               List<Long> verifiedEntityIds,
                               Map<String, Object> metadata) {
     public ReferenceRecord {
-        evidences = immutable(evidences);
-        candidateEntityIds = immutable(candidateEntityIds);
-        verifiedEntityIds = immutable(verifiedEntityIds);
+        evidences = immutableEvidences(evidences);
+        candidateEntityIds = immutableIds(candidateEntityIds);
+        verifiedEntityIds = immutableIds(verifiedEntityIds);
         metadata = metadata == null ? Collections.emptyMap()
                 : Collections.unmodifiableMap(new LinkedHashMap<>(metadata));
     }
@@ -49,14 +49,14 @@ public record ReferenceRecord(String referenceId,
                 evidences, List.of(), verifiedEntityIds, metadata);
     }
 
-    private static List<Long> immutable(List<Long> source) {
+    private static List<Long> immutableIds(List<Long> source) {
         if (source == null || source.isEmpty()) return Collections.emptyList();
         List<Long> out = new ArrayList<>();
         for (Long value : source) if (value != null && !out.contains(value)) out.add(value);
         return Collections.unmodifiableList(out);
     }
 
-    private static List<Evidence> immutable(List<Evidence> source) {
+    private static List<Evidence> immutableEvidences(List<Evidence> source) {
         return source == null ? Collections.emptyList()
                 : Collections.unmodifiableList(new ArrayList<>(source));
     }
