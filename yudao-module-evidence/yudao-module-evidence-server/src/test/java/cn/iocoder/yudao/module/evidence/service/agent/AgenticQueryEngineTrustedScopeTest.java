@@ -83,7 +83,7 @@ class AgenticQueryEngineTrustedScopeTest {
     }
 
     @Test
-    void deterministicFactsAndSemanticEvidenceMustComposeOneCompleteAnswer() {
+    void deterministicFactsAndSemanticEvidenceMustComposeAgainstImmutableOriginalGoal() {
         AtomicInteger plannerCalls = new AtomicInteger();
         AgentPlanner planner = (state, context, observations, history) -> {
             int call = plannerCalls.getAndIncrement();
@@ -103,7 +103,8 @@ class AgenticQueryEngineTrustedScopeTest {
         GenerationResult generation = mock(GenerationResult.class);
         when(generation.getAnswer()).thenReturn("技术方案=通过可信对象范围内证据生成");
         when(generation.isClaimFail()).thenReturn(false);
-        when(answerPipeline.generateWithClaims(eq("解释技术方案"), anyList(), anyList())).thenReturn(generation);
+        when(answerPipeline.generateWithClaims(
+                eq("申请号X的公布号是什么，并说明它的技术方案？"), anyList(), anyList())).thenReturn(generation);
 
         CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
                 List.of(new TrustedEntityCapability(), new CandidateOnlyCapability()), List.of()));
@@ -115,6 +116,10 @@ class AgenticQueryEngineTrustedScopeTest {
             assertEquals(AgenticQueryEngine.State.ANSWER, result.state());
             assertEquals("公布号=CN123\n技术方案=通过可信对象范围内证据生成", result.answer());
             assertEquals(List.of(74L), result.verifiedEntityIds());
+            assertTrue(result.traceSteps().stream()
+                    .filter(step -> "ANSWER".equals(step.phase()))
+                    .anyMatch(step -> step.summary().contains("evidenceCount=1")
+                            && step.summary().contains("originalGoal")));
         } finally {
             invoker.shutdown();
         }
