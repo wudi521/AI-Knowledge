@@ -10,13 +10,17 @@ import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentTraceStep;
 import cn.iocoder.yudao.module.evidence.service.agent.AgenticKnowledgeRuntimeEngine;
+import cn.iocoder.yudao.module.evidence.service.agent.runtime.ProvenanceRecord;
+import cn.iocoder.yudao.module.evidence.service.agent.runtime.ReferenceRecord;
 import cn.iocoder.yudao.module.evidence.service.record.EvidenceRecorder;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredContextHint;
 import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /** Public Agentic Knowledge Runtime facade and trace recorder. */
@@ -80,6 +84,7 @@ public class AgenticEvidenceFacade {
         resp.setEvidence(evidenceItems);
         resp.setStructuredResult(structuredResult(result));
         applyGeneration(resp, result.generation());
+        // QueryTraceStageStore 会持久化这些阶段，因此 Reference / Provenance 也能随 traceId 回放。
         resp.setStages(stages(result));
         resp.setElapsedMs((int) (System.currentTimeMillis() - start));
         return resp;
@@ -108,7 +113,7 @@ public class AgenticEvidenceFacade {
         recorder.record(resp, evidences, List.of());
     }
 
-    /** Returns persisted planning/runtime/evaluation/answer steps for a traceId. */
+    /** Returns persisted planning/runtime/evaluation/reference/provenance/answer steps for a traceId. */
     public List<QueryStageTimingDTO> replayTrace(String traceId) {
         return recorder.findStages(traceId);
     }
@@ -198,8 +203,60 @@ public class AgenticEvidenceFacade {
     }
 
     private List<QueryStageTimingDTO> stages(AgenticKnowledgeRuntimeEngine.Result result) {
-        if (result.traceSteps() == null || result.traceSteps().isEmpty()) return List.of();
-        return result.traceSteps().stream().map(this::stage).toList();
+        if (result == null) return List.of();
+        List<QueryStageTimingDTO> out = new ArrayList<>();
+        if (result.traceSteps() != null) {
+            for (AgentTraceStep step : result.traceSteps()) out.add(stage(step));
+        }
+
+        Map<String, ProvenanceRecord> provenanceByReference = new HashMap<>();
+        if (result.provenance() != null) {
+            for (ProvenanceRecord record : result.provenance()) {
+                if (record != null && StrUtil.isNotBlank(record.referenceId())) {
+                    provenanceByReference.put(record.referenceId(), record);
+                }
+            }
+        }
+        int seq = out.size() + 1;
+        if (result.references() != null) {
+            for (ReferenceRecord reference : result.references()) {
+                if (reference == null) continue;
+                QueryStageTimingDTO refStage = new QueryStageTimingDTO();
+                refStage.setStage("AGENT_REFERENCE_RECORD");
+                refStage.setSeq(seq++);
+                refStage.setStatus(reference.status().name());
+                refStage.setSkipped(false);
+                refStage.setElapsedMs(0L);
+                refStage.setInputSummary(StrUtil.maxLength("planId=" + reference.planId()
+                        + "; nodeId=" + reference.nodeId()
+                        + "; capability=" + reference.capability(), 900));
+                refStage.setOutputSummary(StrUtil.maxLength("referenceId=" + reference.referenceId()
+                        + "; verifiedEntityIds=" + reference.verifiedEntityIds()
+                        + "; evidenceCount=" + reference.evidences().size()
+                        + "; deterministic=" + StrUtil.maxLength(reference.deterministicAnswer(), 220), 600));
+                out.add(refStage);
+
+                ProvenanceRecord provenance = provenanceByReference.get(reference.referenceId());
+                if (provenance != null) {
+                    QueryStageTimingDTO provenanceStage = new QueryStageTimingDTO();
+                    provenanceStage.setStage("AGENT_PROVENANCE_RECORD");
+                    provenanceStage.setSeq(seq++);
+                    provenanceStage.setStatus("SUCCEEDED");
+                    provenanceStage.setSkipped(false);
+                    provenanceStage.setElapsedMs(0L);
+                    provenanceStage.setInputSummary(StrUtil.maxLength("referenceId=" + provenance.referenceId()
+                            + "; planId=" + provenance.planId()
+                            + "; nodeId=" + provenance.nodeId()
+                            + "; capability=" + provenance.capability(), 900));
+                    // 不把 userId/权限/完整参数写入可回放 trace，只保留事实来源所需的非敏感 scope。
+                    provenanceStage.setOutputSummary(StrUtil.maxLength("kbId=" + provenance.kbId()
+                            + "; domainCode=" + provenance.domainCode()
+                            + "; traceId=" + provenance.traceId(), 600));
+                    out.add(provenanceStage);
+                }
+            }
+        }
+        return List.copyOf(out);
     }
 
     private QueryStageTimingDTO stage(AgentTraceStep step) {
