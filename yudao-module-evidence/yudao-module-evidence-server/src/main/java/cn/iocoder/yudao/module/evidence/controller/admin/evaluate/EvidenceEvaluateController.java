@@ -9,7 +9,6 @@ import cn.iocoder.yudao.module.evidence.service.EvidenceQueryEngineV3Facade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryScopeResolver;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import jakarta.annotation.Resource;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
@@ -28,10 +27,14 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 @Validated
 public class EvidenceEvaluateController {
 
-    @Resource
-    private EvidenceQueryEngineV3Facade queryEngineV3;
-    @Resource
-    private EvidenceQueryScopeResolver queryScopeResolver;
+    private final EvidenceQueryEngineV3Facade queryEngineV3Facade;
+    private final EvidenceQueryScopeResolver queryScopeResolver;
+
+    public EvidenceEvaluateController(EvidenceQueryEngineV3Facade queryEngineV3Facade,
+                                      EvidenceQueryScopeResolver queryScopeResolver) {
+        this.queryEngineV3Facade = queryEngineV3Facade;
+        this.queryScopeResolver = queryScopeResolver;
+    }
 
     @PostMapping("/evaluate")
     @Operation(summary = "Query Engine V3 单轮评估(Selection→bounded retrieval→EntitySet→Action→Evidence)")
@@ -47,7 +50,7 @@ public class EvidenceEvaluateController {
         }
 
         // 管理端明确为单轮；与 Chat 共用同一个 V3 Query Engine，只是不携带 history/context。
-        return success(queryEngineV3.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
+        return success(queryEngineV3Facade.evaluate(req.getQuery(), scope.kbIds(), req.getTopK(),
                 tenantId, userId, List.of(), req.getSkipSlotDetection(), null,
                 scope.domainCode(), null, null));
     }
