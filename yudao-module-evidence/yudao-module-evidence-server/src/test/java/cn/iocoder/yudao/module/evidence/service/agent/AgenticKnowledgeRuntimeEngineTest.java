@@ -47,6 +47,9 @@ class AgenticKnowledgeRuntimeEngineTest {
             assertEquals(1, result.provenance().size());
             assertEquals("trace-runtime-1", result.provenance().get(0).traceId());
             assertTrue(result.traceSteps().stream().anyMatch(s -> "QUERY_PLANNING".equals(s.phase())));
+            assertTrue(result.traceSteps().stream().anyMatch(s -> "PLAN_VALIDATION".equals(s.phase()) && "SUCCEEDED".equals(s.status())));
+            assertTrue(result.traceSteps().stream().anyMatch(s -> "RESULT_INTEGRITY".equals(s.phase()) && "SUCCEEDED".equals(s.status())));
+            assertTrue(result.traceSteps().stream().anyMatch(s -> "PROVENANCE_INTEGRITY".equals(s.phase()) && "SUCCEEDED".equals(s.status())));
             assertTrue(result.traceSteps().stream().anyMatch(s -> "RUNTIME_EXECUTOR".equals(s.phase())));
             assertTrue(result.traceSteps().stream().anyMatch(s -> "RESULT_EVALUATION".equals(s.phase())));
             assertTrue(result.traceSteps().stream().anyMatch(s -> "ANSWER_VALIDATION".equals(s.phase())));
@@ -99,6 +102,55 @@ class AgenticKnowledgeRuntimeEngineTest {
             assertEquals(2, result.references().size());
             assertTrue(result.traceSteps().stream().anyMatch(s ->
                     "RESULT_EVALUATION".equals(s.phase()) && "REPLAN".equals(s.status())));
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
+    void plannerAnswerCannotBypassEvaluatorAndInsufficientStillReplans() {
+        AtomicInteger plannerCalls = new AtomicInteger();
+        AtomicInteger evaluatorCalls = new AtomicInteger();
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
+                List.of(new SummaryOnlyCapability(), new DeterministicCapability("strong-fact", "补足后的答案")), List.of()));
+        try {
+            AgentExecutionPlanner planner = (state, context, observations, references, history, replanAttempt, maxPlanNodes) -> {
+                int call = plannerCalls.getAndIncrement();
+                if (call == 0) {
+                    return AgentPlanningDecision.execute(new AgentExecutionPlan("weak-plan", state.getOriginalGoal(), replanAttempt,
+                            List.of(new PlanNode("weak", "weak-fact", Map.of(), "取得弱事实", Set.of()))));
+                }
+                if (call == 1) return AgentPlanningDecision.answer();
+                return AgentPlanningDecision.execute(new AgentExecutionPlan("strong-plan", state.getOriginalGoal(), replanAttempt,
+                        List.of(new PlanNode("strong", "strong-fact", Map.of(), "补足证明缺口", Set.of()))));
+            };
+            AgentGoalEvaluator evaluator = new AgentGoalEvaluator() {
+                @Override
+                public Evaluation evaluate(String originalGoal, List<AgentObservation> observations,
+                                           List<String> deterministicAnswers,
+                                           List<cn.iocoder.yudao.module.evidence.domain.Evidence> evidences,
+                                           CapabilityInvocationContext context) {
+                    int call = evaluatorCalls.getAndIncrement();
+                    return call < 2 ? Evaluation.insufficient("Planner 的 ANSWER 仍未覆盖 OriginalGoal")
+                            : Evaluation.satisfied("强事实覆盖 OriginalGoal");
+                }
+
+                @Override
+                public boolean consumesLlmCall() { return false; }
+            };
+            AgenticKnowledgeRuntimeEngine engine = new AgenticKnowledgeRuntimeEngine(
+                    planner, new AgentRuntimeExecutor(invoker), evaluator, null, new EvidenceProperties());
+
+            AgenticKnowledgeRuntimeEngine.Result result = engine.execute(
+                    "Planner 不能擅自宣布完成的目标", 6L, "PATENT", 1L, 2L, "trace-runtime-3", List.of());
+
+            assertEquals(AgenticKnowledgeRuntimeEngine.State.ANSWER, result.state());
+            assertEquals("补足后的答案", result.answer());
+            assertEquals(3, plannerCalls.get());
+            assertEquals(3, evaluatorCalls.get());
+            assertEquals(2, result.activities().size(), "Planner ANSWER 本身不能伪造一次 Tool Activity");
+            assertEquals(2, result.traceSteps().stream()
+                    .filter(s -> "RESULT_EVALUATION".equals(s.phase()) && "REPLAN".equals(s.status())).count());
         } finally {
             invoker.shutdown();
         }
