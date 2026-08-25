@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS `ai_query_trace_stage` (
   `deleted` bit(1) NOT NULL DEFAULT b'0' COMMENT '是否删除',
   `tenant_id` bigint NOT NULL DEFAULT 0 COMMENT '租户编号',
   PRIMARY KEY (`id`) USING BTREE,
-  INDEX `idx_trace_seq`(`trace_id` ASC, `seq` ASC) USING BTREE
+  UNIQUE KEY `uk_trace_seq_tenant` (`trace_id` ASC, `seq` ASC, `tenant_id` ASC) USING BTREE,
+  INDEX `idx_trace_id` (`trace_id` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'Query/Agent 执行步骤审计';
 
