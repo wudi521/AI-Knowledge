@@ -9,11 +9,14 @@ import cn.iocoder.yudao.module.evidence.service.AgenticEvidenceFacade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryEngineV3Facade;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryRouter;
 import cn.iocoder.yudao.module.evidence.service.EvidenceQueryScopeResolver;
+import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -74,6 +77,13 @@ public class EvidenceEvaluateController {
         return success(queryEngineV3Facade.evaluate(req.getQuery(), ctx.scope().kbIds(), req.getTopK(),
                 ctx.tenantId(), ctx.userId(), List.of(), req.getSkipSlotDetection(), null,
                 ctx.scope().domainCode(), null, null));
+    }
+
+    @GetMapping("/agent-trace/{traceId}")
+    @Operation(summary = "按 traceId 回放持久化 Query/Agent 执行步骤")
+    @PreAuthorize("@ss.hasPermission('evidence:evaluate')")
+    public CommonResult<List<QueryStageTimingDTO>> replayAgentTrace(@PathVariable("traceId") String traceId) {
+        return success(agenticEvidenceFacade.replayTrace(traceId));
     }
 
     private ScopeContext resolve(EvidenceEvaluateReqVO req) {
