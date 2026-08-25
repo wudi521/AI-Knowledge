@@ -5,7 +5,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -17,8 +16,8 @@ import java.util.Set;
 /**
  * 通用实体集合运算能力。用于 DAG 中把多个已验证/候选实体集合做交集、并集或差集。
  *
- * <p>它不理解专利、客服、合同等业务语义，只操作 entityId；因此组合查询无需为每种
- * “A 条件 + B 条件”新增 intent 或 Runtime 分支。</p>
+ * <p>它只对 ID 集合做确定性运算，却无法证明输入 ID 本身的业务真实性，因此输出统一保持
+ * candidateEntityIds，不自动升级为 verifiedEntityIds。可信升级只能由真正的结构化/关系事实 Tool 完成。</p>
  */
 @Component
 public class EntitySetOperationCapability implements KnowledgeCapability {
@@ -29,14 +28,15 @@ public class EntitySetOperationCapability implements KnowledgeCapability {
 
     @Override
     public CapabilityDefinition definition() {
-        return new CapabilityDefinition(NAME, "1",
-                "对上游 PlanNode 产生的实体 ID 集合做通用集合运算。支持 INTERSECT/UNION/DIFFERENCE；"
-                        + "典型用法是将 structured_query 与 knowledge_retrieval 等不同 Tool 的 verifiedEntityIds 合并。",
+        return new CapabilityDefinition(NAME, "2",
+                "对上游 PlanNode 产生的实体 ID 集合做通用集合运算。支持 INTERSECT/UNION/DIFFERENCE。"
+                        + "结构化 Tool 可引用 verifiedEntityIds；语义/全文检索必须引用 candidateEntityIds。"
+                        + "本 Tool 输出仍是 candidateEntityIds，不自动提升可信级别。",
                 Map.of(
                         "operation", "必填。INTERSECT / UNION / DIFFERENCE。",
-                        "sets", "必填。2~8 个实体 ID 数组；通常使用 DAG $ref selector=verifiedEntityIds 引用上游节点。"
+                        "sets", "必填。2~8 个实体 ID 数组。按上游事实类型使用 DAG $ref selector=verifiedEntityIds 或 candidateEntityIds。"
                 ),
-                Set.of("operation", "sets"), "ENTITY_ID_SET", true,
+                Set.of("operation", "sets"), "CANDIDATE_ENTITY_ID_SET", true,
                 Set.of(), Set.of(), Set.of(), 1_000L, MAX_OUTPUT_IDS);
     }
 
@@ -115,6 +115,7 @@ public class EntitySetOperationCapability implements KnowledgeCapability {
         metadata.put("outputCount", ids.size());
         metadata.put("inputSetCount", sets.size());
         metadata.put("operation", operation.name());
+        metadata.put("entityTrust", "CANDIDATE");
         metadata.put("truncated", truncated);
         // 集合运算只对输入集合本身是确定性的；它不知道上游候选集合是否覆盖全集。
         metadata.put("completeDataset", false);
@@ -125,7 +126,7 @@ public class EntitySetOperationCapability implements KnowledgeCapability {
                     "entity set operation output was truncated at " + MAX_OUTPUT_IDS, metadata);
         }
         if (ids.isEmpty()) {
-            return CapabilityResult.empty(output, "entity set operation produced an empty set", metadata);
+            return CapabilityResult.empty(output, "entity set operation produced an empty candidate set", metadata);
         }
         return CapabilityResult.success(output, metadata);
     }
@@ -176,23 +177,23 @@ public class EntitySetOperationCapability implements KnowledgeCapability {
     }
 
     public record Output(String operation,
-                         List<Long> verifiedEntityIds,
+                         List<Long> candidateEntityIds,
                          int inputSetCount,
                          boolean truncated) implements AgentCapabilityOutput {
         public Output {
-            verifiedEntityIds = verifiedEntityIds == null ? List.of() : List.copyOf(verifiedEntityIds);
+            candidateEntityIds = candidateEntityIds == null ? List.of() : List.copyOf(candidateEntityIds);
         }
 
         @Override
         public String summary() {
-            return "entity set " + operation + " produced " + verifiedEntityIds.size()
-                    + " id(s) from " + inputSetCount + " input set(s)"
+            return "entity set " + operation + " produced " + candidateEntityIds.size()
+                    + " candidate id(s) from " + inputSetCount + " input set(s)"
                     + (truncated ? "; truncated" : "");
         }
 
         @Override
         public String progressHash() {
-            return operation + ":" + verifiedEntityIds;
+            return operation + ":CANDIDATE:" + candidateEntityIds;
         }
     }
 }
