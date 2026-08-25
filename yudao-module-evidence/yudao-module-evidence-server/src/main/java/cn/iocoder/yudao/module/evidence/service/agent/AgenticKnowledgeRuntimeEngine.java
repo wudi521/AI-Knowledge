@@ -23,6 +23,8 @@ import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -36,8 +38,8 @@ import java.util.Set;
  * <p>Pipeline: immutable OriginalGoal -> Query Planning -> validated execution DAG -> Typed Tool Runtime
  * -> Activity/Reference/Provenance -> independent Goal Evaluation -> grounded Answer.</p>
  *
- * <p>No business intent enum is interpreted here. Adding a normal domain must extend Domain/Tool contracts,
- * not add branches such as LONGEST_TITLE or APPLICATION_NUMBER_LOOKUP to this class.</p>
+ * <p>本类不解释任何业务 intent。新增普通领域只能扩展 Domain/Tool Contract，不能在这里增加
+ * LONGEST_TITLE、TITLE_CONTAINS、APPLICATION_NUMBER_LOOKUP 之类场景分支。</p>
  */
 @Component
 public class AgenticKnowledgeRuntimeEngine {
@@ -80,15 +82,12 @@ public class AgenticKnowledgeRuntimeEngine {
         AgentExecutionBudget budget = cfg == null ? AgentExecutionBudget.defaults()
                 : new AgentExecutionBudget(Math.max(1, cfg.getMaxSteps()), Math.max(1, cfg.getMaxLlmCalls()),
                 Math.max(1L, cfg.getMaxElapsedMs()));
-        LinkedHashSet<Long> trustedEntityIds = new LinkedHashSet<>();
-        if (contextEntityIds != null) {
-            for (Long id : contextEntityIds) if (id != null) trustedEntityIds.add(id);
-        }
+        LinkedHashSet<Long> trustedEntityIds = sanitizeIds(contextEntityIds);
         CapabilityInvocationContext context = new CapabilityInvocationContext(tenantId, userId, kbId, domainCode, traceId,
                 Set.of(), Set.of(), List.copyOf(trustedEntityIds),
                 cfg == null ? "default" : cfg.getEnvironment(), cfg != null && cfg.isWriteAllowed());
 
-        List<ChatTurnDTO> safeHistory = history == null ? List.of() : history;
+        List<ChatTurnDTO> safeHistory = history == null ? List.of() : List.copyOf(history);
         List<AgentObservation> observations = new ArrayList<>();
         List<Evidence> gatheredEvidence = new ArrayList<>();
         List<String> deterministicAnswers = new ArrayList<>();
@@ -99,18 +98,13 @@ public class AgenticKnowledgeRuntimeEngine {
         int replanAttempt = 0;
 
         while (true) {
-            AgentStopReason budgetStop = budgetStop(state, budget, true);
-            if (budgetStop != null) {
-                return stopped(state, budgetStop, "执行预算已耗尽。", gatheredEvidence, traceSteps,
+            AgentStopReason planningBudgetStop = planningBudgetStop(state, budget);
+            if (planningBudgetStop != null) {
+                return stopped(state, planningBudgetStop, "规划预算已耗尽。", gatheredEvidence, traceSteps,
                         trustedEntityIds, activities, references, provenance);
             }
 
             int remainingNodes = budget.maxSteps() - state.getStep();
-            if (remainingNodes <= 0) {
-                return stopped(state, AgentStopReason.MAX_STEPS, "执行步骤预算已耗尽。", gatheredEvidence, traceSteps,
-                        trustedEntityIds, activities, references, provenance);
-            }
-
             state.incrementLlmCalls();
             long plannerStart = System.currentTimeMillis();
             AgentPlanningDecision planning = planner.plan(state, context, List.copyOf(observations),
@@ -124,41 +118,89 @@ public class AgenticKnowledgeRuntimeEngine {
                     planning.action() == AgentPlanningDecision.Action.STOP ? AgentStopReason.CAPABILITY_UNAVAILABLE : null));
 
             if (planning.action() == AgentPlanningDecision.Action.NEED_MORE_INFO) {
-                state.stop(AgentStopReason.NEED_USER_INPUT);
-                return new Result(State.CLARIFY, null,
-                        StrUtil.blankToDefault(planning.message(), "请补充完成查询所需的信息。"),
-                        AgentStopReason.NEED_USER_INPUT, List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(),
-                        state.getEvidenceCoverage(), null, List.copyOf(traceSteps), trusted(trustedEntityIds),
-                        List.copyOf(activities), List.copyOf(references), List.copyOf(provenance));
+                return clarify(state, planning.message(), gatheredEvidence, traceSteps, trustedEntityIds,
+                        activities, references, provenance);
             }
             if (planning.action() == AgentPlanningDecision.Action.STOP) {
                 return stopped(state, AgentStopReason.CAPABILITY_UNAVAILABLE,
                         StrUtil.blankToDefault(planning.message(), "当前能力不足以可靠完成该问题。"),
                         gatheredEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
             }
+
+            // Planner 的 ANSWER 只是建议，没有终止权。统一经过独立 Goal Evaluator；INSUFFICIENT 继续 bounded replan。
             if (planning.action() == AgentPlanningDecision.Action.ANSWER) {
-                return evaluateAndMaybeAnswer(state, context, budget, safeHistory, observations,
-                        gatheredEvidence, deterministicAnswers, traceSteps, trustedEntityIds,
-                        activities, references, provenance, replanAttempt);
+                GoalCheck check = evaluateGoal(state, context, budget, observations,
+                        deterministicAnswers, gatheredEvidence, traceSteps);
+                if (check.budgetStop() != null) {
+                    return stopped(state, check.budgetStop(), "目标充分性验证未能在预算内完成。",
+                            gatheredEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
+                }
+                AgentGoalEvaluator.Evaluation evaluation = check.evaluation();
+                if (evaluation.verdict() == AgentGoalEvaluator.Verdict.SATISFIED) {
+                    return answer(state, safeHistory, gatheredEvidence, deterministicAnswers, traceSteps,
+                            trustedEntityIds, activities, references, provenance);
+                }
+                if (evaluation.verdict() == AgentGoalEvaluator.Verdict.NEED_MORE_INFO) {
+                    return clarify(state, evaluation.message(), gatheredEvidence, traceSteps, trustedEntityIds,
+                            activities, references, provenance);
+                }
+                if (evaluation.verdict() == AgentGoalEvaluator.Verdict.INSUFFICIENT
+                        && replanAttempt < MAX_REPLAN_ATTEMPTS) {
+                    replanAttempt++;
+                    addGoalGapObservation(observations, state, evaluation, replanAttempt);
+                    continue;
+                }
+                return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
+                        evaluation.verdict() == AgentGoalEvaluator.Verdict.EVALUATION_FAILED
+                                ? "目标充分性验证失败，拒绝在未验证情况下输出答案。"
+                                : "现有执行事实仍不足以完整回答原始问题。",
+                        gatheredEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
             }
 
             AgentExecutionPlan plan = planning.executionPlan();
             if (plan == null || !Objects.equals(state.getOriginalGoal(), plan.originalGoal())) {
+                traceSteps.add(trace(traceSteps, "PLAN_VALIDATION", "EXECUTE_PLAN", null,
+                        state.getOriginalGoal(), null, "FAILED", 0L,
+                        "execution plan must bind immutable OriginalGoal", AgentStopReason.INVALID_CAPABILITY_CALL));
                 return stopped(state, AgentStopReason.INVALID_CAPABILITY_CALL,
                         "执行计划未绑定 immutable OriginalGoal。", gatheredEvidence, traceSteps,
                         trustedEntityIds, activities, references, provenance);
             }
+
             String subGoal = plan.nodes().stream().map(PlanNode::purpose).filter(StrUtil::isNotBlank)
                     .reduce((a, b) -> a + " | " + b).orElse(state.getOriginalGoal());
             state.setCurrentSubGoal(StrUtil.maxLength(subGoal, 600));
-            traceSteps.add(trace(traceSteps, "PLAN_VALIDATION", "EXECUTE_PLAN", null,
+            traceSteps.add(trace(traceSteps, "EXECUTION_PLAN", "EXECUTE_PLAN", null,
                     state.getCurrentSubGoal(), planSummary(plan), "SUCCEEDED", 0L,
-                    "planId=" + plan.planId() + "; nodes=" + plan.nodes().size() + "; replanAttempt=" + replanAttempt, null));
+                    "planId=" + plan.planId() + "; nodes=" + plan.nodes().size() + "; replanAttempt=" + replanAttempt,
+                    null));
 
             long remainingMs = Math.max(1L, budget.maxElapsedMs() - state.elapsedMs());
-            AgentExecutionBudget runtimeBudget = new AgentExecutionBudget(remainingNodes,
+            AgentExecutionBudget runtimeBudget = new AgentExecutionBudget(Math.max(1, remainingNodes),
                     Math.max(1, budget.maxLlmCalls() - state.getLlmCalls() + 1), remainingMs);
             AgentRuntimeResult runtime = runtimeExecutor.execute(plan, context, runtimeBudget);
+
+            boolean planValid = !(runtime.status() == CapabilityResultStatus.FAILED
+                    && runtime.failureType() == CapabilityFailureType.VALIDATION
+                    && runtime.nodeResults().isEmpty());
+            traceSteps.add(trace(traceSteps, "PLAN_VALIDATION", "EXECUTE_PLAN", null,
+                    state.getCurrentSubGoal(), planSummary(plan), planValid ? "SUCCEEDED" : "FAILED", 0L,
+                    planValid ? "schema/DAG validation passed" : StrUtil.maxLength(runtime.message(), 400),
+                    planValid ? null : AgentStopReason.INVALID_CAPABILITY_CALL));
+            if (!planValid) {
+                if (replanAttempt < MAX_REPLAN_ATTEMPTS) {
+                    replanAttempt++;
+                    observations.add(AgentObservation.recoverableError("plan_validator", state.getCurrentSubGoal(),
+                            StrUtil.blankToDefault(runtime.message(), "execution plan validation failed"),
+                            "PLAN_VALIDATION:" + replanAttempt, AgentStopReason.INVALID_CAPABILITY_CALL,
+                            Map.of("errorKind", "PLAN_VALIDATION", "failureType", "VALIDATION")));
+                    continue;
+                }
+                return stopped(state, AgentStopReason.INVALID_CAPABILITY_CALL,
+                        StrUtil.blankToDefault(runtime.message(), "执行计划验证失败。"), gatheredEvidence, traceSteps,
+                        trustedEntityIds, activities, references, provenance);
+            }
+
             for (ActivityRecord activity : runtime.activities()) {
                 state.incrementStep();
                 activities.add(activity);
@@ -166,9 +208,32 @@ public class AgenticKnowledgeRuntimeEngine {
                 AgentStopReason nodeStop = nodeResult == null ? null : nodeResult.stopReason();
                 traceSteps.add(trace(traceSteps, "RUNTIME_EXECUTOR", "CALL_CAPABILITY", activity.capability(),
                         purpose(plan, activity.nodeId()), null,
-                        activity.status() == CapabilityResultStatus.FAILED ? "FAILED" : "SUCCEEDED",
+                        activity.status() == CapabilityResultStatus.FAILED ? "FAILED" : activity.status().name(),
                         activity.elapsedMs(), runtimeActivitySummary(activity), nodeStop));
             }
+
+            String resultIntegrityError = resultIntegrityError(runtime);
+            traceSteps.add(trace(traceSteps, "RESULT_INTEGRITY", "VALIDATE", null, state.getCurrentSubGoal(), null,
+                    resultIntegrityError == null ? "SUCCEEDED" : "FAILED", 0L,
+                    resultIntegrityError == null ? "node results and activity records are consistent" : resultIntegrityError,
+                    resultIntegrityError == null ? null : AgentStopReason.NO_RELIABLE_EVIDENCE));
+            if (resultIntegrityError != null) {
+                return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
+                        "Runtime 结果完整性验证失败。", gatheredEvidence, traceSteps,
+                        trustedEntityIds, activities, references, provenance);
+            }
+
+            String provenanceError = provenanceIntegrityError(runtime);
+            traceSteps.add(trace(traceSteps, "PROVENANCE_INTEGRITY", "VALIDATE", null, state.getCurrentSubGoal(), null,
+                    provenanceError == null ? "SUCCEEDED" : "FAILED", 0L,
+                    provenanceError == null ? "every ReferenceRecord is linked to provenance" : provenanceError,
+                    provenanceError == null ? null : AgentStopReason.NO_RELIABLE_EVIDENCE));
+            if (provenanceError != null) {
+                return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
+                        "Reference / Provenance 完整性验证失败。", gatheredEvidence, traceSteps,
+                        trustedEntityIds, activities, references, provenance);
+            }
+
             references.addAll(runtime.references());
             provenance.addAll(runtime.provenance());
             materializeRuntimeFacts(plan, runtime, observations, gatheredEvidence, deterministicAnswers);
@@ -177,104 +242,57 @@ public class AgenticKnowledgeRuntimeEngine {
             for (ReferenceRecord reference : runtime.references()) {
                 for (Long id : reference.verifiedEntityIds()) if (id != null) trustedChanged |= trustedEntityIds.add(id);
             }
-            if (trustedChanged) context = context.withContextEntityIds(trusted(trustedEntityIds));
+            if (trustedChanged) context = context.withContextEntityIds(List.copyOf(trustedEntityIds));
 
             if (runtime.failed() && runtime.references().isEmpty()) {
                 if (hasPlannerRecoverable(runtime) && replanAttempt < MAX_REPLAN_ATTEMPTS) {
                     replanAttempt++;
                     continue;
                 }
-                AgentStopReason reason = stopReason(runtime.failureType());
-                return stopped(state, reason, StrUtil.blankToDefault(runtime.message(), "执行计划失败。"),
-                        gatheredEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
+                return stopped(state, stopReason(runtime.failureType()),
+                        StrUtil.blankToDefault(runtime.message(), "执行计划失败。"), gatheredEvidence, traceSteps,
+                        trustedEntityIds, activities, references, provenance);
             }
 
-            EvaluationOutcome outcome = evaluateGoal(state, context, budget, observations,
+            GoalCheck check = evaluateGoal(state, context, budget, observations,
                     deterministicAnswers, gatheredEvidence, traceSteps);
-            if (outcome.result() != null) {
-                Result terminal = outcome.result();
-                return terminal.withRuntimeRecords(activities, references, provenance, trustedEntityIds);
+            if (check.budgetStop() != null) {
+                return stopped(state, check.budgetStop(), "目标充分性验证未能在预算内完成。",
+                        gatheredEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
             }
-            if (outcome.evaluation().verdict() == AgentGoalEvaluator.Verdict.SATISFIED) {
+            AgentGoalEvaluator.Evaluation evaluation = check.evaluation();
+            if (evaluation.verdict() == AgentGoalEvaluator.Verdict.SATISFIED) {
                 return answer(state, safeHistory, gatheredEvidence, deterministicAnswers, traceSteps,
                         trustedEntityIds, activities, references, provenance);
             }
-            if (outcome.evaluation().verdict() == AgentGoalEvaluator.Verdict.NEED_MORE_INFO) {
-                state.stop(AgentStopReason.NEED_USER_INPUT);
-                return new Result(State.CLARIFY, null,
-                        StrUtil.blankToDefault(outcome.evaluation().message(), "请补充问题中的关键信息。"),
-                        AgentStopReason.NEED_USER_INPUT, List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(),
-                        state.getEvidenceCoverage(), null, List.copyOf(traceSteps), trusted(trustedEntityIds),
-                        List.copyOf(activities), List.copyOf(references), List.copyOf(provenance));
+            if (evaluation.verdict() == AgentGoalEvaluator.Verdict.NEED_MORE_INFO) {
+                return clarify(state, evaluation.message(), gatheredEvidence, traceSteps, trustedEntityIds,
+                        activities, references, provenance);
             }
-            if (outcome.evaluation().verdict() == AgentGoalEvaluator.Verdict.INSUFFICIENT
+            if (evaluation.verdict() == AgentGoalEvaluator.Verdict.INSUFFICIENT
                     && replanAttempt < MAX_REPLAN_ATTEMPTS) {
                 replanAttempt++;
-                observations.add(AgentObservation.recoverableError("goal_evaluator", state.getCurrentSubGoal(),
-                        StrUtil.maxLength(outcome.evaluation().reason(), 800),
-                        "GOAL_NOT_SATISFIED:" + replanAttempt,
-                        AgentStopReason.NO_RELIABLE_EVIDENCE,
-                        Map.of("errorKind", "GOAL_NOT_SATISFIED", "verdict", "INSUFFICIENT")));
+                addGoalGapObservation(observations, state, evaluation, replanAttempt);
                 continue;
             }
             return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
-                    "现有执行事实仍不足以完整回答原始问题。", gatheredEvidence, traceSteps,
-                    trustedEntityIds, activities, references, provenance);
-        }
-    }
-
-    private Result evaluateAndMaybeAnswer(AgentExecutionState state,
-                                          CapabilityInvocationContext context,
-                                          AgentExecutionBudget budget,
-                                          List<ChatTurnDTO> history,
-                                          List<AgentObservation> observations,
-                                          List<Evidence> gatheredEvidence,
-                                          List<String> deterministicAnswers,
-                                          List<AgentTraceStep> traceSteps,
-                                          LinkedHashSet<Long> trustedEntityIds,
-                                          List<ActivityRecord> activities,
-                                          List<ReferenceRecord> references,
-                                          List<ProvenanceRecord> provenance,
-                                          int replanAttempt) {
-        if (references.isEmpty() && gatheredEvidence.isEmpty() && deterministicAnswers.isEmpty()) {
-            return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE, "没有执行事实支持回答。",
+                    evaluation.verdict() == AgentGoalEvaluator.Verdict.EVALUATION_FAILED
+                            ? "目标充分性验证失败，拒绝在未验证情况下输出答案。"
+                            : "现有执行事实仍不足以完整回答原始问题。",
                     gatheredEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
         }
-        EvaluationOutcome outcome = evaluateGoal(state, context, budget, observations,
-                deterministicAnswers, gatheredEvidence, traceSteps);
-        if (outcome.result() != null) return outcome.result().withRuntimeRecords(activities, references, provenance, trustedEntityIds);
-        if (outcome.evaluation().verdict() == AgentGoalEvaluator.Verdict.SATISFIED) {
-            return answer(state, history, gatheredEvidence, deterministicAnswers, traceSteps,
-                    trustedEntityIds, activities, references, provenance);
-        }
-        if (outcome.evaluation().verdict() == AgentGoalEvaluator.Verdict.NEED_MORE_INFO) {
-            state.stop(AgentStopReason.NEED_USER_INPUT);
-            return new Result(State.CLARIFY, null,
-                    StrUtil.blankToDefault(outcome.evaluation().message(), "请补充问题中的关键信息。"),
-                    AgentStopReason.NEED_USER_INPUT, List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(),
-                    state.getEvidenceCoverage(), null, List.copyOf(traceSteps), trusted(trustedEntityIds),
-                    List.copyOf(activities), List.copyOf(references), List.copyOf(provenance));
-        }
-        return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
-                replanAttempt >= MAX_REPLAN_ATTEMPTS ? "现有事实不足以完整回答原始问题。" : "Planner 请求回答但独立目标验证未通过。",
-                gatheredEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
     }
 
-    private EvaluationOutcome evaluateGoal(AgentExecutionState state,
-                                           CapabilityInvocationContext context,
-                                           AgentExecutionBudget budget,
-                                           List<AgentObservation> observations,
-                                           List<String> deterministicAnswers,
-                                           List<Evidence> gatheredEvidence,
-                                           List<AgentTraceStep> traceSteps) {
+    private GoalCheck evaluateGoal(AgentExecutionState state,
+                                   CapabilityInvocationContext context,
+                                   AgentExecutionBudget budget,
+                                   List<AgentObservation> observations,
+                                   List<String> deterministicAnswers,
+                                   List<Evidence> gatheredEvidence,
+                                   List<AgentTraceStep> traceSteps) {
         if (goalEvaluator.consumesLlmCall()) {
-            AgentStopReason budgetStop = budgetStop(state, budget, true);
-            if (budgetStop != null) {
-                return new EvaluationOutcome(null,
-                        Result.stopped(budgetStop, "目标充分性验证未能在预算内完成。",
-                                gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps,
-                                List.of(), List.of(), List.of(), List.of()));
-            }
+            AgentStopReason budgetStop = llmBudgetStop(state, budget);
+            if (budgetStop != null) return new GoalCheck(null, budgetStop);
             state.incrementLlmCalls();
         }
         long start = System.currentTimeMillis();
@@ -287,20 +305,16 @@ public class AgenticKnowledgeRuntimeEngine {
             case NEED_MORE_INFO -> AgentStopReason.NEED_USER_INPUT;
             case INSUFFICIENT, EVALUATION_FAILED -> AgentStopReason.NO_RELIABLE_EVIDENCE;
         };
-        String status = evaluation.verdict() == AgentGoalEvaluator.Verdict.SATISFIED ? "SUCCEEDED"
-                : evaluation.verdict() == AgentGoalEvaluator.Verdict.INSUFFICIENT ? "REPLAN"
-                : evaluation.verdict() == AgentGoalEvaluator.Verdict.NEED_MORE_INFO ? "STOPPED" : "FAILED";
+        String status = switch (evaluation.verdict()) {
+            case SATISFIED -> "SUCCEEDED";
+            case INSUFFICIENT -> "REPLAN";
+            case NEED_MORE_INFO -> "STOPPED";
+            case EVALUATION_FAILED -> "FAILED";
+        };
         traceSteps.add(trace(traceSteps, "RESULT_EVALUATION", "EVALUATE", null, state.getOriginalGoal(), null,
                 status, elapsed, "verdict=" + evaluation.verdict() + "; " + StrUtil.maxLength(evaluation.reason(), 400),
                 traceReason));
-        if (evaluation.verdict() == AgentGoalEvaluator.Verdict.EVALUATION_FAILED) {
-            return new EvaluationOutcome(evaluation,
-                    Result.stopped(AgentStopReason.NO_RELIABLE_EVIDENCE,
-                            "目标充分性验证失败，拒绝在未验证情况下输出答案。",
-                            gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps,
-                            List.of(), List.of(), List.of(), List.of()));
-        }
-        return new EvaluationOutcome(evaluation, null);
+        return new GoalCheck(evaluation, null);
     }
 
     private Result answer(AgentExecutionState state,
@@ -312,34 +326,37 @@ public class AgenticKnowledgeRuntimeEngine {
                           List<ActivityRecord> activities,
                           List<ReferenceRecord> references,
                           List<ProvenanceRecord> provenance) {
-        if (gatheredEvidence.isEmpty() && !deterministicAnswers.isEmpty()) {
+        List<String> uniqueAnswers = distinct(deterministicAnswers);
+        if (gatheredEvidence.isEmpty() && !uniqueAnswers.isEmpty()) {
             state.setEvidenceCoverage(EvidenceCoverage.FULL);
             state.stop(AgentStopReason.ENOUGH_EVIDENCE);
-            String answer = String.join("\n", distinct(deterministicAnswers));
             traceSteps.add(trace(traceSteps, "ANSWER_VALIDATION", "ANSWER", null, state.getOriginalGoal(), null,
                     "SUCCEEDED", 0L, "deterministic references satisfy immutable OriginalGoal",
                     AgentStopReason.ENOUGH_EVIDENCE));
-            return new Result(State.ANSWER, answer, null, AgentStopReason.ENOUGH_EVIDENCE,
+            return new Result(State.ANSWER, String.join("\n", uniqueAnswers), null, AgentStopReason.ENOUGH_EVIDENCE,
                     List.of(), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), null,
-                    List.copyOf(traceSteps), trusted(trustedEntityIds), List.copyOf(activities),
+                    List.copyOf(traceSteps), List.copyOf(trustedEntityIds), List.copyOf(activities),
                     List.copyOf(references), List.copyOf(provenance));
         }
         if (gatheredEvidence.isEmpty() || answerPipeline == null) {
             return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
-                    "没有可用于最终回答验证的证据。", gatheredEvidence, traceSteps,
-                    trustedEntityIds, activities, references, provenance);
+                    "独立 Goal Evaluator 虽通过，但没有可进入最终 Claim/Evidence 验证的事实输出。",
+                    gatheredEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
         }
+
         long start = System.currentTimeMillis();
         GenerationResult generation = answerPipeline.generateWithClaims(state.getOriginalGoal(),
                 List.copyOf(gatheredEvidence), history);
         long elapsed = System.currentTimeMillis() - start;
         if (generation == null || StrUtil.isBlank(generation.getAnswer()) || generation.isClaimFail()) {
+            traceSteps.add(trace(traceSteps, "ANSWER_VALIDATION", "ANSWER", null, state.getOriginalGoal(), null,
+                    "FAILED", elapsed, "answer failed claim/evidence validation", AgentStopReason.NO_RELIABLE_EVIDENCE));
             return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
                     "最终回答未通过证据/Claim 验证。", gatheredEvidence, traceSteps,
                     trustedEntityIds, activities, references, provenance);
         }
-        String finalAnswer = deterministicAnswers.isEmpty() ? generation.getAnswer()
-                : String.join("\n", distinct(deterministicAnswers)) + "\n" + generation.getAnswer();
+        String finalAnswer = uniqueAnswers.isEmpty() ? generation.getAnswer()
+                : String.join("\n", uniqueAnswers) + "\n" + generation.getAnswer();
         state.setEvidenceCoverage(EvidenceCoverage.FULL);
         state.stop(AgentStopReason.ENOUGH_EVIDENCE);
         traceSteps.add(trace(traceSteps, "ANSWER_VALIDATION", "ANSWER", null, state.getOriginalGoal(), null,
@@ -347,8 +364,38 @@ public class AgenticKnowledgeRuntimeEngine {
                 AgentStopReason.ENOUGH_EVIDENCE));
         return new Result(State.ANSWER, finalAnswer, null, AgentStopReason.ENOUGH_EVIDENCE,
                 List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), generation,
-                List.copyOf(traceSteps), trusted(trustedEntityIds), List.copyOf(activities),
+                List.copyOf(traceSteps), List.copyOf(trustedEntityIds), List.copyOf(activities),
                 List.copyOf(references), List.copyOf(provenance));
+    }
+
+    private Result clarify(AgentExecutionState state,
+                           String message,
+                           List<Evidence> gatheredEvidence,
+                           List<AgentTraceStep> traceSteps,
+                           LinkedHashSet<Long> trustedEntityIds,
+                           List<ActivityRecord> activities,
+                           List<ReferenceRecord> references,
+                           List<ProvenanceRecord> provenance) {
+        state.stop(AgentStopReason.NEED_USER_INPUT);
+        String question = StrUtil.blankToDefault(message, "请补充完成查询所需的关键信息。");
+        traceSteps.add(trace(traceSteps, "STOP", "NEED_MORE_INFO", null, state.getOriginalGoal(), null,
+                "STOPPED", 0L, StrUtil.maxLength(question, 400), AgentStopReason.NEED_USER_INPUT));
+        return new Result(State.CLARIFY, null, question, AgentStopReason.NEED_USER_INPUT,
+                List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), null,
+                List.copyOf(traceSteps), List.copyOf(trustedEntityIds), List.copyOf(activities),
+                List.copyOf(references), List.copyOf(provenance));
+    }
+
+    private void addGoalGapObservation(List<AgentObservation> observations,
+                                       AgentExecutionState state,
+                                       AgentGoalEvaluator.Evaluation evaluation,
+                                       int replanAttempt) {
+        String reason = StrUtil.blankToDefault(evaluation.reason(), "current facts do not satisfy OriginalGoal");
+        observations.add(AgentObservation.recoverableError("goal_evaluator", state.getCurrentSubGoal(),
+                StrUtil.maxLength(reason, 800), "GOAL_NOT_SATISFIED:" + replanAttempt + ":" + reason.hashCode(),
+                AgentStopReason.NO_RELIABLE_EVIDENCE,
+                Map.of("errorKind", "GOAL_NOT_SATISFIED", "verdict", "INSUFFICIENT",
+                        "replanAttempt", replanAttempt)));
     }
 
     private void materializeRuntimeFacts(AgentExecutionPlan plan,
@@ -357,9 +404,11 @@ public class AgenticKnowledgeRuntimeEngine {
                                          List<Evidence> gatheredEvidence,
                                          List<String> deterministicAnswers) {
         for (ReferenceRecord reference : runtime.references()) {
-            Map<String, Object> meta = reference.metadata();
+            Map<String, Object> metadata = new LinkedHashMap<>(reference.metadata());
+            metadata.put("resultStatus", reference.status().name());
+            metadata.put("referenceId", reference.referenceId());
             observations.add(AgentObservation.success(reference.capability(), purpose(plan, reference.nodeId()),
-                    StrUtil.maxLength(reference.summary(), 1200), reference.referenceId(), meta));
+                    StrUtil.maxLength(reference.summary(), 1200), reference.referenceId(), metadata));
             gatheredEvidence.addAll(reference.evidences());
             if (StrUtil.isNotBlank(reference.deterministicAnswer())) {
                 deterministicAnswers.add(reference.deterministicAnswer());
@@ -384,6 +433,59 @@ public class AgenticKnowledgeRuntimeEngine {
         }
     }
 
+    private String resultIntegrityError(AgentRuntimeResult runtime) {
+        if (runtime == null) return "runtime result is null";
+        if (runtime.nodeResults().isEmpty()) return null;
+        Map<String, ActivityRecord> activityByNode = new HashMap<>();
+        for (ActivityRecord activity : runtime.activities()) {
+            if (activity == null || StrUtil.isBlank(activity.nodeId())) return "activity record has no nodeId";
+            if (activityByNode.putIfAbsent(activity.nodeId(), activity) != null) {
+                return "duplicate activity record for node " + activity.nodeId();
+            }
+        }
+        for (Map.Entry<String, CapabilityResult> entry : runtime.nodeResults().entrySet()) {
+            ActivityRecord activity = activityByNode.get(entry.getKey());
+            if (activity == null) return "missing activity record for node " + entry.getKey();
+            CapabilityResult result = entry.getValue();
+            if (result == null) return "null capability result for node " + entry.getKey();
+            if (activity.status() != result.status()) return "activity/result status mismatch for node " + entry.getKey();
+        }
+        return null;
+    }
+
+    private String provenanceIntegrityError(AgentRuntimeResult runtime) {
+        Map<String, ProvenanceRecord> provenanceByReference = new HashMap<>();
+        for (ProvenanceRecord record : runtime.provenance()) {
+            if (record == null || StrUtil.isBlank(record.referenceId())) return "provenance record has no referenceId";
+            if (provenanceByReference.putIfAbsent(record.referenceId(), record) != null) {
+                return "duplicate provenance for reference " + record.referenceId();
+            }
+        }
+        Set<String> seenReferenceIds = new HashSet<>();
+        for (ReferenceRecord reference : runtime.references()) {
+            if (reference == null || StrUtil.isBlank(reference.referenceId())) return "reference has no referenceId";
+            if (!seenReferenceIds.add(reference.referenceId())) return "duplicate referenceId " + reference.referenceId();
+            ProvenanceRecord record = provenanceByReference.get(reference.referenceId());
+            if (record == null) return "missing provenance for reference " + reference.referenceId();
+            if (!Objects.equals(reference.planId(), record.planId())
+                    || !Objects.equals(reference.nodeId(), record.nodeId())
+                    || !Objects.equals(reference.capability(), record.capability())) {
+                return "reference/provenance identity mismatch for " + reference.referenceId();
+            }
+            CapabilityResult nodeResult = runtime.nodeResults().get(reference.nodeId());
+            if (nodeResult == null || !nodeResult.success()) {
+                return "reference points to non-successful node " + reference.nodeId();
+            }
+            if (nodeResult.status() != reference.status()) {
+                return "reference/result status mismatch for node " + reference.nodeId();
+            }
+        }
+        if (provenanceByReference.size() != seenReferenceIds.size()) {
+            return "orphan provenance record exists";
+        }
+        return null;
+    }
+
     private boolean hasPlannerRecoverable(AgentRuntimeResult runtime) {
         for (CapabilityResult result : runtime.nodeResults().values()) {
             if (result != null && result.recoverable()) return true;
@@ -391,27 +493,17 @@ public class AgenticKnowledgeRuntimeEngine {
         return false;
     }
 
-    private AgentStopReason budgetStop(AgentExecutionState state, AgentExecutionBudget budget, boolean llmRequired) {
+    private AgentStopReason planningBudgetStop(AgentExecutionState state, AgentExecutionBudget budget) {
         if (state.elapsedMs() >= budget.maxElapsedMs()) return AgentStopReason.TIME_BUDGET_EXCEEDED;
         if (state.getStep() >= budget.maxSteps()) return AgentStopReason.MAX_STEPS;
-        if (llmRequired && state.getLlmCalls() >= budget.maxLlmCalls()) return AgentStopReason.MAX_LLM_CALLS;
+        if (state.getLlmCalls() >= budget.maxLlmCalls()) return AgentStopReason.MAX_LLM_CALLS;
         return null;
     }
 
-    private Result stopped(AgentExecutionState state,
-                           AgentStopReason reason,
-                           String message,
-                           List<Evidence> gatheredEvidence,
-                           List<AgentTraceStep> traceSteps,
-                           LinkedHashSet<Long> trustedEntityIds,
-                           List<ActivityRecord> activities,
-                           List<ReferenceRecord> references,
-                           List<ProvenanceRecord> provenance) {
-        state.stop(reason);
-        traceSteps.add(trace(traceSteps, "STOP", "STOP", null, state.getOriginalGoal(), null,
-                "STOPPED", 0L, StrUtil.maxLength(message, 400), reason));
-        return Result.stopped(reason, message, gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps,
-                trusted(trustedEntityIds), activities, references, provenance);
+    private AgentStopReason llmBudgetStop(AgentExecutionState state, AgentExecutionBudget budget) {
+        if (state.elapsedMs() >= budget.maxElapsedMs()) return AgentStopReason.TIME_BUDGET_EXCEEDED;
+        if (state.getLlmCalls() >= budget.maxLlmCalls()) return AgentStopReason.MAX_LLM_CALLS;
+        return null;
     }
 
     private AgentStopReason stopReason(CapabilityFailureType type) {
@@ -425,10 +517,48 @@ public class AgenticKnowledgeRuntimeEngine {
         };
     }
 
+    private Result stopped(AgentExecutionState state,
+                           AgentStopReason reason,
+                           String message,
+                           List<Evidence> gatheredEvidence,
+                           List<AgentTraceStep> traceSteps,
+                           LinkedHashSet<Long> trustedEntityIds,
+                           List<ActivityRecord> activities,
+                           List<ReferenceRecord> references,
+                           List<ProvenanceRecord> provenance) {
+        if (!state.isStopped()) state.stop(reason);
+        traceSteps.add(trace(traceSteps, "STOP", "STOP", null, state.getOriginalGoal(), null,
+                "STOPPED", 0L, StrUtil.maxLength(message, 400), reason));
+        return Result.stopped(reason, message, gatheredEvidence, state.getStep(), state.getLlmCalls(), traceSteps,
+                List.copyOf(trustedEntityIds), activities, references, provenance);
+    }
+
+    private AgentTraceStep trace(List<AgentTraceStep> current,
+                                 String phase,
+                                 String action,
+                                 String capability,
+                                 String purpose,
+                                 String argumentsSummary,
+                                 String status,
+                                 long elapsedMs,
+                                 String summary,
+                                 AgentStopReason stopReason) {
+        return new AgentTraceStep(current.size() + 1, phase, action, capability,
+                StrUtil.maxLength(purpose, 600), StrUtil.maxLength(argumentsSummary, 900), status,
+                Math.max(0L, elapsedMs), StrUtil.maxLength(summary, 600), stopReason);
+    }
+
     private String planSummary(AgentExecutionPlan plan) {
         try {
-            return StrUtil.maxLength(JSONUtil.toJsonStr(plan.nodes().stream().map(node -> Map.of(
-                    "id", node.id(), "capability", node.capability(), "dependsOn", node.dependsOn())).toList()), 900);
+            List<Map<String, Object>> nodes = new ArrayList<>();
+            for (PlanNode node : plan.nodes()) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", node.id());
+                item.put("capability", node.capability());
+                item.put("dependsOn", node.dependsOn());
+                nodes.add(item);
+            }
+            return StrUtil.maxLength(JSONUtil.toJsonStr(nodes), 900);
         } catch (Exception e) {
             return "nodes=" + plan.nodes().size();
         }
@@ -449,30 +579,17 @@ public class AgenticKnowledgeRuntimeEngine {
         return null;
     }
 
-    private AgentTraceStep trace(List<AgentTraceStep> current,
-                                 String phase,
-                                 String action,
-                                 String capability,
-                                 String purpose,
-                                 String argumentsSummary,
-                                 String status,
-                                 long elapsedMs,
-                                 String summary,
-                                 AgentStopReason stopReason) {
-        return new AgentTraceStep(current.size() + 1, phase, action, capability,
-                StrUtil.maxLength(purpose, 600), StrUtil.maxLength(argumentsSummary, 900), status,
-                Math.max(0L, elapsedMs), StrUtil.maxLength(summary, 600), stopReason);
-    }
-
-    private List<Long> trusted(LinkedHashSet<Long> trustedEntityIds) {
-        return trustedEntityIds == null ? List.of() : List.copyOf(trustedEntityIds);
+    private LinkedHashSet<Long> sanitizeIds(List<Long> ids) {
+        LinkedHashSet<Long> out = new LinkedHashSet<>();
+        if (ids != null) for (Long id : ids) if (id != null) out.add(id);
+        return out;
     }
 
     private List<String> distinct(List<String> values) {
         return values == null ? List.of() : new ArrayList<>(new LinkedHashSet<>(values));
     }
 
-    private record EvaluationOutcome(AgentGoalEvaluator.Evaluation evaluation, Result result) {}
+    private record GoalCheck(AgentGoalEvaluator.Evaluation evaluation, AgentStopReason budgetStop) {}
 
     public enum State {
         ANSWER,
@@ -515,16 +632,6 @@ public class AgenticKnowledgeRuntimeEngine {
                                      List<ProvenanceRecord> provenance) {
             return new Result(State.STOPPED, null, message, reason, evidences, steps, llmCalls,
                     EvidenceCoverage.NONE, null, traceSteps, verifiedEntityIds, activities, references, provenance);
-        }
-
-        public Result withRuntimeRecords(List<ActivityRecord> newActivities,
-                                         List<ReferenceRecord> newReferences,
-                                         List<ProvenanceRecord> newProvenance,
-                                         LinkedHashSet<Long> trustedEntityIds) {
-            return new Result(state, answer, clarificationQuestion, stopReason, evidences, steps, llmCalls,
-                    evidenceCoverage, generation, traceSteps,
-                    trustedEntityIds == null ? verifiedEntityIds : List.copyOf(trustedEntityIds),
-                    newActivities, newReferences, newProvenance);
         }
     }
 }
