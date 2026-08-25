@@ -20,38 +20,41 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** V1.1 Planner：只选择下一步机器动作/能力，不输出 SQL、检索算法选择或新的业务 Intent。 */
+/** V1.1 Planner：理解开放用户目标，严格从运行时能力契约中选择/组合下一步。 */
 @Slf4j
 @Component
 public class LlmAgentPlanner implements AgentPlanner {
+    private static final String PROMPT_KEY = "agent-planner-v1.1-pipeline";
     private static final String DEFAULT_PROMPT = """
-            你是企业知识平台的受控 Agent Planner。你不直接访问数据库，也不决定 BM25/向量/RRF 等检索内部实现。
-            你的任务是根据 originalGoal、对话历史、已有 observations、Domain Schema 和当前可用 capabilities，决定唯一的下一步动作。
-            只输出 JSON，不要 Markdown，不要解释推理过程。
+            你是企业知识平台的受控 Agent Planner。你的职责不是给用户意图分类，而是完成 originalGoal。
+            你只能观察系统提供的 capabilities、domainFields、domainMetrics、history 和 observations，选择唯一下一步动作。
+            只输出 JSON，不要 Markdown，不要解释内部推理过程。
 
             action 只能是 CALL_CAPABILITY / ANSWER / NEED_MORE_INFO / STOP。
-            CALL_CAPABILITY 必须提供 capability、arguments、purpose；ANSWER 只表示证据已足够，最终回答由系统生成/确定性能力返回。
+            CALL_CAPABILITY 必须给 capability、arguments、purpose；arguments 必须严格符合该 capability 的 argumentSchema。
 
-            硬规则：
-            1. originalGoal 永远只读，不能因候选、工具结果、二次搜索而改变。
-            2. observations 是工具结果。语义检索候选不能自动成为用户指定实体；只有 structured_query 返回的 verifiedEntityIds 或服务端 conversationContextEntityIds 才能成为 trusted scope。
-            3. tenantId/userId/kbId/domainCode/traceId/permissions/environment 绝不能放入 arguments。
-            4. 只能调用 capabilities 中列出的能力，严格遵守 argumentSchema。
-            5. 字段/指标必须来自 domainFields/domainMetrics，禁止编造 code。
-            6. 精确事实、计数、聚合、字段投影优先 structured_query；明确逐字原文要求使用 exact_text_search；开放语义事实使用 knowledge_retrieval。
-            7. 用户明确说“它/这个/刚才那个/这些”并且 conversationContextEntityIds 非空时，检索能力 scope=CONTEXT；没有可信上下文对象时 NEED_MORE_INFO。
-            8. PATENT 领域询问某一权利要求的原文、引用、依赖或从属关系时：先确保 conversationContextEntityIds 中只有一个可信专利对象，再调用 patent_claim_lookup；不要让普通 RAG 猜 claim 依赖关系。
-            9. 集合级相似字段关系优先 similar_field_values；不要用普通语义 TopK 冒充全集结论。
-            10. 一个问题同时包含确定性字段事实和语义解释时可以多步调用能力：先 structured_query 建立 trusted scope，再在 scope=CONTEXT 下检索剩余语义证据，最后 ANSWER。
-            11. observations 已足够回答 originalGoal 时必须 ANSWER，不要重复调用相同能力。
-            12. structured_query 成功返回 sourceRowCount=0 时，表示在当前可信完整结构化范围内没有符合条件的对象；如果该查询直接对应 originalGoal，这是权威的“未找到”结论，应 ANSWER，不得换一种参数形式重复执行同一查询，也不得再用语义检索猜一个对象。
-            13. 能力不足以完成问题时 STOP，不得伪造答案。
+            不可违反：
+            1. originalGoal 只读。工具结果、候选、currentSubGoal 都不能替换或缩窄 originalGoal。
+            2. capabilities 是当前运行时真实能力清单；不得调用未列出的能力，不得凭经验假设系统会做某事。
+            3. domainFields/domainMetrics 是结构化数据 Source of Truth。字段 code、metric code、operator、transform、sortable/groupable/multiValue 必须以 Schema 为准，禁止编造。
+            4. tenantId/userId/kbId/domainCode/traceId/permissions/environment/contextEntityIds/timeout/maxRows 等系统范围绝不能写入 arguments。
+            5. 如果一个字段 multiValue=true，而问题讨论单个元素、不同元素、按元素分组/聚合，应使用能力契约提供的 explode/展开语义；不要把整段多值字符串当一个值。
+            6. 如果问题需要字段派生值（例如日期年份、字符串长度、人名姓氏），只能使用该字段 allowedTransforms 中明确声明的变换；没有声明则能力不足，不得让模型自己算成事实。
+            7. observations.status=ERROR 且 recoverableError=true 时，可根据错误 metadata 和 capability contract 修正参数后再调用；不得重复完全相同参数。不可修复错误不得绕过。
+            8. observations.completeDataset=true 且 authoritativeEmpty=true 表示可信完整范围内的权威空结果。如果这一步直接回答 originalGoal，应 ANSWER“未找到/为0”，不要换一种检索方式猜结果。
+            9. observations 已足够回答 originalGoal 时立即 ANSWER。不要为“更确定”而重复同一能力。
+            10. 语义检索候选只能作为证据/观察，不能自动变成用户指定实体。只有服务端已验证的上下文实体集合才能成为后续硬范围。
+            11. 能力不足、数据完整性不足或安全边界不允许时 STOP/NEED_MORE_INFO，不得伪造答案。
+            12. 优先选择能直接、确定性回答目标的最小能力组合；复杂问题可以多步，但每一步 purpose 必须说明它补足 originalGoal 的哪一部分。
 
-            JSON: {"action":"CALL_CAPABILITY","capability":"knowledge_retrieval","arguments":{"query":"视频技术"},"purpose":"获得与原始问题相关的证据","message":null}
+            输出格式：
+            {"action":"CALL_CAPABILITY","capability":"<capability-name>","arguments":{},"purpose":"本步要补足的信息","message":null}
+            或 {"action":"ANSWER","capability":null,"arguments":{},"purpose":"现有观察已足够回答原始问题","message":null}
             """;
 
     private final ModelApi modelApi;
@@ -79,10 +82,10 @@ public class LlmAgentPlanner implements AgentPlanner {
                                 List<AgentObservation> observations, List<ChatTurnDTO> history) {
         try {
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(promptSupport.get("agent-planner-v1", DEFAULT_PROMPT));
+            req.setSystem(promptSupport.get(PROMPT_KEY, DEFAULT_PROMPT));
             req.setUser(buildInput(state, context, observations, history));
             req.setTemperature(0D);
-            req.setScenario("agent-planner-v1");
+            req.setScenario(PROMPT_KEY);
             req.setTraceId(context == null ? null : context.traceId());
             CommonResult<String> response = modelApi.chat(req);
             JSONObject json = parseJson(response == null ? null : response.getCheckedData());
@@ -96,7 +99,8 @@ public class LlmAgentPlanner implements AgentPlanner {
             }
             return new AgentDecision(action, capability, arguments, json.getStr("purpose"), json.getStr("message"));
         } catch (Exception e) {
-            log.warn("[agent-planner-v1][failed traceId={} error={}]", context == null ? null : context.traceId(), e.getMessage());
+            log.warn("[{}][failed traceId={} error={}]", PROMPT_KEY,
+                    context == null ? null : context.traceId(), e.getMessage());
             return stop("规划服务暂不可用。");
         }
     }
@@ -109,7 +113,7 @@ public class LlmAgentPlanner implements AgentPlanner {
                               List<AgentObservation> observations, List<ChatTurnDTO> history) {
         List<CapabilityDefinition> capabilities = capabilityRegistry.listDefinitions(context);
         String domain = context == null ? null : context.domainCode();
-        StringBuilder sb = new StringBuilder(8000);
+        StringBuilder sb = new StringBuilder(12_000);
         sb.append("originalGoal=").append(state.getOriginalGoal()).append('\n');
         sb.append("currentSubGoal=").append(StrUtil.nullToEmpty(state.getCurrentSubGoal())).append('\n');
         sb.append("step=").append(state.getStep()).append("; llmCalls=").append(state.getLlmCalls()).append('\n');
@@ -125,14 +129,21 @@ public class LlmAgentPlanner implements AgentPlanner {
 
     private List<Map<String, Object>> fieldSchema(String domainCode) {
         if (fieldRegistry == null || StrUtil.isBlank(domainCode)) return List.of();
+        List<FieldDefinition> fields = new ArrayList<>(fieldRegistry.all(domainCode));
+        fields.sort(Comparator.comparing(FieldDefinition::getFieldCode));
         List<Map<String, Object>> out = new ArrayList<>();
-        for (FieldDefinition field : fieldRegistry.all(domainCode)) {
+        for (FieldDefinition field : fields) {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("code", field.getFieldCode());
             item.put("aliases", field.getAliases());
+            item.put("entityType", field.getEntityType());
             item.put("valueType", field.getValueType());
+            item.put("multiValue", field.isMultiValue());
             item.put("filterable", field.isFilterable());
             item.put("operators", field.getAllowedOperators());
+            item.put("sortable", field.isSortable());
+            item.put("groupable", field.isGroupable());
+            item.put("allowedTransforms", field.getAllowedTransforms());
             item.put("exactIdentifier", field.isExactIdentifier());
             out.add(item);
         }
@@ -141,13 +152,19 @@ public class LlmAgentPlanner implements AgentPlanner {
 
     private List<Map<String, Object>> metricSchema(String domainCode) {
         if (metricRegistry == null || StrUtil.isBlank(domainCode)) return List.of();
+        List<MetricDefinition> metrics = new ArrayList<>(metricRegistry.all(domainCode));
+        metrics.sort(Comparator.comparing(MetricDefinition::getMetricCode));
         List<Map<String, Object>> out = new ArrayList<>();
-        for (MetricDefinition metric : metricRegistry.all(domainCode)) {
+        for (MetricDefinition metric : metrics) {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("code", metric.getMetricCode());
             item.put("aliases", metric.getAliases());
+            item.put("entityType", metric.getEntityType());
+            item.put("valueType", metric.getValueType());
             item.put("operations", metric.getSupportedOperations());
             item.put("displayName", metric.getDisplayName());
+            item.put("unit", metric.getUnit());
+            item.put("description", metric.getDescription());
             out.add(item);
         }
         return out;
