@@ -79,7 +79,6 @@ public class StructuredPipelineCapabilityDelegate {
         plan.setScope(QueryScope.currentKb(context.kbId()));
         StructuredPipelineResult result = executor.execute(plan);
         if (!result.success()) {
-            // Pipeline validation/combination errors are repairable；源完整性/数据质量错误不可绕过。
             String message = StrUtil.blankToDefault(result.message(), "structured pipeline failed");
             Map<String, Object> diagnostics = new LinkedHashMap<>();
             if (result.metadata() != null) diagnostics.putAll(result.metadata());
@@ -127,7 +126,6 @@ public class StructuredPipelineCapabilityDelegate {
         schema.put("orderBy", "可选。排序对象或数组：{field?,metric?,aggregateValue?,explode?,transforms?,direction:'ASC|DESC'}。字段必须 sortable=true。");
         schema.put("distinct", "可选 boolean。对最终 select 值去重。");
         schema.put("limit", "可选 1~50。只限制最终输出；底层仍基于完整集合计算。" );
-        // 第一版兼容参数，保留到 V3/Agent 对照结束。
         schema.put("task", "兼容参数：PROJECT/LIST/COUNT/AGGREGATE/TOP_N。新计划无需 task。" );
         schema.put("field", "兼容单字段过滤/排序字段。" );
         schema.put("operator", "兼容过滤操作符。" );
@@ -167,7 +165,6 @@ public class StructuredPipelineCapabilityDelegate {
                 String rawField = text(args.get("field"));
                 if (StrUtil.isNotBlank(rawField)) select = List.of(expression(domainCode, rawField, false, transforms(args.get("transforms"))));
             }
-            // 没有显式 select 的行查询，至少投影排序字段，避免返回一整张字段表。
             if (select.isEmpty() && aggregate == null && groupBy.isEmpty() && !orderBy.isEmpty()
                     && orderBy.get(0).value() != null) {
                 select = List.of(orderBy.get(0).value());
@@ -377,17 +374,25 @@ public class StructuredPipelineCapabilityDelegate {
     }
 
     private String render(StructuredPipelinePlan plan, StructuredPipelineResult result, String domainCode) {
-        if (result.authoritativeEmpty()) return "当前完整结构化范围内没有符合条件的已发布对象。";
+        String filter = predicateLabel(domainCode, plan.getFilter());
+        if (result.authoritativeEmpty()) {
+            return StrUtil.isBlank(filter)
+                    ? "当前完整结构化范围内没有符合条件的已发布对象。"
+                    : "筛选条件【" + filter + "】未命中任何已发布对象。";
+        }
+        String prefix = StrUtil.isBlank(filter) ? "" : "筛选条件【" + filter + "】已命中。";
         if (result.scalarValue() != null && plan.getAggregate() != null) {
             StructuredAggregateSpec aggregate = plan.getAggregate();
             String label = aggregateLabel(domainCode, aggregate);
             String number = formatNumber(result.scalarValue());
-            if (aggregate.operation() == Operation.COUNT_DISTINCT) return "当前范围内不同" + label + "共有 " + number + " 个。";
-            if (aggregate.operation() == Operation.COUNT) return "当前范围内" + label + "共有 " + number + " 个。";
-            return label + "的" + aggregate.operation().name() + "结果为 " + number + "。";
+            String body;
+            if (aggregate.operation() == Operation.COUNT_DISTINCT) body = "当前范围内不同" + label + "共有 " + number + " 个。";
+            else if (aggregate.operation() == Operation.COUNT) body = "当前范围内" + label + "共有 " + number + " 个。";
+            else body = label + "的" + aggregate.operation().name() + "结果为 " + number + "。";
+            return prefix + body;
         }
         if (!safe(plan.getGroupBy()).isEmpty()) {
-            StringBuilder sb = new StringBuilder("分组结果：\n");
+            StringBuilder sb = new StringBuilder(prefix).append("分组结果：\n");
             int i = 1;
             for (StructuredPipelineResult.Row row : result.rows()) {
                 sb.append(i++).append(". ").append(row.groupKey()).append("：")
@@ -395,7 +400,8 @@ public class StructuredPipelineCapabilityDelegate {
             }
             return sb.toString().trim();
         }
-        StringBuilder sb = new StringBuilder("当前范围返回 ").append(result.rows().size()).append(" 个对象：\n");
+        StringBuilder sb = new StringBuilder(prefix)
+                .append("当前范围返回 ").append(result.rows().size()).append(" 个结果：\n");
         int i = 1;
         for (StructuredPipelineResult.Row row : result.rows()) {
             sb.append(i++).append(". ").append(StrUtil.blankToDefault(row.entityName(), "对象" + row.entityId()));
@@ -407,6 +413,36 @@ public class StructuredPipelineCapabilityDelegate {
             sb.append('\n');
         }
         return sb.toString().trim();
+    }
+
+    private String predicateLabel(String domainCode, StructuredPredicateNode node) {
+        if (node == null || node.type() == null) return "";
+        if (node.type() == StructuredPredicateNode.Type.AND || node.type() == StructuredPredicateNode.Type.OR) {
+            String joiner = node.type() == StructuredPredicateNode.Type.AND ? " 且 " : " 或 ";
+            return node.children().stream().map(child -> predicateLabel(domainCode, child))
+                    .filter(StrUtil::isNotBlank).collect(Collectors.joining(joiner));
+        }
+        if (node.value() == null || node.operator() == null) return "";
+        String label = expressionLabel(domainCode, node.value());
+        String op = operatorLabel(node.operator());
+        if (node.operator() == FilterOperator.EXISTS) return label + "有值";
+        return label + op + String.join("、", node.expected());
+    }
+
+    private String operatorLabel(FilterOperator operator) {
+        return switch (operator) {
+            case EQ -> "=";
+            case NE -> "≠";
+            case IN -> "属于";
+            case CONTAINS -> "包含";
+            case STARTS_WITH -> "以…开头:";
+            case GT -> ">";
+            case GTE -> "≥";
+            case LT -> "<";
+            case LTE -> "≤";
+            case BETWEEN -> "介于";
+            case EXISTS -> "";
+        };
     }
 
     private String aggregateLabel(String domainCode, StructuredAggregateSpec aggregate) {
