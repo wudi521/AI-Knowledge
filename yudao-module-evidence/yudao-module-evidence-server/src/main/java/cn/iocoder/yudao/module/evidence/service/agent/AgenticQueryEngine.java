@@ -4,30 +4,38 @@ import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.domain.GenerationResult;
+import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
+import cn.iocoder.yudao.module.evidence.service.agent.capability.AgentCapabilityOutput;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvocationContext;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvoker;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResult;
-import cn.iocoder.yudao.module.evidence.service.agent.capability.KnowledgeRetrievalCapability;
-import cn.iocoder.yudao.module.evidence.service.agent.capability.SimilarFieldValuesCapability;
 import cn.iocoder.yudao.module.evidence.service.generate.AnswerPipeline;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
-/**
- * V1.1 有界执行循环。能力通过 registry 增量接入，主循环不按业务问题增加 Intent/if。
- */
+/** V1.1 有界执行循环；能力通过统一输出协议接入，主循环不按业务能力增加分支。 */
 @Component
 public class AgenticQueryEngine {
     private final AgentPlanner planner;
     private final CapabilityInvoker capabilityInvoker;
     private final AnswerPipeline answerPipeline;
+    private final EvidenceProperties properties;
 
-    public AgenticQueryEngine(AgentPlanner planner, CapabilityInvoker capabilityInvoker, AnswerPipeline answerPipeline) {
+    @Autowired
+    public AgenticQueryEngine(AgentPlanner planner, CapabilityInvoker capabilityInvoker,
+                              AnswerPipeline answerPipeline, EvidenceProperties properties) {
         this.planner = planner;
         this.capabilityInvoker = capabilityInvoker;
         this.answerPipeline = answerPipeline;
+        this.properties = properties;
+    }
+
+    public AgenticQueryEngine(AgentPlanner planner, CapabilityInvoker capabilityInvoker, AnswerPipeline answerPipeline) {
+        this(planner, capabilityInvoker, answerPipeline, new EvidenceProperties());
     }
 
     public Result execute(String query, Long kbId, String domainCode, Long tenantId, Long userId,
@@ -41,8 +49,14 @@ public class AgenticQueryEngine {
                     "original goal is blank", AgentStopReason.INVALID_CAPABILITY_CALL));
             return Result.stopped(AgentStopReason.INVALID_CAPABILITY_CALL, "查询不能为空。", List.of(), 0, 0, traceSteps);
         }
-        AgentExecutionGuard guard = new AgentExecutionGuard(AgentExecutionBudget.defaults());
-        CapabilityInvocationContext context = new CapabilityInvocationContext(tenantId, userId, kbId, domainCode, traceId);
+        EvidenceProperties.Agent cfg = properties == null ? null : properties.getAgent();
+        AgentExecutionBudget budget = cfg == null ? AgentExecutionBudget.defaults()
+                : new AgentExecutionBudget(Math.max(1, cfg.getMaxSteps()), Math.max(1, cfg.getMaxLlmCalls()),
+                Math.max(1L, cfg.getMaxElapsedMs()));
+        AgentExecutionGuard guard = new AgentExecutionGuard(budget);
+        CapabilityInvocationContext context = new CapabilityInvocationContext(tenantId, userId, kbId, domainCode, traceId,
+                Set.of(), Set.of(), cfg == null ? "default" : cfg.getEnvironment(),
+                cfg != null && cfg.isWriteAllowed());
         List<AgentObservation> observations = new ArrayList<>();
         List<Evidence> gatheredEvidence = new ArrayList<>();
         List<String> deterministicAnswers = new ArrayList<>();
@@ -120,9 +134,7 @@ public class AgenticQueryEngine {
                     }
                     observations.add(material.observation());
                     gatheredEvidence.addAll(material.evidences());
-                    if (StrUtil.isNotBlank(material.deterministicAnswer())) {
-                        deterministicAnswers.add(material.deterministicAnswer());
-                    }
+                    if (StrUtil.isNotBlank(material.deterministicAnswer())) deterministicAnswers.add(material.deterministicAnswer());
                 }
                 case ANSWER -> {
                     if (!deterministicAnswers.isEmpty()) {
@@ -198,16 +210,12 @@ public class AgenticQueryEngine {
 
     private ObservationMaterial materialize(AgentDecision decision, CapabilityResult result) {
         Object data = result.data();
-        if (data instanceof KnowledgeRetrievalCapability.Output output) {
+        if (data instanceof AgentCapabilityOutput output) {
             List<Evidence> evidences = output.evidences() == null ? List.of() : output.evidences();
-            String progress = decision.capability() + ":" + output.progressHash();
-            AgentObservation observation = new AgentObservation(decision.capability(), decision.purpose(), output.summary(), progress);
-            return new ObservationMaterial(observation, evidences, progress, null);
-        }
-        if (data instanceof SimilarFieldValuesCapability.Output output) {
-            String progress = decision.capability() + ":" + output.progressHash();
-            AgentObservation observation = new AgentObservation(decision.capability(), decision.purpose(), output.summary(), progress);
-            return new ObservationMaterial(observation, List.of(), progress, output.directAnswer());
+            String progress = decision.capability() + ":" + StrUtil.blankToDefault(output.progressHash(), "EMPTY");
+            String summary = StrUtil.maxLength(StrUtil.blankToDefault(output.summary(), String.valueOf(result.metadata())), 1200);
+            AgentObservation observation = new AgentObservation(decision.capability(), decision.purpose(), summary, progress);
+            return new ObservationMaterial(observation, evidences, progress, output.deterministicAnswer());
         }
         String summary = StrUtil.maxLength(String.valueOf(result.metadata()), 1200);
         String progress = decision.capability() + ":" + Integer.toHexString((String.valueOf(data) + summary).hashCode());

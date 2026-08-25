@@ -21,13 +21,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * 通用文本字段相近值能力。
- *
- * <p>它不认识“专利名称”这类业务 Intent，只消费 DomainFieldRegistry 已注册的 STRING 字段。
- * 因而标题、产品名、合同名、知识标题等领域字段都可复用。全集结论只在 Structured Executor
- * 明确返回完整数据集且目标字段对全集均有值时产生；数据源截断或字段缺失时 fail-closed。</p>
- */
+/** 通用文本字段相近值能力；全集不完整时 fail-closed。 */
 @Component
 public class SimilarFieldValuesCapability implements KnowledgeCapability {
     public static final String NAME = "similar_field_values";
@@ -50,8 +44,14 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
     @Override
     public CapabilityDefinition definition() {
         return new CapabilityDefinition(NAME, "1",
-                "在当前知识库完整实体范围内，对一个已注册文本字段寻找值彼此相近的对象组合。field 可传字段 code 或自然语言别名（如 标题/专利名称）；适合回答‘库里有没有名称相近的对象’这类集合关系问题。",
-                Set.of("field"), true, 8_000L, 50);
+                "在当前知识库完整实体范围内，对一个已注册文本字段寻找值彼此相近的对象组合。field 可传字段 code 或自然语言别名；适合集合级相似关系问题。",
+                Map.of(
+                        "field", "必填。已注册 STRING 字段 code 或别名，例如 TITLE/标题/专利名称。",
+                        "threshold", "可选。0~1，默认 0.58。",
+                        "topN", "可选。1~50，默认 20。"
+                ),
+                Set.of("field"), "SIMILAR_FIELD_PAIRS", true,
+                Set.of(), Set.of(), Set.of(), 8_000L, 50);
     }
 
     @Override
@@ -67,29 +67,17 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
         }
 
         MetricDefinition metric = MetricDefinition.builder()
-                .metricCode(field.getFieldCode())
-                .domainCode(context.domainCode())
-                .entityType(field.getEntityType())
-                .valueType(field.getValueType())
-                .supportedOperations(Set.of())
-                .adapterKey(context.domainCode())
-                .aliases(field.getAliases())
-                .displayName(displayName(field))
-                .build();
+                .metricCode(field.getFieldCode()).domainCode(context.domainCode()).entityType(field.getEntityType())
+                .valueType(field.getValueType()).supportedOperations(Set.of()).adapterKey(context.domainCode())
+                .aliases(field.getAliases()).displayName(displayName(field)).build();
         metricRegistry.register(metric);
 
         StructuredQueryPlan plan = StructuredQueryPlan.builder()
-                .route("AGENT_CAPABILITY")
-                .queryType(QueryType.LIST)
-                .domainCode(context.domainCode())
-                .entityType(field.getEntityType())
-                .scope(QueryScope.currentKb(context.kbId()))
-                .metricCode(field.getFieldCode())
-                .fieldCode(field.getFieldCode())
-                .projections(List.of(field.getFieldCode()))
-                .operation(Operation.NONE)
-                .filters(Map.of("publishedOnly", "true"))
-                .build();
+                .route("AGENT_CAPABILITY").queryType(QueryType.LIST).domainCode(context.domainCode())
+                .entityType(field.getEntityType()).scope(QueryScope.currentKb(context.kbId()))
+                .metricCode(field.getFieldCode()).fieldCode(field.getFieldCode())
+                .projections(List.of(field.getFieldCode())).operation(Operation.NONE)
+                .filters(Map.of("publishedOnly", "true")).build();
 
         StructuredQueryResult result = structuredExecutor.execute(plan);
         if (result == null || result.isUnsupported() || result.isTruncated()) {
@@ -118,13 +106,8 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
         List<SimilarPair> pairs = findPairs(items, threshold, topN);
         Output output = new Output(field.getFieldCode(), displayName(field), items.size(), threshold, pairs);
         return CapabilityResult.success(output, Map.of(
-                "fieldCode", field.getFieldCode(),
-                "entityCount", items.size(),
-                "pairCount", pairs.size(),
-                "threshold", threshold,
-                "completeDataset", true,
-                "missingValueCount", 0
-        ));
+                "fieldCode", field.getFieldCode(), "entityCount", items.size(), "pairCount", pairs.size(),
+                "threshold", threshold, "completeDataset", true, "missingValueCount", 0));
     }
 
     private FieldDefinition resolveField(String domainCode, String requested) {
@@ -132,16 +115,13 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
         String normalized = requested.trim();
         List<FieldDefinition> exact = fieldRegistry.all(domainCode).stream()
                 .filter(f -> f != null && (f.getFieldCode().equalsIgnoreCase(normalized)
-                        || (f.getAliases() != null && f.getAliases().stream()
-                        .filter(StrUtil::isNotBlank).anyMatch(a -> a.equalsIgnoreCase(normalized)))))
+                        || (f.getAliases() != null && f.getAliases().stream().filter(StrUtil::isNotBlank)
+                        .anyMatch(a -> a.equalsIgnoreCase(normalized)))))
                 .toList();
         if (exact.size() == 1) return exact.get(0);
-
         List<FieldDefinition> fuzzy = fieldRegistry.all(domainCode).stream()
-                .filter(f -> f != null && f.getAliases() != null && f.getAliases().stream()
-                        .filter(StrUtil::isNotBlank)
-                        .anyMatch(a -> a.contains(normalized) || normalized.contains(a)))
-                .toList();
+                .filter(f -> f != null && f.getAliases() != null && f.getAliases().stream().filter(StrUtil::isNotBlank)
+                        .anyMatch(a -> a.contains(normalized) || normalized.contains(a))).toList();
         return fuzzy.size() == 1 ? fuzzy.get(0) : null;
     }
 
@@ -176,10 +156,7 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
 
     private Set<String> grams(String value) {
         Set<String> grams = new HashSet<>();
-        if (value.length() <= 2) {
-            grams.add(value);
-            return grams;
-        }
+        if (value.length() <= 2) { grams.add(value); return grams; }
         for (int i = 0; i + 2 <= value.length(); i++) grams.add(value.substring(i, i + 2));
         return grams;
     }
@@ -196,18 +173,14 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
     private double threshold(Object raw) {
         double value = DEFAULT_THRESHOLD;
         if (raw instanceof Number n) value = n.doubleValue();
-        else if (raw != null) {
-            try { value = Double.parseDouble(String.valueOf(raw)); } catch (Exception ignore) { }
-        }
+        else if (raw != null) try { value = Double.parseDouble(String.valueOf(raw)); } catch (Exception ignore) { }
         return Math.max(0D, Math.min(1D, value));
     }
 
     private int topN(Object raw) {
         int value = DEFAULT_TOP_N;
         if (raw instanceof Number n) value = n.intValue();
-        else if (raw != null) {
-            try { value = Integer.parseInt(String.valueOf(raw)); } catch (Exception ignore) { }
-        }
+        else if (raw != null) try { value = Integer.parseInt(String.valueOf(raw)); } catch (Exception ignore) { }
         return Math.max(1, Math.min(50, value));
     }
 
@@ -215,9 +188,7 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
         return value.toLowerCase(Locale.ROOT).replaceAll("[\\p{P}\\p{S}\\s]+", "");
     }
 
-    private double round(double value) {
-        return Math.round(value * 1000D) / 1000D;
-    }
+    private double round(double value) { return Math.round(value * 1000D) / 1000D; }
 
     private String displayName(FieldDefinition field) {
         if (field.getAliases() != null && !field.getAliases().isEmpty() && StrUtil.isNotBlank(field.getAliases().get(0))) {
@@ -233,17 +204,19 @@ public class SimilarFieldValuesCapability implements KnowledgeCapability {
                               double similarity) { }
 
     public record Output(String fieldCode, String fieldName, int entityCount,
-                         double threshold, List<SimilarPair> pairs) {
+                         double threshold, List<SimilarPair> pairs) implements AgentCapabilityOutput {
+        @Override
         public String summary() {
-            return "field=" + fieldCode + "; entityCount=" + entityCount + "; threshold=" + threshold
-                    + "; pairs=" + pairs;
+            return "field=" + fieldCode + "; entityCount=" + entityCount + "; threshold=" + threshold + "; pairs=" + pairs;
         }
 
+        @Override
         public String progressHash() {
             return fieldCode + ":" + entityCount + ":" + threshold + ":" + pairs.hashCode();
         }
 
-        public String directAnswer() {
+        @Override
+        public String deterministicAnswer() {
             String rule = "按当前文本相似度规则（字符二元组 Dice，相似度阈值 ≥ "
                     + String.format(Locale.ROOT, "%.2f", threshold) + "）";
             if (pairs == null || pairs.isEmpty()) {

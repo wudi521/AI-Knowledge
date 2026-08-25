@@ -14,6 +14,23 @@ public class EvidenceProperties {
     private Slot slot = new Slot();
     private Pipeline pipeline = new Pipeline();
     private Semantics semantics = new Semantics();
+    private Agent agent = new Agent();
+
+    @Data
+    public static class Agent {
+        /** V3 / AGENT / AGENT_WITH_V3_FALLBACK。 */
+        private String mode = "V3";
+        private int maxSteps = 6;
+        private int maxLlmCalls = 6;
+        private long maxElapsedMs = 15_000L;
+        private int capabilityTimeoutThreads = 8;
+        private String environment = "default";
+        private boolean writeAllowed = false;
+        /** 非空时只暴露这些能力。 */
+        private java.util.Set<String> enabledCapabilities = new java.util.LinkedHashSet<>();
+        /** 始终隐藏这些能力。 */
+        private java.util.Set<String> disabledCapabilities = new java.util.LinkedHashSet<>();
+    }
 
     @Data
     public static class Semantics {
@@ -59,5 +76,4 @@ public class EvidenceProperties {
         /** 首次验证失败最多允许一次修复，不允许模型循环拖长请求。 */
         private Integer maxRetry = 1;
     }
-
 }

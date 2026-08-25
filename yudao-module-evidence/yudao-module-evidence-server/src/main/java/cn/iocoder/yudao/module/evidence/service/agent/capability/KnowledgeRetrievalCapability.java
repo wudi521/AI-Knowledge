@@ -29,7 +29,13 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
     public CapabilityDefinition definition() {
         return new CapabilityDefinition(NAME, "1",
                 "在当前已授权知识库中检索与查询语义相关的知识证据；内部自动完成关键词/向量/融合/重排。",
-                Set.of("query"), true, 8_000L, 20);
+                Map.of(
+                        "query", "必填。保持原始目标语义的检索表达，不得从候选中发明新的硬事实。",
+                        "variants", "可选。最多 5 个保持原意的同义检索表达。",
+                        "topK", "可选。1~20，默认 8。"
+                ),
+                Set.of("query"), "EVIDENCE_LIST", true,
+                Set.of(), Set.of(), Set.of(), 8_000L, 20);
     }
 
     @Override
@@ -84,7 +90,9 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
                 .collect(Collectors.joining(" | "));
     }
 
-    public record Output(List<Evidence> evidences, Long totalHits, Boolean totalHitsExact, String summary) {
+    public record Output(List<Evidence> evidences, Long totalHits, Boolean totalHitsExact, String summary)
+            implements AgentCapabilityOutput {
+        @Override
         public String progressHash() {
             if (evidences == null || evidences.isEmpty()) return "EMPTY";
             return evidences.stream().map(e -> String.valueOf(e.getChunkId())).collect(Collectors.joining(","));
