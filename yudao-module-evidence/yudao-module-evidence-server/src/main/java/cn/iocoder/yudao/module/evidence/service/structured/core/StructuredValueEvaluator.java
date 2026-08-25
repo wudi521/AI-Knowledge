@@ -73,8 +73,6 @@ public class StructuredValueEvaluator {
         } else if (validation.field().isMultiValue() && expression.explode()) {
             source = splitMulti(raw);
         } else if (validation.field().isMultiValue()) {
-            // 未显式 explode 时把多值字段视为一个“集合值”，而不是偷偷按元素展开。
-            // canonicalMulti 只用于确定性比较/去重/展示，不改变 trusted scope。
             source = List.of(canonicalMulti(raw));
         } else {
             source = List.of(raw.trim());
@@ -83,13 +81,12 @@ public class StructuredValueEvaluator {
         List<StructuredValueTransform> transforms = expression.transforms().stream()
                 .filter(t -> t != StructuredValueTransform.VALUE_COUNT).toList();
         List<String> out = new ArrayList<>();
+        boolean anyFailed = false;
         for (String value : source) {
             String current = value;
             String currentType = valueCount ? "INTEGER" : validation.field().getValueType();
             boolean failed = false;
 
-            // Source of Truth 声明了 DATE/INTEGER/DECIMAL 就必须真的是该类型。
-            // 非法源数据不允许退化成字符串比较；返回空值让上层完整性规则 fail-closed。
             if (!literalValid(currentType, current)) failed = true;
 
             for (StructuredValueTransform transform : transforms) {
@@ -98,8 +95,15 @@ public class StructuredValueEvaluator {
                 if (current == null) { failed = true; break; }
                 currentType = outputType(transform);
             }
-            if (!failed && StrUtil.isNotBlank(current)) out.add(current);
+            if (failed || StrUtil.isBlank(current)) {
+                anyFailed = true;
+                continue;
+            }
+            out.add(current);
         }
+        // 多值派生必须具备原子完整性：任一元素解析失败，整个实体的派生值视为缺失。
+        // 这样聚合/分组/过滤上层会 fail-closed，而不是静默少算一部分元素。
+        if (anyFailed) return List.of();
         return List.copyOf(new LinkedHashSet<>(out));
     }
 
@@ -108,7 +112,6 @@ public class StructuredValueEvaluator {
         return validation.valid() ? validation.outputType() : null;
     }
 
-    /** Planner literal 在进入比较器前必须与字段/派生值类型兼容，禁止非法日期/数字退化成字符串排序。 */
     public boolean literalsValid(String valueType, List<String> literals) {
         if (literals == null) return true;
         for (String literal : literals) if (!literalValid(valueType, literal)) return false;
@@ -213,10 +216,6 @@ public class StructuredValueEvaluator {
         return String.join("、", items);
     }
 
-    /**
-     * 保守姓名姓氏解析：先去掉姓名内部空白判断中文姓名，识别常见复姓；否则对拉丁空格姓名取末 token。
-     * 无法形成稳定 token 时返回 null，由调用方完整性规则 fail-closed。
-     */
     private String surname(String raw) {
         if (StrUtil.isBlank(raw)) return null;
         String value = raw.trim();
