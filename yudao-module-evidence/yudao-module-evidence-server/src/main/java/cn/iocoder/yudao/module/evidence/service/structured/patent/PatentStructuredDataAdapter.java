@@ -121,7 +121,12 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                         .build());
             }
 
-            if (PatentStructuredPack.METRIC_PATENT_COUNT.equals(plan.getMetricCode())) {
+            // PATENT_DOCUMENT 是业务上的“专利实体”，不是物理上传文档。
+            // 除非用户明确查询 DOCUMENT_COUNT，否则任何字段列表、过滤、相似关系、统计都必须
+            // 使用与 PATENT_COUNT 相同的实体身份规则（申请号优先、公布号兜底）去重。
+            // 这样重复导入的同一件专利不会在“标题相似”等集合问题里被误判为两件专利。
+            if (PatentStructuredPack.ENTITY_PATENT_DOCUMENT.equals(plan.getEntityType())
+                    && !PatentStructuredPack.METRIC_DOCUMENT_COUNT.equals(plan.getMetricCode())) {
                 rows = dedupePatentRows(rows);
             }
 
