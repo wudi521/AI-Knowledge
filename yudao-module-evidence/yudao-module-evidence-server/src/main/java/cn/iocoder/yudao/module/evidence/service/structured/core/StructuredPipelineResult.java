@@ -20,8 +20,6 @@ public record StructuredPipelineResult(boolean success,
         metadata = metadata == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(metadata));
 
         // V1.1 当前产品策略不允许把 PARTIAL 伪装成 FULL。
-        // Executor 任一阶段只要发现用户请求依赖的投影/派生值缺失，就必须 fail-closed；
-        // 后续如果正式支持 PARTIAL，应新增显式 coverage 状态，而不是删除这条保护后静默回答。
         if (success && missingValueCount > 0) {
             success = false;
             completeDataset = false;
@@ -47,6 +45,11 @@ public record StructuredPipelineResult(boolean success,
                       String groupKey) {
         public Row {
             fields = fields == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(fields));
+            // EXPLODE 后的行表达的是字段元素/派生值，而不是一组可供后续代词引用的实体。
+            // 因此不能携带实体 ID 进入 Agent trusted scope。
+            if (fields.keySet().stream().anyMatch(key -> key != null && key.contains("|EXPLODE"))) {
+                entityId = null;
+            }
         }
     }
 }
