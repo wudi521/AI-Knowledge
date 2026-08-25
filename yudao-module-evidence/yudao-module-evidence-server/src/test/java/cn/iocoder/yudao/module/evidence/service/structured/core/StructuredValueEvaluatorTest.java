@@ -45,6 +45,38 @@ class StructuredValueEvaluatorTest {
     }
 
     @Test
+    void ideographicSpaceSeparatedMultiValueMustDriveExplodeFilterCountAndTransformConsistently() {
+        StructuredQueryResult.Row row = row("INVENTOR", "郝海涛　吴恒莉　贾少微　何昕　");
+        StructuredValueExpression explodedExpression = new StructuredValueExpression("INVENTOR", true, List.of());
+
+        List<String> exploded = evaluator.values("PATENT", row, explodedExpression);
+        assertThat(exploded).containsExactly("郝海涛", "吴恒莉", "贾少微", "何昕");
+        assertThat(evaluator.matches(FilterOperator.EQ, exploded, List.of("贾少微"), "STRING")).isTrue();
+
+        assertThat(evaluator.values("PATENT", row,
+                new StructuredValueExpression("INVENTOR", false,
+                        List.of(StructuredValueTransform.VALUE_COUNT))))
+                .containsExactly("4");
+        assertThat(evaluator.values("PATENT", row,
+                new StructuredValueExpression("INVENTOR", true,
+                        List.of(StructuredValueTransform.PERSON_SURNAME))))
+                .containsExactly("郝", "吴", "贾", "何");
+    }
+
+    @Test
+    void multiValueParserMustPreserveSingleAsciiSpaceInsideOneWesternName() {
+        StructuredQueryResult.Row row = row("INVENTOR", "John Smith　张三");
+
+        assertThat(evaluator.values("PATENT", row,
+                new StructuredValueExpression("INVENTOR", true, List.of())))
+                .containsExactly("John Smith", "张三");
+        assertThat(evaluator.values("PATENT", row,
+                new StructuredValueExpression("INVENTOR", true,
+                        List.of(StructuredValueTransform.PERSON_SURNAME))))
+                .containsExactly("Smith", "张");
+    }
+
+    @Test
     void multiValueSplitAndSurnameTransformAreDeterministicAcrossCommonSeparators() {
         StructuredQueryResult.Row row = row("INVENTOR", "张三，欧阳明, John Smith；李四");
         StructuredValueExpression expression = new StructuredValueExpression(
