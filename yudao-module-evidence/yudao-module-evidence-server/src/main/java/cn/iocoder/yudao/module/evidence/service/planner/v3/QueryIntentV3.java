@@ -11,8 +11,8 @@ import java.util.List;
 /**
  * Query Engine V3 的业务语义 IR。
  *
- * <p>关键约束：Planner 只描述“找谁(Selection) + 找到后做什么(Actions)”，
- * 不暴露 BM25/Milvus/RRF 等基础设施，也不允许输出 SQL/DSL。</p>
+ * <p>关键约束：Planner 只描述“找谁（Selection）+ 找到后做什么（Actions）”，
+ * 不暴露 BM25、Milvus、RRF 等基础设施，也不允许输出 SQL/DSL。</p>
  */
 @Data
 @Builder
@@ -34,7 +34,7 @@ public class QueryIntentV3 {
     private boolean requiresClarification;
     private String clarificationQuestion;
     private String reasonCode;
-    /** LLM / FALLBACK */
+    /** LLM / LLM+LEXICAL / FALLBACK */
     private String plannerSource;
     private Long plannerElapsedMs;
 
@@ -67,14 +67,17 @@ public class QueryIntentV3 {
         private String query;
         /** STRUCTURED_FILTER / EXACT_ENTITY 使用。 */
         private String field;
-        /** EQ / NE / CONTAINS / STARTS_WITH / IN / EXISTS */
+        /**
+         * STRUCTURED_FILTER 使用的白名单运算符：EQ / NE / CONTAINS / STARTS_WITH / IN / EXISTS。
+         * EXACT_ENTITY 的业务语义天然是精确相等，执行时固定为 EQ，不依赖模型输出该字段。
+         */
         private String operator;
         @Builder.Default
         private List<String> values = new ArrayList<>();
         /** Planner 给第一轮检索的有限改写；不是下游重新分析。 */
         @Builder.Default
         private List<String> queryVariants = new ArrayList<>();
-        /** EXACT_ENTITY 可由词法事实直接带入。 */
+        /** EXACT_ENTITY 可由字面事实直接带入。 */
         @Builder.Default
         private List<Long> entityIds = new ArrayList<>();
     }
@@ -90,7 +93,7 @@ public class QueryIntentV3 {
         private String metric;
         private String operation;
         private String compareType;
-        /** SUMMARIZE/ANSWER/COMPARE 的证据检索焦点。 */
+        /** SUMMARIZE / ANSWER / COMPARE 的证据检索焦点。 */
         private String query;
         private Integer limit;
     }
