@@ -58,6 +58,8 @@ public class EvidenceQueryRouter {
         EvidenceEvaluateRespVO v3 = v3(query, kbIds, topK, tenantId, userId, history,
                 skipSlotDetection, agent.getTraceId(), domainCode, contextResolutionJson, legacyBudget);
         mergeFallbackStages(agent, v3);
+        // V3 evaluate 已持久化自身 stages；fallback 合并后必须 replace 为最终完整链，才能事后回放 Agent→V3。
+        v3Facade.recordStages(v3);
         return v3;
     }
 
