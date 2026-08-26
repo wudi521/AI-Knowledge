@@ -1,7 +1,5 @@
 package cn.iocoder.yudao.module.retrieval.api.dto;
 
-import cn.hutool.core.util.StrUtil;
-
 import java.util.Locale;
 import java.util.Optional;
 
@@ -16,7 +14,7 @@ public enum RetrievalSearchMode {
     PLANNED_HYBRID;
 
     public static Optional<RetrievalSearchMode> parseExplicit(String raw) {
-        if (StrUtil.isBlank(raw)) return Optional.empty();
+        if (raw == null || raw.trim().isEmpty()) return Optional.empty();
         try {
             return Optional.of(valueOf(raw.trim().toUpperCase(Locale.ROOT)));
         } catch (IllegalArgumentException ignore) {
