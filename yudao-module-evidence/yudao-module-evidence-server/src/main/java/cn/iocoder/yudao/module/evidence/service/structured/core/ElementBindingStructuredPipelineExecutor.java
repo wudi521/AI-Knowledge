@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.evidence.service.structured.core;
 
+import cn.hutool.core.util.StrUtil;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 
@@ -9,22 +10,17 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 多值字段的元素绑定执行层。
+ * 结构化 Pipeline 的结果契约增强层。
  *
- * <p>StructuredPipelineExecutor 的过滤语义是实体级 existential match：一条实体只要任一多值元素命中，
- * 实体就会进入后续投影。这对“哪些专利包含某发明人”是正确的，但对“把命中的发明人列出来”还不够，
- * 因为后续 explode 会再次展开该实体的全部元素。</p>
- *
- * <p>本执行器保持实体级过滤语义不变，只在最终 ROW projection 上增加通用 element binding：
- * 当 filter 与 select 基于同一个 explode 多值源字段时，最终只保留真正满足该字段条件的源元素；
- * 同一源字段的多个投影表达式也按同一个原始元素对齐，避免笛卡尔积把无关元素重新带回结果。</p>
- *
- * <p>这是结构化运算原语，不包含“姓氏/专利”等业务问题分支。</p>
+ * <p>一方面为 multi-value filter/projection 提供 element binding；另一方面在统一执行边界发布
+ * resultShape / scalarValue / dataGrain，使 Planner、派生运算和 Evaluator 不需要猜结果到底是
+ * 标量、分组还是实体行，也不需要从业务文案猜“物理记录/逻辑实体”粒度。</p>
  */
 @Primary
 @Component
 public class ElementBindingStructuredPipelineExecutor extends StructuredPipelineExecutor {
 
+    private final DomainMetricRegistry metricRegistry;
     private final StructuredValueEvaluator values;
 
     public ElementBindingStructuredPipelineExecutor(DomainFieldRegistry fieldRegistry,
@@ -32,13 +28,19 @@ public class ElementBindingStructuredPipelineExecutor extends StructuredPipeline
                                                     List<DomainStructuredDataAdapter> adapters,
                                                     StructuredValueEvaluator values) {
         super(fieldRegistry, metricRegistry, adapters, values);
+        this.metricRegistry = metricRegistry;
         this.values = values;
     }
 
     @Override
     public StructuredPipelineResult execute(StructuredPipelinePlan plan) {
-        if (!requiresElementBinding(plan)) return super.execute(plan);
+        StructuredPipelineResult result = requiresElementBinding(plan)
+                ? executeElementBound(plan)
+                : super.execute(plan);
+        return enrichResultContract(plan, result);
+    }
 
+    private StructuredPipelineResult executeElementBound(StructuredPipelinePlan plan) {
         // element binding 必须发生在 distinct / final limit 之前，否则先 limit 再删无关元素会漏掉后续真实命中项。
         StructuredPipelinePlan unbounded = copyForElementBinding(plan);
         StructuredPipelineResult base = super.execute(unbounded);
@@ -66,6 +68,36 @@ public class ElementBindingStructuredPipelineExecutor extends StructuredPipeline
         return new StructuredPipelineResult(true, base.message(), output, null,
                 base.completeDataset(), fullOutputCount == 0, base.sourceEntityCount(),
                 base.missingValueCount(), metadata);
+    }
+
+    private StructuredPipelineResult enrichResultContract(StructuredPipelinePlan plan,
+                                                          StructuredPipelineResult result) {
+        if (result == null) return null;
+        Map<String, Object> metadata = new LinkedHashMap<>(result.metadata() == null ? Map.of() : result.metadata());
+        String shape = result.scalarValue() != null ? "SCALAR"
+                : plan != null && plan.getGroupBy() != null && !plan.getGroupBy().isEmpty() ? "GROUP" : "ROWS";
+        metadata.put("resultShape", shape);
+        metadata.put("dataGrain", dataGrain(plan).name());
+        if (result.scalarValue() != null) metadata.put("scalarValue", result.scalarValue());
+        return new StructuredPipelineResult(result.success(), result.message(), result.rows(), result.scalarValue(),
+                result.completeDataset(), result.authoritativeEmpty(), result.sourceEntityCount(),
+                result.missingValueCount(), metadata);
+    }
+
+    private DataGrain dataGrain(StructuredPipelinePlan plan) {
+        if (plan == null) return DataGrain.LOGICAL_ENTITY;
+        if (plan.getAggregate() != null && StrUtil.isNotBlank(plan.getAggregate().metricCode())) {
+            MetricDefinition metric = metricRegistry.lookup(plan.getDomainCode(), plan.getAggregate().metricCode()).orElse(null);
+            if (metric != null && metric.getDataGrain() != null) return metric.getDataGrain();
+        }
+        if (plan.getOrderBy() != null) {
+            for (StructuredOrderSpec order : plan.getOrderBy()) {
+                if (order == null || StrUtil.isBlank(order.metricCode())) continue;
+                MetricDefinition metric = metricRegistry.lookup(plan.getDomainCode(), order.metricCode()).orElse(null);
+                if (metric != null && metric.getDataGrain() != null) return metric.getDataGrain();
+            }
+        }
+        return DataGrain.LOGICAL_ENTITY;
     }
 
     private boolean requiresElementBinding(StructuredPipelinePlan plan) {
