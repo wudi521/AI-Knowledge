@@ -76,6 +76,7 @@ public class PlannedSearchService {
         analysis.setRoute("PLANNED_PLUGIN_PIPELINE");
         analysis.setSuccess(true);
         analysis.setDegraded(false);
+        analysis.setBlocked(false);
         resp.setAnalysis(analysis);
         RetrievalSearchRespDTO.RetrievalChannelStatDTO channels = new RetrievalSearchRespDTO.RetrievalChannelStatDTO();
         channels.setRecall(Map.of());
@@ -86,6 +87,11 @@ public class PlannedSearchService {
                 ? req.getKbIds().stream().filter(visible::contains).distinct().toList()
                 : new ArrayList<>(visible);
         if (kbIds.isEmpty()) {
+            analysis.setBlocked(true);
+            analysis.setBlockReason("no visible knowledge base in requested scope");
+            channels.setBm25(0);
+            channels.setVector(0);
+            channels.setFused(0);
             resp.setResults(List.of());
             return resp;
         }
@@ -129,6 +135,8 @@ public class PlannedSearchService {
                         + "; degraded=" + scope.degraded() + "; decisions=" + scopeSummary(scope.decisions())));
         if (scope.blocked()) {
             boolean degraded = domainResolution.mixedDomainScope() || scope.degraded();
+            analysis.setBlocked(true);
+            analysis.setBlockReason(blockReason(scope.decisions()));
             analysis.setDegraded(degraded);
             analysis.setSuccess(!degraded);
             analysis.setStages(stages);
@@ -247,6 +255,15 @@ public class PlannedSearchService {
         return decisions.stream().map(d -> "{plugin=" + d.pluginId() + ",applied=" + d.applied()
                         + ",blocked=" + d.blocked() + ",degraded=" + d.degraded() + suffix(d.message()) + "}")
                 .collect(Collectors.joining(",", "[", "]"));
+    }
+
+    private String blockReason(List<RetrievalScopeDecision> decisions) {
+        if (decisions == null || decisions.isEmpty()) return "hard scope resolved to empty set";
+        String reason = null;
+        for (RetrievalScopeDecision decision : decisions) {
+            if (decision != null && decision.blocked()) reason = decision.message();
+        }
+        return StrUtil.blankToDefault(reason, "hard scope resolved to empty set");
     }
 
     private String suffix(String message) {
