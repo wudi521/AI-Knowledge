@@ -1,32 +1,25 @@
 package cn.iocoder.yudao.module.retrieval.service.domain;
 
-import cn.hutool.core.util.StrUtil;
+import cn.iocoder.yudao.framework.common.plugin.DomainPluginContext;
+import cn.iocoder.yudao.framework.common.plugin.DomainPluginResolver;
 import org.springframework.stereotype.Component;
 
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
- * 领域查询策略注册表: 按 domainCode 索引, 未找到回退 GENERAL
+ * @deprecated 旧 QueryAnalysis 兼容门面。领域策略选择已统一使用 DomainPluginResolver。
  */
+@Deprecated
 @Component
 public class DomainQueryPolicyRegistry {
 
-    private final Map<String, DomainQueryPolicy> policies = new LinkedHashMap<>();
+    private final DomainPluginResolver<DomainQueryPolicy> resolver;
 
     public DomainQueryPolicyRegistry(List<DomainQueryPolicy> policyList) {
-        for (DomainQueryPolicy policy : policyList) {
-            if (policy != null && StrUtil.isNotBlank(policy.domainCode())) {
-                policies.put(policy.domainCode(), policy);
-            }
-        }
+        this.resolver = new DomainPluginResolver<>(policyList);
     }
 
     public DomainQueryPolicy get(String domainCode) {
-        if (StrUtil.isBlank(domainCode)) {
-            return policies.getOrDefault("GENERAL", policies.values().iterator().next());
-        }
-        return policies.getOrDefault(domainCode, policies.getOrDefault("GENERAL", policies.values().iterator().next()));
+        return resolver.requireFirst(DomainPluginContext.of(domainCode), "retrieval query policy");
     }
 }
