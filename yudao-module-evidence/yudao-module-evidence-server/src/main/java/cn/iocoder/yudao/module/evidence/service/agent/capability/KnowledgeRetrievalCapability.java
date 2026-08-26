@@ -148,7 +148,13 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         List<Evidence> evidences = mergeRoundRobin(runs, MAX_MERGED_EVIDENCE);
         List<Long> candidateEntityIds = entityMapperRegistry.candidateEntityIds(context.domainCode(), evidences);
         int matchedQueries = (int) runs.stream().filter(run -> !run.result().evidences().isEmpty()).count();
-        String outcome = evidences.isEmpty() ? "NO_MATCHES" : "MATCHES";
+        int blockedQueries = (int) runs.stream().filter(run -> run.result().blocked()).count();
+        String outcome;
+        if (evidences.isEmpty()) {
+            outcome = blockedQueries > 0 ? "SCOPE_BLOCKED" : "NO_MATCHES";
+        } else {
+            outcome = blockedQueries > 0 ? "PARTIAL_SCOPE_BLOCKED" : "MATCHES";
+        }
         Map<String, Integer> perQueryCounts = new LinkedHashMap<>();
         for (QueryRun run : runs) perQueryCounts.put(run.query(), run.result().evidences().size());
 
@@ -162,11 +168,13 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         metadata.put("retrievalOutcome", outcome);
         metadata.put("subqueryCount", runs.size());
         metadata.put("matchedSubqueryCount", matchedQueries);
+        metadata.put("blockedSubqueryCount", blockedQueries);
+        metadata.put("scopeBlocked", blockedQueries > 0);
         metadata.put("allSubqueriesMatched", matchedQueries == runs.size());
         metadata.put("activity", activity);
         metadata.put("completeDataset", false);
         metadata.put("authoritativeEmpty", false);
-        // semantic top-K retrieval is evidence retrieval, not an exhaustive corpus listing/count.
+        // semantic top-K retrieval and scope blocks are execution facts, not exhaustive corpus absence proofs.
         metadata.put("outputComplete", false);
         return CapabilityResult.success(output, metadata);
     }
@@ -241,7 +249,10 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
             item.put("totalHits", run.result().totalHits() == null ? -1L : run.result().totalHits());
             item.put("totalHitsExact", Boolean.TRUE.equals(run.result().totalHitsExact()));
             item.put("candidateTotalHits", run.result().candidateTotalHits() == null ? -1L : run.result().candidateTotalHits());
-            if (StrUtil.isNotBlank(run.result().errorMessage())) item.put("error", run.result().errorMessage());
+            if (StrUtil.isNotBlank(run.result().errorMessage())) {
+                if (run.result().blocked()) item.put("blockReason", run.result().errorMessage());
+                else item.put("error", run.result().errorMessage());
+            }
             out.add(Map.copyOf(item));
         }
         return List.copyOf(out);
