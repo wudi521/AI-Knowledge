@@ -61,7 +61,7 @@ public class StructuredPipelineExecutor {
                 .domainCode(plan.getDomainCode())
                 .entityType(plan.getEntityType())
                 .scope(plan.getScope())
-                .metricCode(sourceMetric == null ? sourceCode : sourceMetric)
+                .metricCode(sourceMetric)
                 .fieldCode(firstField)
                 .projections(new ArrayList<>(requiredFields))
                 .operation(Operation.NONE)
