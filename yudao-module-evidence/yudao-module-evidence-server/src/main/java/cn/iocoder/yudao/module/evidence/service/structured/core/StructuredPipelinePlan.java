@@ -27,6 +27,9 @@ public class StructuredPipelinePlan {
 
     private StructuredAggregateSpec aggregate;
 
+    /** GROUP BY 聚合后的类型化过滤；只作用于 aggregateValue。 */
+    private StructuredHavingSpec having;
+
     @Builder.Default
     private List<StructuredOrderSpec> orderBy = new ArrayList<>();
 
