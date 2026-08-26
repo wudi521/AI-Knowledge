@@ -24,7 +24,7 @@ class ExactTextSearchCapabilityTest {
                 .chunkId(101L).documentId("74").documentName("测试专利")
                 .content("这里逐字包含磁涌技术").score(1D).products(List.of()).channels(List.of("bm25"))
                 .build();
-        when(retriever.exactText("磁涌", List.of(6L), List.of(74L), 20,
+        when(retriever.exactText("磁涌", "磁涌", List.of(6L), List.of(74L), 20,
                 1L, 2L, "PATENT", "ag-exact")).thenReturn(new PlannedEvidenceRetriever.Result(
                 List.of(evidence), null, null, 1L, true));
 
@@ -50,15 +50,34 @@ class ExactTextSearchCapabilityTest {
         assertTrue(output.verifiedEntityIds().isEmpty(), "原文命中不是新的 trusted entity 来源");
         assertEquals(true, result.metadata().get("candidateEntityMapped"));
         assertEquals(false, result.metadata().get("scopeBlocked"));
-        verify(retriever).exactText("磁涌", List.of(6L), List.of(74L), 20,
+        verify(retriever).exactText("磁涌", "磁涌", List.of(6L), List.of(74L), 20,
                 1L, 2L, "PATENT", "ag-exact");
+    }
+
+    @Test
+    void scopeQueryAndExactTextArePropagatedSeparately() {
+        PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
+        String scopeQuery = "申请号 202311832214.0 的原文是否包含磁涌";
+        when(retriever.exactText(scopeQuery, "磁涌", List.of(6L), null, 20,
+                1L, 2L, "PATENT", "ag-exact-scope-query"))
+                .thenReturn(new PlannedEvidenceRetriever.Result(List.of(), null, null, 0L, true));
+
+        ExactTextSearchCapability capability = new ExactTextSearchCapability(retriever);
+        CapabilityResult result = capability.execute(
+                new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "ag-exact-scope-query"),
+                Map.of("text", "磁涌", "scopeQuery", scopeQuery));
+
+        assertTrue(result.success());
+        assertEquals(scopeQuery, result.metadata().get("scopeQuery"));
+        verify(retriever).exactText(scopeQuery, "磁涌", List.of(6L), null, 20,
+                1L, 2L, "PATENT", "ag-exact-scope-query");
     }
 
     @Test
     void domainWithoutMapperDoesNotGuessExactTextEntityId() {
         PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
         Evidence evidence = Evidence.builder().chunkId(102L).documentId("74").content("逐字命中").build();
-        when(retriever.exactText("x", List.of(6L), null, 20,
+        when(retriever.exactText("x", "x", List.of(6L), null, 20,
                 1L, 2L, "CONTRACT", "ag-exact-no-map")).thenReturn(new PlannedEvidenceRetriever.Result(
                 List.of(evidence), null, null, 1L, true));
 
@@ -76,7 +95,7 @@ class ExactTextSearchCapabilityTest {
     @Test
     void scopeBlockedIsExplicitAndNeverAuthoritativeEmpty() {
         PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
-        when(retriever.exactText("磁涌", List.of(6L), null, 20,
+        when(retriever.exactText("磁涌", "磁涌", List.of(6L), null, 20,
                 1L, 2L, "PATENT", "ag-exact-blocked")).thenReturn(new PlannedEvidenceRetriever.Result(
                 PlannedEvidenceRetriever.Status.BLOCKED, "exact identifier resolved to no document",
                 List.of(), null, null, null, null, null));
