@@ -16,6 +16,7 @@ public class RetrievalFusionPipeline {
 
     public RetrievalFusionPipeline(List<RetrievalFusionPlugin> plugins) {
         this.resolver = new DomainPluginResolver<>(plugins);
+        this.resolver.requireWildcardFallback("retrieval fusion");
     }
 
     public RetrievalFusionResult fuse(RetrievalFusionContext context) {
