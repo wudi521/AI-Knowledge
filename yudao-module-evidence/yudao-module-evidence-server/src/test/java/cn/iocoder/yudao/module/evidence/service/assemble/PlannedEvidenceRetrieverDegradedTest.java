@@ -10,6 +10,7 @@ import org.mockito.ArgumentCaptor;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -44,6 +45,23 @@ class PlannedEvidenceRetrieverDegradedTest {
     }
 
     @Test
+    void hardScopeBlockedIsDistinctFromEmptyAndFailure() {
+        RetrievalApi api = mock(RetrievalApi.class);
+        RetrievalSearchRespDTO data = response(true, false);
+        data.getAnalysis().setBlocked(true);
+        data.getAnalysis().setBlockReason("exact identifier resolved to no document");
+        when(api.search(any())).thenReturn(CommonResult.success(data));
+
+        PlannedEvidenceRetriever.Result result = new PlannedEvidenceRetriever(api)
+                .search("q", List.of(), List.of(1L), null, 8, 2L, 3L, "PATENT", "t");
+
+        assertEquals(PlannedEvidenceRetriever.Status.BLOCKED, result.status());
+        assertTrue(result.blocked());
+        assertFalse(result.failed());
+        assertEquals("exact identifier resolved to no document", result.errorMessage());
+    }
+
+    @Test
     void confirmedDomainIsPropagatedToRetrievalRpc() {
         RetrievalApi api = mock(RetrievalApi.class);
         when(api.search(any())).thenReturn(CommonResult.success(response(true, false)));
@@ -63,6 +81,7 @@ class PlannedEvidenceRetrieverDegradedTest {
         RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis = new RetrievalSearchRespDTO.RetrievalAnalysisDTO();
         analysis.setSuccess(success);
         analysis.setDegraded(degraded);
+        analysis.setBlocked(false);
         data.setAnalysis(analysis);
         return data;
     }
