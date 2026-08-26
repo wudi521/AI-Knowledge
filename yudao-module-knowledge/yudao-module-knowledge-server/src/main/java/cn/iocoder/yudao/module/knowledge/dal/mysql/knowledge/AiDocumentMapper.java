@@ -64,4 +64,61 @@ public interface AiDocumentMapper extends BaseMapperX<AiDocumentDO> {
                                                    @Param("applicationNo") String applicationNo,
                                                    @Param("publicationNo") String publicationNo);
 
+    /**
+     * 权威 SOURCE_RECORD 计数。聚合在数据库完成，不先加载文档行到 JVM。
+     */
+    @Select({
+            "<script>",
+            "SELECT COUNT(DISTINCT d.id) FROM ai_document d",
+            "WHERE d.deleted = 0 AND d.kb_id = #{kbId}",
+            "<if test='resolvedEntityIds != null and !resolvedEntityIds.isEmpty()'>",
+            "AND d.id IN",
+            "<foreach collection='resolvedEntityIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
+            "</if>",
+            "<if test='publishedOnly == null or publishedOnly'>",
+            "AND EXISTS (SELECT 1 FROM ai_doc_version v",
+            "            WHERE v.deleted = 0 AND v.doc_id = d.id AND v.status = 'PUBLISHED'",
+            "              AND (v.effective_from IS NULL OR v.effective_from &lt;= NOW())",
+            "              AND (v.effective_to IS NULL OR v.effective_to &gt;= NOW()))",
+            "</if>",
+            "</script>"
+    })
+    Long countStructuredDocuments(@Param("kbId") Long kbId,
+                                  @Param("resolvedEntityIds") List<Long> resolvedEntityIds,
+                                  @Param("publishedOnly") Boolean publishedOnly);
+
+    /**
+     * 权威 PATENT LOGICAL_ENTITY 计数。逻辑身份优先申请号，其次公布号，最后回退物理 document id。
+     * 字段来源固定为服务端白名单生成列/JSON domainCode，调用方不能传任意 SQL 表达式。
+     */
+    @Select({
+            "<script>",
+            "SELECT COUNT(DISTINCT CASE",
+            "  WHEN d.patent_application_no_norm IS NOT NULL AND d.patent_application_no_norm != ''",
+            "    THEN CONCAT('APP:', d.patent_application_no_norm)",
+            "  WHEN d.patent_publication_no_norm IS NOT NULL AND d.patent_publication_no_norm != ''",
+            "    THEN CONCAT('PUB:', d.patent_publication_no_norm)",
+            "  ELSE CONCAT('DOC:', d.id) END)",
+            "FROM ai_document d",
+            "WHERE d.deleted = 0 AND d.kb_id = #{kbId}",
+            "AND (d.patent_application_no_norm IS NOT NULL",
+            "     OR d.patent_publication_no_norm IS NOT NULL",
+            "     OR (JSON_VALID(d.domain_metadata) = 1",
+            "         AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(d.domain_metadata, '$.domainCode'))) = 'PATENT'))",
+            "<if test='resolvedEntityIds != null and !resolvedEntityIds.isEmpty()'>",
+            "AND d.id IN",
+            "<foreach collection='resolvedEntityIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
+            "</if>",
+            "<if test='publishedOnly == null or publishedOnly'>",
+            "AND EXISTS (SELECT 1 FROM ai_doc_version v",
+            "            WHERE v.deleted = 0 AND v.doc_id = d.id AND v.status = 'PUBLISHED'",
+            "              AND (v.effective_from IS NULL OR v.effective_from &lt;= NOW())",
+            "              AND (v.effective_to IS NULL OR v.effective_to &gt;= NOW()))",
+            "</if>",
+            "</script>"
+    })
+    Long countStructuredPatentEntities(@Param("kbId") Long kbId,
+                                       @Param("resolvedEntityIds") List<Long> resolvedEntityIds,
+                                       @Param("publishedOnly") Boolean publishedOnly);
+
 }
