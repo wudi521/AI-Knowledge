@@ -16,6 +16,9 @@ import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalRecallRe
 import cn.iocoder.yudao.module.retrieval.service.search.rerank.RetrievalRerankContext;
 import cn.iocoder.yudao.module.retrieval.service.search.rerank.RetrievalRerankPipeline;
 import cn.iocoder.yudao.module.retrieval.service.search.rerank.RetrievalRerankResult;
+import cn.iocoder.yudao.module.retrieval.service.search.scope.RetrievalScopeContext;
+import cn.iocoder.yudao.module.retrieval.service.search.scope.RetrievalScopeDecision;
+import cn.iocoder.yudao.module.retrieval.service.search.scope.RetrievalScopePipeline;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -31,8 +34,8 @@ import java.util.stream.Collectors;
  * Query Engine V3 的纯执行检索器。
  *
  * <p>调用方已经完成自然语言规划，本服务禁止再次调用 QueryAnalysis/意图路由。
- * 核心只编排三个强类型扩展阶段：Recall[] -> Fusion -> Rerank。
- * 每个阶段按 domainCode 选择插件；BM25/Vector、RRF、Model Rerank 都只是默认实现。</p>
+ * 核心只编排强类型扩展阶段：Scope[] -> Recall[] -> Fusion -> Rerank。
+ * 每个阶段按 domainCode 选择插件；领域规则不允许重新渗入本类。</p>
  */
 @Service
 public class PlannedSearchService {
@@ -40,17 +43,20 @@ public class PlannedSearchService {
     private static final int RECALL_TOP_K = 20;
     private static final int VARIANT_LIMIT = 6;
 
+    private final RetrievalScopePipeline scopePipeline;
     private final RetrievalRecallPipeline recallPipeline;
     private final RetrievalFusionPipeline fusionPipeline;
     private final RetrievalRerankPipeline rerankPipeline;
     private final RetrievalDomainResolver domainResolver;
     private final ResultFilter resultFilter;
 
-    public PlannedSearchService(RetrievalRecallPipeline recallPipeline,
+    public PlannedSearchService(RetrievalScopePipeline scopePipeline,
+                                RetrievalRecallPipeline recallPipeline,
                                 RetrievalFusionPipeline fusionPipeline,
                                 RetrievalRerankPipeline rerankPipeline,
                                 RetrievalDomainResolver domainResolver,
                                 ResultFilter resultFilter) {
+        this.scopePipeline = scopePipeline;
         this.recallPipeline = recallPipeline;
         this.fusionPipeline = fusionPipeline;
         this.rerankPipeline = rerankPipeline;
@@ -94,9 +100,27 @@ public class PlannedSearchService {
         int seq = 0;
         String domainCode = domainResolver.resolve(req.getDomainCode(), kbIds);
 
+        long scopeStart = System.currentTimeMillis();
+        RetrievalScopePipeline.Result scope = scopePipeline.refine(new RetrievalScopeContext(
+                req.getQuery(), req.getTenantId(), kbIds, req.getDocumentIds(), domainCode));
+        long scopeMs = System.currentTimeMillis() - scopeStart;
+        stages.add(stage("SCOPE", ++seq, scopeMs,
+                "domain=" + domainCode + "; initialDocumentIds=" + safeList(req.getDocumentIds()),
+                "documentIds=" + scope.documentIds() + "; blocked=" + scope.blocked()
+                        + "; degraded=" + scope.degraded() + "; decisions=" + scopeSummary(scope.decisions())));
+        if (scope.blocked()) {
+            analysis.setSuccess(!scope.degraded());
+            analysis.setStages(stages);
+            channels.setBm25(0);
+            channels.setVector(0);
+            channels.setFused(0);
+            resp.setResults(List.of());
+            return resp;
+        }
+
         RetrievalRecallContext recallContext = new RetrievalRecallContext(
                 req.getQuery(), variants, req.getTenantId(), kbIds,
-                req.getDocumentIds(), RECALL_TOP_K, domainCode);
+                scope.documentIds(), RECALL_TOP_K, domainCode);
         List<RetrievalRecallResult> recallResults = recallPipeline.recall(recallContext);
         Map<String, Set<Long>> channelIds = new LinkedHashMap<>();
         Map<String, Integer> channelCounts = new LinkedHashMap<>();
@@ -107,7 +131,7 @@ public class PlannedSearchService {
             stages.add(stage(recall.channel().toUpperCase(Locale.ROOT), ++seq, recall.elapsedMs(),
                     "plugin=" + recall.pluginId() + "; domain=" + domainCode
                             + "; variants=" + variants + "; kbIds=" + kbIds
-                            + "; documentIds=" + safeList(req.getDocumentIds()),
+                            + "; documentIds=" + scope.documentIds(),
                     "hits=" + recall.hits().size() + "; degraded=" + recall.degraded()
                             + suffix(recall.message())));
         }
@@ -145,8 +169,8 @@ public class PlannedSearchService {
             if (idx < 0 || idx >= candidateIds.size()) continue;
             Long chunkId = candidateIds.get(idx);
             ChunkDocInfoDTO info = docInfo.get(chunkId);
-            if (req.getDocumentIds() != null && !req.getDocumentIds().isEmpty()
-                    && (info == null || info.getDocumentId() == null || !req.getDocumentIds().contains(info.getDocumentId()))) {
+            if (!scope.documentIds().isEmpty()
+                    && (info == null || info.getDocumentId() == null || !scope.documentIds().contains(info.getDocumentId()))) {
                 continue;
             }
             RetrievalResultDTO item = new RetrievalResultDTO();
@@ -187,6 +211,13 @@ public class PlannedSearchService {
         stage.setInputSummary(limit(input));
         stage.setOutputSummary(limit(output));
         return stage;
+    }
+
+    private String scopeSummary(List<RetrievalScopeDecision> decisions) {
+        if (decisions == null || decisions.isEmpty()) return "[]";
+        return decisions.stream().map(d -> "{plugin=" + d.pluginId() + ",applied=" + d.applied()
+                        + ",blocked=" + d.blocked() + ",degraded=" + d.degraded() + suffix(d.message()) + "}")
+                .collect(Collectors.joining(",", "[", "]"));
     }
 
     private String suffix(String message) {
