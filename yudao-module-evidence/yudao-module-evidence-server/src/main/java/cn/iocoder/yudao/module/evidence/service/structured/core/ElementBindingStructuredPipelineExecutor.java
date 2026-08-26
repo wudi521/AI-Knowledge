@@ -40,7 +40,7 @@ public class ElementBindingStructuredPipelineExecutor extends StructuredPipeline
         this.pushdownCoordinator = pushdownCoordinator;
     }
 
-    /** 迁移期纯 Java 单测兼容：没有 Coordinator 时保持原 JVM 执行语义。 */
+    /** 迁移期纯 Java单测兼容：没有 Coordinator 时保持原 JVM 执行语义。 */
     public ElementBindingStructuredPipelineExecutor(DomainFieldRegistry fieldRegistry,
                                                     DomainMetricRegistry metricRegistry,
                                                     List<DomainStructuredDataAdapter> adapters,
@@ -53,11 +53,21 @@ public class ElementBindingStructuredPipelineExecutor extends StructuredPipeline
 
     @Override
     public StructuredPipelineResult execute(StructuredPipelinePlan plan) {
+        if (plan != null && plan.getHaving() != null
+                && (plan.getGroupBy() == null || plan.getGroupBy().isEmpty())) {
+            return enrichResultContract(plan,
+                    StructuredPipelineResult.failure("HAVING requires GROUP BY"));
+        }
+
         StructuredPipelineResult result = tryPushdown(plan);
         if (result == null) {
-            result = requiresElementBinding(plan)
-                    ? executeElementBound(plan)
-                    : super.execute(plan);
+            if (plan != null && plan.getHaving() != null) {
+                result = executeHaving(plan);
+            } else {
+                result = requiresElementBinding(plan)
+                        ? executeElementBound(plan)
+                        : super.execute(plan);
+            }
         }
         return enrichResultContract(plan, result);
     }
@@ -72,6 +82,82 @@ public class ElementBindingStructuredPipelineExecutor extends StructuredPipeline
                     Map.of("pushdownFailed", true));
         }
         return pushed.result();
+    }
+
+    /**
+     * JVM fallback 的 HAVING 执行。先取消最终 limit 得到完整分组，再按聚合值过滤，最后才排序结果限制。
+     * Pushdown 实现若能完整执行 HAVING，会在本方法之前直接返回，因此这里不会妨碍后端优化。
+     */
+    private StructuredPipelineResult executeHaving(StructuredPipelinePlan plan) {
+        StructuredPipelinePlan unbounded = copyForHaving(plan);
+        StructuredPipelineResult base = super.execute(unbounded);
+        if (!base.success()) return base;
+        if (base.scalarValue() != null) {
+            return StructuredPipelineResult.failure("HAVING requires grouped aggregate rows");
+        }
+
+        List<StructuredPipelineResult.Row> filtered = new ArrayList<>();
+        for (StructuredPipelineResult.Row row : base.rows()) {
+            if (row == null || row.value() == null) {
+                return StructuredPipelineResult.failure("grouped aggregate row is missing aggregateValue");
+            }
+            if (matchesHaving(row.value(), plan.getHaving())) filtered.add(row);
+        }
+
+        int preHavingGroupCount = base.rows().size();
+        int fullGroupCount = filtered.size();
+        boolean limited = plan.getLimit() != null && plan.getLimit() > 0 && filtered.size() > plan.getLimit();
+        List<StructuredPipelineResult.Row> output = limited
+                ? new ArrayList<>(filtered.subList(0, plan.getLimit()))
+                : filtered;
+
+        Map<String, Object> metadata = new LinkedHashMap<>(base.metadata());
+        metadata.put("havingApplied", true);
+        metadata.put("preHavingGroupCount", preHavingGroupCount);
+        metadata.put("havingRemoved", Math.max(0, preHavingGroupCount - fullGroupCount));
+        metadata.put("groupCount", output.size());
+        metadata.put("fullGroupCount", fullGroupCount);
+        metadata.put("outputCount", output.size());
+        metadata.put("limited", limited);
+        metadata.put("outputLimited", limited);
+        metadata.put("outputComplete", !limited);
+        metadata.put("authoritativeEmpty", fullGroupCount == 0);
+
+        return new StructuredPipelineResult(true, base.message(), output, null,
+                base.completeDataset(), fullGroupCount == 0, base.sourceEntityCount(),
+                base.missingValueCount(), metadata);
+    }
+
+    private boolean matchesHaving(double actual, StructuredHavingSpec having) {
+        List<Double> expected = having.values();
+        return switch (having.operator()) {
+            case EQ -> Double.compare(actual, expected.get(0)) == 0;
+            case NE -> Double.compare(actual, expected.get(0)) != 0;
+            case GT -> actual > expected.get(0);
+            case GTE -> actual >= expected.get(0);
+            case LT -> actual < expected.get(0);
+            case LTE -> actual <= expected.get(0);
+            case BETWEEN -> actual >= Math.min(expected.get(0), expected.get(1))
+                    && actual <= Math.max(expected.get(0), expected.get(1));
+            case IN -> expected.stream().anyMatch(value -> Double.compare(actual, value) == 0);
+            default -> false;
+        };
+    }
+
+    private StructuredPipelinePlan copyForHaving(StructuredPipelinePlan plan) {
+        return StructuredPipelinePlan.builder()
+                .domainCode(plan.getDomainCode())
+                .entityType(plan.getEntityType())
+                .scope(plan.getScope())
+                .select(plan.getSelect())
+                .filter(plan.getFilter())
+                .groupBy(plan.getGroupBy())
+                .aggregate(plan.getAggregate())
+                .having(null)
+                .orderBy(plan.getOrderBy())
+                .distinct(plan.isDistinct())
+                .limit(null)
+                .build();
     }
 
     private StructuredPipelineResult executeElementBound(StructuredPipelinePlan plan) {
@@ -154,6 +240,7 @@ public class ElementBindingStructuredPipelineExecutor extends StructuredPipeline
                 .filter(plan.getFilter())
                 .groupBy(plan.getGroupBy())
                 .aggregate(plan.getAggregate())
+                .having(plan.getHaving())
                 .orderBy(plan.getOrderBy())
                 .distinct(false)
                 .limit(null)
