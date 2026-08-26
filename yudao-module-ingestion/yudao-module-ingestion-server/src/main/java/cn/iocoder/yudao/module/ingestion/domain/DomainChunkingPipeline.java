@@ -25,6 +25,7 @@ public class DomainChunkingPipeline {
 
     public DomainChunkingPipeline(List<DomainIngestionAdapter> plugins) {
         this.resolver = new DomainPluginResolver<>(plugins);
+        this.resolver.requireWildcardFallback("chunking");
     }
 
     /**
@@ -38,9 +39,7 @@ public class DomainChunkingPipeline {
                 chunks == null ? List.of() : List.copyOf(chunks));
     }
 
-    /**
-     * 迁移兼容入口：旧 IngestService 仍可先拿到领域插件，后续会逐步收敛为 execute(...)。
-     */
+    /** 迁移兼容入口；新主链统一使用 execute(...)。 */
     public DomainIngestionAdapter pluginFor(String domainCode) {
         return resolve(domainCode, null);
     }
