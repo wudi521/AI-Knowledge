@@ -82,14 +82,23 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         if (fieldCode != null && !EXECUTABLE_FIELDS.contains(fieldCode)) {
             return StructuredQueryResult.unsupported("Patent 字段暂无可结构化数据: " + fieldCode);
         }
-        if (fieldCode == null && !supports(plan.getMetricCode())) {
-            return StructuredQueryResult.unsupported("Patent 指标暂不支持执行: " + plan.getMetricCode());
+
+        String metricCode = StrUtil.isBlank(plan.getMetricCode()) ? null : plan.getMetricCode().toUpperCase();
+        if (StrUtil.isNotBlank(metricCode) && !EXECUTABLE_METRICS.contains(metricCode)) {
+            // Pipeline 的 sourceCode 可能来自字段。字段读取必须走 fieldCode，不能把 TITLE 等字段冒充 metric 透传给 RPC。
+            if (fieldCode == null) {
+                return StructuredQueryResult.unsupported("Patent 指标暂不支持执行: " + plan.getMetricCode());
+            }
+            metricCode = null;
+        }
+        if (fieldCode == null && StrUtil.isBlank(metricCode)) {
+            return StructuredQueryResult.unsupported("Patent 结构化查询缺少可执行字段或指标");
         }
 
         StructuredQueryReqDTO req = new StructuredQueryReqDTO();
         req.setKbId(plan.getScope().getCurrentKbId());
-        req.setMetricCode(PatentStructuredPack.METRIC_PATENT_COUNT.equals(plan.getMetricCode())
-                ? PatentStructuredPack.METRIC_DOCUMENT_COUNT : plan.getMetricCode());
+        req.setMetricCode(PatentStructuredPack.METRIC_PATENT_COUNT.equals(metricCode)
+                ? PatentStructuredPack.METRIC_DOCUMENT_COUNT : metricCode);
         req.setFieldCode(fieldCode);
         req.setPublishedOnly(plan.getFilters() == null
                 || !"false".equalsIgnoreCase(plan.getFilters().getOrDefault("publishedOnly", "true")));
@@ -97,8 +106,15 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
 
         try {
             CommonResult<StructuredQueryRespDTO> resp = knowledgeApi.structuredQuery(req);
-            if (resp == null || !resp.isSuccess() || resp.getData() == null) {
-                return StructuredQueryResult.unsupported("知识库结构化数据访问失败");
+            if (resp == null) {
+                return StructuredQueryResult.unsupported("知识库结构化数据访问失败: downstream response is null");
+            }
+            if (!resp.isSuccess()) {
+                return StructuredQueryResult.unsupported("知识库结构化数据访问失败: code=" + resp.getCode()
+                        + "; msg=" + StrUtil.blankToDefault(resp.getMsg(), "unknown"));
+            }
+            if (resp.getData() == null) {
+                return StructuredQueryResult.unsupported("知识库结构化数据访问失败: downstream data is null");
             }
             StructuredQueryRespDTO data = resp.getData();
             List<StructuredQueryRowDTO> sourceRows = data.getRows() == null ? List.of() : data.getRows();
@@ -108,8 +124,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                     ? Map.of() : safeDocumentMap(docIds);
 
             List<StructuredQueryResult.Row> rows = new ArrayList<>();
-            boolean metricRequested = StrUtil.isNotBlank(plan.getMetricCode())
-                    && EXECUTABLE_METRICS.contains(plan.getMetricCode().toUpperCase());
+            boolean metricRequested = StrUtil.isNotBlank(metricCode) && EXECUTABLE_METRICS.contains(metricCode);
             for (StructuredQueryRowDTO r : sourceRows) {
                 KnowledgeDocumentRespDTO doc = documents.get(r.getDocumentId());
                 String fieldValue = fieldValueOf(r, doc, fieldCode);
@@ -126,8 +141,8 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
 
             MergeResult merge = new MergeResult(rows, Set.of());
             if (PatentStructuredPack.ENTITY_PATENT_DOCUMENT.equals(plan.getEntityType())
-                    && !PatentStructuredPack.METRIC_DOCUMENT_COUNT.equals(plan.getMetricCode())) {
-                merge = mergePatentRows(rows, plan.getMetricCode());
+                    && !PatentStructuredPack.METRIC_DOCUMENT_COUNT.equals(metricCode)) {
+                merge = mergePatentRows(rows, metricCode);
                 rows = merge.rows();
             }
 
@@ -138,8 +153,8 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                 collectFilterFields(plan.getFilterExpression(), required);
                 for (String conflict : merge.conflictFields()) {
                     if (conflict.startsWith("@METRIC:")) {
-                        if (conflict.equalsIgnoreCase("@METRIC:" + StrUtil.blankToDefault(plan.getMetricCode(), ""))) {
-                            return StructuredQueryResult.unsupported("同一逻辑专利的重复记录在指标 " + plan.getMetricCode() + " 上存在冲突");
+                        if (conflict.equalsIgnoreCase("@METRIC:" + StrUtil.blankToDefault(metricCode, ""))) {
+                            return StructuredQueryResult.unsupported("同一逻辑专利的重复记录在指标 " + metricCode + " 上存在冲突");
                         }
                     } else if (required.contains(conflict)) {
                         return StructuredQueryResult.unsupported("同一逻辑专利的重复记录在字段 " + conflict + " 上存在冲突");
@@ -154,7 +169,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             }
 
             return StructuredQueryResult.builder()
-                    .metricCode(plan.getMetricCode())
+                    .metricCode(metricCode)
                     .operation(plan.getOperation())
                     .rows(rows)
                     .rowCount(rows.size())
@@ -163,8 +178,10 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                     .truncated(data.isTruncated())
                     .build();
         } catch (Exception e) {
-            log.warn("[execute][metric({}) 数据访问失败: {}]", plan.getMetricCode(), e.getMessage());
-            return StructuredQueryResult.unsupported("知识库结构化数据访问异常");
+            log.warn("[execute][kbId({}) field({}) metric({}) 数据访问失败: {}]",
+                    plan.getScope().getCurrentKbId(), fieldCode, metricCode, e.getMessage());
+            return StructuredQueryResult.unsupported("知识库结构化数据访问异常: "
+                    + e.getClass().getSimpleName() + ": " + StrUtil.blankToDefault(e.getMessage(), "unknown"));
         }
     }
 
