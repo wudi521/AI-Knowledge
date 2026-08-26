@@ -20,7 +20,8 @@ class PluginAgentGoalEvaluatorTest {
         AgentGoalEvaluator fallback = fallback(fallbackCalls);
         GoalValidationRulePlugin patentRule = rule("patent-proof", Set.of("PATENT"),
                 GoalValidationRuleResult.insufficient("missing authoritative patent proof"));
-        PluginAgentGoalEvaluator evaluator = new PluginAgentGoalEvaluator(List.of(patentRule), fallback);
+        PluginAgentGoalEvaluator evaluator = new PluginAgentGoalEvaluator(
+                new GoalValidationRulePipeline(List.of(patentRule)), fallback);
 
         AgentGoalEvaluator.Evaluation evaluation = evaluator.evaluate("goal", List.of(), List.of(), List.of(), context("PATENT"));
 
@@ -34,7 +35,8 @@ class PluginAgentGoalEvaluatorTest {
         AgentGoalEvaluator fallback = fallback(fallbackCalls);
         GoalValidationRulePlugin patentRule = rule("patent-proof", Set.of("PATENT"),
                 GoalValidationRuleResult.insufficient("should not run"));
-        PluginAgentGoalEvaluator evaluator = new PluginAgentGoalEvaluator(List.of(patentRule), fallback);
+        PluginAgentGoalEvaluator evaluator = new PluginAgentGoalEvaluator(
+                new GoalValidationRulePipeline(List.of(patentRule)), fallback);
 
         AgentGoalEvaluator.Evaluation evaluation = evaluator.evaluate("goal", List.of(), List.of(), List.of(), context("CONTRACT"));
 
