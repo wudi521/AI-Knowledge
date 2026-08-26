@@ -65,6 +65,42 @@ public interface AiDocumentMapper extends BaseMapperX<AiDocumentDO> {
                                                    @Param("publicationNo") String publicationNo);
 
     /**
+     * Query Engine fallback 的 keyset 物理源分页。
+     *
+     * <p>这里不接收任意字段/SQL，仅暴露 PATENT 数据源的固定白名单。limit 由 service 钳制，
+     * 调用方使用 id 游标把所有页读完以后才能形成 completeDataset 结论。</p>
+     */
+    @Select({
+            "<script>",
+            "SELECT d.* FROM ai_document d",
+            "WHERE d.deleted = 0 AND d.kb_id = #{kbId}",
+            "AND d.id &gt; #{afterDocumentId}",
+            "AND (d.domain_metadata IS NULL OR TRIM(d.domain_metadata) = ''",
+            "     OR JSON_VALID(d.domain_metadata) = 0",
+            "     OR JSON_UNQUOTE(JSON_EXTRACT(d.domain_metadata, '$.domainCode')) IS NULL",
+            "     OR JSON_UNQUOTE(JSON_EXTRACT(d.domain_metadata, '$.domainCode')) = ''",
+            "     OR UPPER(JSON_UNQUOTE(JSON_EXTRACT(d.domain_metadata, '$.domainCode'))) = 'PATENT')",
+            "<if test='resolvedEntityIds != null and !resolvedEntityIds.isEmpty()'>",
+            "AND d.id IN",
+            "<foreach collection='resolvedEntityIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
+            "</if>",
+            "<if test='publishedOnly == null or publishedOnly'>",
+            "AND EXISTS (SELECT 1 FROM ai_doc_version v",
+            "            WHERE v.deleted = 0 AND v.doc_id = d.id AND v.status = 'PUBLISHED'",
+            "              AND (v.effective_from IS NULL OR v.effective_from &lt;= NOW())",
+            "              AND (v.effective_to IS NULL OR v.effective_to &gt;= NOW()))",
+            "</if>",
+            "ORDER BY d.id ASC",
+            "LIMIT #{limit}",
+            "</script>"
+    })
+    List<AiDocumentDO> selectStructuredPatentDocumentsPage(@Param("kbId") Long kbId,
+                                                           @Param("resolvedEntityIds") List<Long> resolvedEntityIds,
+                                                           @Param("publishedOnly") Boolean publishedOnly,
+                                                           @Param("afterDocumentId") Long afterDocumentId,
+                                                           @Param("limit") Integer limit);
+
+    /**
      * 权威 SOURCE_RECORD 计数。聚合在数据库完成，不先加载文档行到 JVM。
      */
     @Select({
