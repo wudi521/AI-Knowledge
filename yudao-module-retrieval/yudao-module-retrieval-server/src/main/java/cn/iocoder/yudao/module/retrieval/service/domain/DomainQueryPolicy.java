@@ -1,15 +1,30 @@
 package cn.iocoder.yudao.module.retrieval.service.domain;
 
+import cn.iocoder.yudao.framework.common.plugin.DomainPipelinePlugin;
+
 import java.util.List;
+import java.util.Set;
 
 /**
- * 领域查询策略(轻量领域扩展点): 按知识库 domainCode 路由检索行为。
- * 领域实现通过 Spring Bean 注册, Registry 索引; 未找到回退 GENERAL。
+ * 领域查询分析策略插件。
+ *
+ * <p>这是旧 QueryAnalysis 兼容链的领域 SPI，也统一使用平台 DomainPipelinePlugin 协议；
+ * 新领域不再需要理解另一套私有 Registry 规则。</p>
  */
-public interface DomainQueryPolicy {
+public interface DomainQueryPolicy extends DomainPipelinePlugin {
 
-    /** 领域代码: GENERAL/PATENT */
+    /** 领域代码，例如 GENERAL/PATENT。 */
     String domainCode();
+
+    @Override
+    default String pluginId() {
+        return "retrieval-query-policy:" + domainCode();
+    }
+
+    @Override
+    default Set<String> supportedDomains() {
+        return "GENERAL".equalsIgnoreCase(domainCode()) ? Set.of("*") : Set.of(domainCode());
+    }
 
     /** 领域查询分析提示词(JSON 输出与 QueryAnalysis 兼容; null = 用代码默认提示词) */
     String queryAnalysisPrompt();
@@ -28,13 +43,12 @@ public interface DomainQueryPolicy {
         return true;
     }
 
-    /**
-     * 领域固定意图白名单。为空表示不做领域级钳制, 继续使用知识库动态意图或默认枚举。
-     */
+    /** 领域固定意图白名单。为空表示不做领域级钳制。 */
     default List<String> supportedIntents() {
         return List.of();
     }
-    /** 是否启用发布后的客服式意图自动总结(GENERAL=true, PATENT=false——专利意图由领域固定集提供) */
+
+    /** 是否启用发布后的客服式意图自动总结。 */
     default boolean enableAutoIntentSummary() {
         return true;
     }
