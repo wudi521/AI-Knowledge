@@ -24,6 +24,13 @@ public class MetricDefinition {
     /** 度量实体类型(如 PATENT_DOCUMENT) */
     private String entityType;
 
+    /**
+     * 指标读取/计数所在的数据粒度。
+     * LOGICAL_ENTITY=按领域身份去重后的业务实体；SOURCE_RECORD=知识库中的物理记录。
+     */
+    @Builder.Default
+    private DataGrain dataGrain = DataGrain.LOGICAL_ENTITY;
+
     /** 值类型: INTEGER / DECIMAL */
     private String valueType;
 
@@ -48,4 +55,12 @@ public class MetricDefinition {
     /** 数据访问适配器键(如 PATENT; 由 DomainStructuredDataAdapter 实现) */
     private String adapterKey;
 
+    /**
+     * Planner 目前通过 description 消费指标语义，因此把 grain 同步进可读契约；
+     * 机器执行仍读取 dataGrain 字段本身，不能依赖文字解析。
+     */
+    public String getDescription() {
+        String base = description == null ? "" : description;
+        return base + (base.isBlank() ? "" : "; ") + "dataGrain=" + dataGrain;
+    }
 }
