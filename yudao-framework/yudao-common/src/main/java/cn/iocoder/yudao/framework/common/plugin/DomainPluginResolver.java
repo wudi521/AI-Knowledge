@@ -51,8 +51,28 @@ public final class DomainPluginResolver<T extends DomainPipelinePlugin> {
         return matched.get(0);
     }
 
+    /**
+     * 对必须对未知/新领域可工作的 Pipeline，启动时校验至少存在一个 `*` 通用插件。
+     * Scope/Validation 这类“允许零插件”的阶段不要调用本方法。
+     */
+    public void requireWildcardFallback(String pipelineName) {
+        boolean found = plugins.stream().anyMatch(this::supportsWildcard);
+        if (!found) {
+            throw new IllegalStateException("no wildcard (*) fallback configured for " + pipelineName + " pipeline");
+        }
+    }
+
+    public boolean hasWildcardFallback() {
+        return plugins.stream().anyMatch(this::supportsWildcard);
+    }
+
     public List<T> all() {
         return plugins;
+    }
+
+    private boolean supportsWildcard(T plugin) {
+        Set<String> domains = plugin == null ? null : plugin.supportedDomains();
+        return domains != null && domains.stream().anyMatch("*"::equals);
     }
 
     private int specificity(T plugin, DomainPluginContext context) {
