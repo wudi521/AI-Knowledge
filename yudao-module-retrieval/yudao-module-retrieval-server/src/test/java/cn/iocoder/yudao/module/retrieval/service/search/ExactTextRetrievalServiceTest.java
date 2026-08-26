@@ -3,6 +3,10 @@ package cn.iocoder.yudao.module.retrieval.service.search;
 import cn.iocoder.yudao.module.ingestion.api.dto.ChunkDocInfoDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
+import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalDomainResolver;
+import cn.iocoder.yudao.module.retrieval.service.search.scope.RetrievalScopeContext;
+import cn.iocoder.yudao.module.retrieval.service.search.scope.RetrievalScopeDecision;
+import cn.iocoder.yudao.module.retrieval.service.search.scope.RetrievalScopePipeline;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -15,6 +19,7 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -24,19 +29,29 @@ class ExactTextRetrievalServiceTest {
 
     @Mock Bm25Searcher bm25Searcher;
     @Mock ResultFilter resultFilter;
+    @Mock RetrievalDomainResolver domainResolver;
+    @Mock RetrievalScopePipeline scopePipeline;
 
     private ExactTextRetrievalService service;
 
     @BeforeEach
     void setUp() {
-        service = new ExactTextRetrievalService(bm25Searcher, resultFilter);
+        service = new ExactTextRetrievalService(bm25Searcher, resultFilter, domainResolver, scopePipeline);
+        when(domainResolver.resolveWithStatus(any(), anyList()))
+                .thenAnswer(invocation -> RetrievalDomainResolver.Resolution.success(
+                        invocation.getArgument(0) == null ? "GENERAL" : invocation.getArgument(0), false));
+        when(scopePipeline.refine(any())).thenAnswer(invocation -> {
+            RetrievalScopeContext context = invocation.getArgument(0);
+            return new RetrievalScopePipeline.Result(context.documentIds(), false, false, List.of());
+        });
     }
 
     @Test
     void rawExactPathHydratesOnlyVerifiedContentAndSkipsOtherChannels() {
         when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
-        when(bm25Searcher.searchExactPhraseWithTotal(eq("粒子化磁涌"), eq(1L), eq(List.of(6L)), eq(200), any()))
-                .thenReturn(new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 7.2D)), 1L));
+        when(bm25Searcher.searchExactPhraseWithStatus(eq("粒子化磁涌"), eq(1L), eq(List.of(6L)), eq(200), any()))
+                .thenReturn(Bm25Searcher.ExactSearchExecution.success(
+                        new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 7.2D)), 1L)));
         when(resultFilter.filterPublished(Set.of(101L))).thenReturn(Set.of(101L));
         when(resultFilter.getChunkContents(List.of(101L))).thenReturn(Map.of(101L, "本发明涉及一种粒子化磁涌装置。"));
         when(resultFilter.getChunkMetadatas(List.of(101L))).thenReturn(Map.of(101L, "{}"));
@@ -58,16 +73,16 @@ class ExactTextRetrievalServiceTest {
         assertThat(resp.getResults().get(0).getChannels()).containsExactly("exact_text");
         assertThat(resp.getChannels().getVector()).isZero();
         assertThat(resp.getChannels().getFused()).isZero();
-        verify(bm25Searcher).searchExactPhraseWithTotal(eq("粒子化磁涌"), eq(1L), eq(List.of(6L)), eq(200), any());
+        verify(bm25Searcher).searchExactPhraseWithStatus(eq("粒子化磁涌"), eq(1L), eq(List.of(6L)), eq(200), any());
     }
 
     @Test
     void phraseCandidateWithoutRawSubstringIsRejected() {
         when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
-        when(bm25Searcher.searchExactPhraseWithTotal(eq("甲乙"), eq(1L), eq(List.of(6L)), eq(200), any()))
-                .thenReturn(new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 1D)), 1L));
+        when(bm25Searcher.searchExactPhraseWithStatus(eq("甲乙"), eq(1L), eq(List.of(6L)), eq(200), any()))
+                .thenReturn(Bm25Searcher.ExactSearchExecution.success(
+                        new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 1D)), 1L)));
         when(resultFilter.filterPublished(Set.of(101L))).thenReturn(Set.of(101L));
-        // 分词短语可能候选命中，但原文并不是连续“甲乙”。
         when(resultFilter.getChunkContents(List.of(101L))).thenReturn(Map.of(101L, "甲，乙"));
 
         RetrievalSearchRespDTO resp = service.search(request("原文是否包含“甲乙”？", "甲乙"));
@@ -81,8 +96,9 @@ class ExactTextRetrievalServiceTest {
     @Test
     void oversizedCandidateSetDoesNotPretendExactTotalIsKnown() {
         when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
-        when(bm25Searcher.searchExactPhraseWithTotal(eq("测试短语"), eq(1L), eq(List.of(6L)), eq(200), any()))
-                .thenReturn(new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 1D)), 201L));
+        when(bm25Searcher.searchExactPhraseWithStatus(eq("测试短语"), eq(1L), eq(List.of(6L)), eq(200), any()))
+                .thenReturn(Bm25Searcher.ExactSearchExecution.success(
+                        new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 1D)), 201L)));
         when(resultFilter.filterPublished(Set.of(101L))).thenReturn(Set.of(101L));
         when(resultFilter.getChunkContents(List.of(101L))).thenReturn(Map.of(101L, "测试短语"));
         when(resultFilter.getChunkMetadatas(List.of(101L))).thenReturn(Map.of());
@@ -94,6 +110,39 @@ class ExactTextRetrievalServiceTest {
         assertThat(resp.getTotalHits()).isNull();
         assertThat(resp.getTotalHitsExact()).isFalse();
         assertThat(resp.getCandidateTotalHits()).isEqualTo(201L);
+    }
+
+    @Test
+    void authoritativeScopeIsAppliedBeforeExactPhraseRecall() {
+        when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
+        when(scopePipeline.refine(any())).thenReturn(new RetrievalScopePipeline.Result(
+                List.of(74L), false, false,
+                List.of(new RetrievalScopeDecision("patent-scope", List.of(74L), true, false, false, null))));
+        when(bm25Searcher.searchExactPhraseWithStatus("磁涌", 1L, List.of(6L), 200, List.of(74L)))
+                .thenReturn(Bm25Searcher.ExactSearchExecution.success(Bm25Searcher.SearchHits.empty()));
+        RetrievalSearchReqDTO req = request("申请号 202311832214.0 的原文是否包含磁涌？", "磁涌");
+        req.setDomainCode("PATENT");
+
+        RetrievalSearchRespDTO resp = service.search(req);
+
+        assertThat(resp.getAnalysis().getBlocked()).isFalse();
+        verify(bm25Searcher).searchExactPhraseWithStatus("磁涌", 1L, List.of(6L), 200, List.of(74L));
+    }
+
+    @Test
+    void elasticsearchFailureMustNotBecomeAuthoritativeZeroHit() {
+        when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
+        when(bm25Searcher.searchExactPhraseWithStatus(eq("磁涌"), eq(1L), eq(List.of(6L)), eq(200), any()))
+                .thenReturn(Bm25Searcher.ExactSearchExecution.failure("ES unavailable"));
+
+        RetrievalSearchRespDTO resp = service.search(request("原文是否包含磁涌？", "磁涌"));
+
+        assertThat(resp.getResults()).isEmpty();
+        assertThat(resp.getAnalysis().getSuccess()).isFalse();
+        assertThat(resp.getAnalysis().getDegraded()).isTrue();
+        assertThat(resp.getTotalHits()).isNull();
+        assertThat(resp.getTotalHitsExact()).isFalse();
+        assertThat(resp.getCandidateTotalHits()).isNull();
     }
 
     private RetrievalSearchReqDTO request(String query, String exactText) {
