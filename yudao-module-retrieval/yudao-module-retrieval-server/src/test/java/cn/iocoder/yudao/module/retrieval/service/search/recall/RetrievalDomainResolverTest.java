@@ -42,7 +42,7 @@ class RetrievalDomainResolverTest {
     }
 
     @Test
-    void mixedDomainScopeUsesOnlyGenericPluginsAndIsMarkedDegraded() {
+    void mixedDomainScopeIsDetectedForUpstreamPartitioning() {
         KnowledgeApi api = mock(KnowledgeApi.class);
         when(api.getKbDomainCodes(anyList())).thenReturn(CommonResult.success(Map.of(9L, "PATENT", 10L, "CONTRACT")));
 
@@ -51,6 +51,7 @@ class RetrievalDomainResolverTest {
 
         assertFalse(result.failed());
         assertTrue(result.mixedDomainScope());
+        // GENERAL 这里只是“没有单一领域可绑定”的占位值；PlannedSearchService 必须在执行插件前 BLOCKED。
         assertEquals("GENERAL", result.domainCode());
     }
 }
