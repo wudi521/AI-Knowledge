@@ -34,7 +34,7 @@ import java.util.stream.Collectors;
  * Query Engine V3 的纯执行检索器。
  *
  * <p>调用方已经完成自然语言规划，本服务禁止再次调用 QueryAnalysis/意图路由。
- * 核心只编排强类型扩展阶段：Scope[] -> Recall[] -> Fusion -> Rerank。
+ * 核心只编排强类型扩展阶段：Domain Resolution -> Scope[] -> Recall[] -> Fusion -> Rerank。
  * 每个阶段按 domainCode 选择插件；领域规则不允许重新渗入本类。</p>
  */
 @Service
@@ -99,7 +99,24 @@ public class PlannedSearchService {
 
         List<QueryStageTimingDTO> stages = new ArrayList<>();
         int seq = 0;
-        String domainCode = domainResolver.resolve(req.getDomainCode(), kbIds);
+        long domainStart = System.currentTimeMillis();
+        RetrievalDomainResolver.Resolution domainResolution = domainResolver.resolveWithStatus(req.getDomainCode(), kbIds);
+        long domainMs = System.currentTimeMillis() - domainStart;
+        stages.add(stage("DOMAIN_RESOLUTION", ++seq, domainMs,
+                "requestedDomain=" + StrUtil.blankToDefault(req.getDomainCode(), "<registry>") + "; kbIds=" + kbIds,
+                "domain=" + domainResolution.domainCode() + "; failed=" + domainResolution.failed()
+                        + "; mixed=" + domainResolution.mixedDomainScope() + suffix(domainResolution.message())));
+        if (domainResolution.failed()) {
+            analysis.setSuccess(false);
+            analysis.setDegraded(true);
+            analysis.setStages(stages);
+            channels.setBm25(0);
+            channels.setVector(0);
+            channels.setFused(0);
+            resp.setResults(List.of());
+            return resp;
+        }
+        String domainCode = domainResolution.domainCode();
 
         long scopeStart = System.currentTimeMillis();
         RetrievalScopePipeline.Result scope = scopePipeline.refine(new RetrievalScopeContext(
@@ -110,8 +127,9 @@ public class PlannedSearchService {
                 "documentIds=" + scope.documentIds() + "; blocked=" + scope.blocked()
                         + "; degraded=" + scope.degraded() + "; decisions=" + scopeSummary(scope.decisions())));
         if (scope.blocked()) {
-            analysis.setDegraded(scope.degraded());
-            analysis.setSuccess(!scope.degraded());
+            boolean degraded = domainResolution.mixedDomainScope() || scope.degraded();
+            analysis.setDegraded(degraded);
+            analysis.setSuccess(!degraded);
             analysis.setStages(stages);
             channels.setBm25(0);
             channels.setVector(0);
@@ -124,7 +142,8 @@ public class PlannedSearchService {
                 req.getQuery(), variants, req.getTenantId(), kbIds,
                 scope.documentIds(), RECALL_TOP_K, domainCode);
         List<RetrievalRecallResult> recallResults = recallPipeline.recall(recallContext);
-        boolean degraded = scope.degraded() || recallResults.stream().anyMatch(RetrievalRecallResult::degraded);
+        boolean degraded = domainResolution.mixedDomainScope() || scope.degraded()
+                || recallResults.stream().anyMatch(RetrievalRecallResult::degraded);
         Map<String, Set<Long>> channelIds = new LinkedHashMap<>();
         Map<String, Integer> channelCounts = new LinkedHashMap<>();
         for (RetrievalRecallResult recall : recallResults) {
