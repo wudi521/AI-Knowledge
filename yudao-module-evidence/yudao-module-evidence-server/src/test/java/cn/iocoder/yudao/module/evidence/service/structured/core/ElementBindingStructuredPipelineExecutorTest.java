@@ -29,7 +29,8 @@ class ElementBindingStructuredPipelineExecutorTest {
 
             @Override
             public boolean supports(String metricCode) {
-                return PatentStructuredPack.FIELD_INVENTOR.equals(metricCode);
+                return PatentStructuredPack.FIELD_INVENTOR.equals(metricCode)
+                        || PatentStructuredPack.FIELD_TITLE.equals(metricCode);
             }
 
             @Override
@@ -37,6 +38,7 @@ class ElementBindingStructuredPipelineExecutorTest {
                 LinkedHashMap<String, String> rowFields = new LinkedHashMap<>();
                 rowFields.put(PatentStructuredPack.FIELD_INVENTOR,
                         "孟祥军　朱姜涛　李邵波　张明杰　");
+                rowFields.put(PatentStructuredPack.FIELD_TITLE, "测试设备");
                 StructuredQueryResult.Row row = StructuredQueryResult.Row.builder()
                         .entityId(70L)
                         .entityKey("APP:TEST")
@@ -110,16 +112,18 @@ class ElementBindingStructuredPipelineExecutorTest {
 
     @Test
     void unrelatedOrBranchMustNotOverBindElements() {
-        // OR 中只要有一个分支不是同一元素源，就不能把元素级条件强行套到所有命中实体上。
+        // OR 中只要有一个分支来自其它字段，就不能把某个元素级条件强行套到所有命中实体上。
         StructuredValueExpression inventor = new StructuredValueExpression(
                 PatentStructuredPack.FIELD_INVENTOR, true, List.of());
         StructuredValueExpression surname = new StructuredValueExpression(
                 PatentStructuredPack.FIELD_INVENTOR, true,
                 List.of(StructuredValueTransform.PERSON_SURNAME));
+        StructuredValueExpression title = new StructuredValueExpression(
+                PatentStructuredPack.FIELD_TITLE, false, List.of());
 
         StructuredPredicateNode filter = StructuredPredicateNode.or(List.of(
                 StructuredPredicateNode.condition(surname, FilterOperator.EQ, List.of("不存在")),
-                StructuredPredicateNode.condition(inventor, FilterOperator.CONTAINS, List.of("孟"))));
+                StructuredPredicateNode.condition(title, FilterOperator.CONTAINS, List.of("设备"))));
 
         StructuredPipelinePlan plan = StructuredPipelinePlan.builder()
                 .domainCode(PatentStructuredPack.DOMAIN_CODE)
