@@ -49,6 +49,7 @@ class ExactTextSearchCapabilityTest {
         assertEquals(List.of(74L), output.candidateEntityIds());
         assertTrue(output.verifiedEntityIds().isEmpty(), "原文命中不是新的 trusted entity 来源");
         assertEquals(true, result.metadata().get("candidateEntityMapped"));
+        assertEquals(false, result.metadata().get("scopeBlocked"));
         verify(retriever).exactText("磁涌", List.of(6L), List.of(74L), 20,
                 1L, 2L, "PATENT", "ag-exact");
     }
@@ -70,6 +71,27 @@ class ExactTextSearchCapabilityTest {
         assertTrue(output.candidateEntityIds().isEmpty());
         assertTrue(output.verifiedEntityIds().isEmpty());
         assertEquals(false, result.metadata().get("candidateEntityMapped"));
+    }
+
+    @Test
+    void scopeBlockedIsExplicitAndNeverAuthoritativeEmpty() {
+        PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
+        when(retriever.exactText("磁涌", List.of(6L), null, 20,
+                1L, 2L, "PATENT", "ag-exact-blocked")).thenReturn(new PlannedEvidenceRetriever.Result(
+                PlannedEvidenceRetriever.Status.BLOCKED, "exact identifier resolved to no document",
+                List.of(), null, null, null, null, null));
+
+        ExactTextSearchCapability capability = new ExactTextSearchCapability(retriever);
+        CapabilityResult result = capability.execute(
+                new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "ag-exact-blocked"),
+                Map.of("text", "磁涌"));
+
+        assertTrue(result.success());
+        assertEquals("BLOCKED", result.metadata().get("retrievalOutcome"));
+        assertEquals(true, result.metadata().get("scopeBlocked"));
+        assertEquals("exact identifier resolved to no document", result.metadata().get("blockReason"));
+        assertEquals(false, result.metadata().get("authoritativeEmpty"));
+        assertEquals(false, result.metadata().get("totalHitsExact"));
     }
 
     @Test
