@@ -6,6 +6,10 @@ import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalResultDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
+import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalDomainResolver;
+import cn.iocoder.yudao.module.retrieval.service.search.scope.RetrievalScopeContext;
+import cn.iocoder.yudao.module.retrieval.service.search.scope.RetrievalScopeDecision;
+import cn.iocoder.yudao.module.retrieval.service.search.scope.RetrievalScopePipeline;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -17,7 +21,9 @@ import java.util.Set;
 
 /**
  * EXACT_TEXT_SEARCH 快路径。
- * ES match_phrase 仅做候选召回，随后必须对原文 content.contains(exactText) 做逐字二次校验。
+ *
+ * <p>与 Planned Hybrid 共用 Domain Resolution + Scope Pipeline；差异仅在 Recall/Verify：
+ * ES match_phrase 只做候选召回，随后必须对原文 content.contains(exactText) 做逐字二次校验。</p>
  */
 @Slf4j
 @Service
@@ -30,23 +36,37 @@ public class ExactTextRetrievalService {
 
     private final Bm25Searcher bm25Searcher;
     private final ResultFilter resultFilter;
+    private final RetrievalDomainResolver domainResolver;
+    private final RetrievalScopePipeline scopePipeline;
 
-    public ExactTextRetrievalService(Bm25Searcher bm25Searcher, ResultFilter resultFilter) {
+    public ExactTextRetrievalService(Bm25Searcher bm25Searcher,
+                                     ResultFilter resultFilter,
+                                     RetrievalDomainResolver domainResolver,
+                                     RetrievalScopePipeline scopePipeline) {
         this.bm25Searcher = bm25Searcher;
         this.resultFilter = resultFilter;
+        this.domainResolver = domainResolver;
+        this.scopePipeline = scopePipeline;
     }
 
     public RetrievalSearchRespDTO search(RetrievalSearchReqDTO req) {
         long start = System.currentTimeMillis();
         RetrievalSearchRespDTO resp = base(req);
+        List<QueryStageTimingDTO> stages = new ArrayList<>();
+        addStage(stages, "ANALYZE", 0, "SKIPPED", true, null, null);
+        addStage(stages, "ROUTE", 0, "SUCCEEDED", false, "mode=EXACT_TEXT_SEARCH", "route=EXACT_TEXT_SEARCH");
+
         if (req == null || StrUtil.isBlank(req.getExactText())) {
             resp.setAnswerBlocked(true);
             resp.setAnswerReason("精确原文检索缺少目标短语");
+            resp.getAnalysis().setSuccess(false);
+            resp.getAnalysis().setBlocked(true);
+            resp.getAnalysis().setBlockReason("exact text is blank");
             resp.setResults(List.of());
-            resp.setTotalHits(0L);
-            resp.setTotalHitsExact(true);
-            resp.setCandidateTotalHits(0L);
-            attachStages(resp, System.currentTimeMillis() - start, 0, false);
+            resp.setTotalHits(null);
+            resp.setTotalHitsExact(false);
+            resp.setCandidateTotalHits(null);
+            finish(resp, stages);
             return resp;
         }
 
@@ -55,21 +75,90 @@ public class ExactTextRetrievalService {
                 ? req.getKbIds().stream().filter(visible::contains).distinct().toList()
                 : new ArrayList<>(visible);
         if (kbIds.isEmpty()) {
+            resp.getAnalysis().setBlocked(true);
+            resp.getAnalysis().setBlockReason("no visible knowledge base in requested scope");
             resp.setResults(List.of());
-            resp.setTotalHits(0L);
-            resp.setTotalHitsExact(true);
-            resp.setCandidateTotalHits(0L);
-            attachStages(resp, System.currentTimeMillis() - start, 0, false);
+            resp.setTotalHits(null);
+            resp.setTotalHitsExact(false);
+            resp.setCandidateTotalHits(null);
+            addStage(stages, "SCOPE", System.currentTimeMillis() - start, "SUCCEEDED", false,
+                    "requestedKbIds=" + safeList(req.getKbIds()), "blocked=no visible knowledge base");
+            finish(resp, stages);
+            return resp;
+        }
+
+        long domainStart = System.currentTimeMillis();
+        RetrievalDomainResolver.Resolution domain = domainResolver.resolveWithStatus(req.getDomainCode(), kbIds);
+        addStage(stages, "DOMAIN_RESOLUTION", System.currentTimeMillis() - domainStart,
+                domain.failed() ? "FAILED" : "SUCCEEDED", false,
+                "requestedDomain=" + StrUtil.blankToDefault(req.getDomainCode(), "<registry>") + "; kbIds=" + kbIds,
+                "domain=" + domain.domainCode() + "; mixed=" + domain.mixedDomainScope()
+                        + suffix(domain.message()));
+        if (domain.failed()) {
+            resp.getAnalysis().setSuccess(false);
+            resp.getAnalysis().setDegraded(true);
+            resp.setResults(List.of());
+            resp.setTotalHits(null);
+            resp.setTotalHitsExact(false);
+            resp.setCandidateTotalHits(null);
+            finish(resp, stages);
+            return resp;
+        }
+        if (domain.mixedDomainScope()) {
+            resp.getAnalysis().setBlocked(true);
+            resp.getAnalysis().setBlockReason("mixed-domain knowledge scope must be partitioned by domain before retrieval");
+            resp.setResults(List.of());
+            resp.setTotalHits(null);
+            resp.setTotalHitsExact(false);
+            resp.setCandidateTotalHits(null);
+            finish(resp, stages);
+            return resp;
+        }
+
+        long scopeStart = System.currentTimeMillis();
+        RetrievalScopePipeline.Result scope = scopePipeline.refine(new RetrievalScopeContext(
+                req.getQuery(), req.getTenantId(), kbIds, req.getDocumentIds(), domain.domainCode()));
+        addStage(stages, "SCOPE", System.currentTimeMillis() - scopeStart,
+                scope.degraded() ? "DEGRADED" : "SUCCEEDED", false,
+                "domain=" + domain.domainCode() + "; initialDocumentIds=" + safeList(req.getDocumentIds()),
+                "documentIds=" + scope.documentIds() + "; blocked=" + scope.blocked()
+                        + "; decisions=" + scopeSummary(scope.decisions()));
+        if (scope.blocked()) {
+            resp.getAnalysis().setBlocked(true);
+            resp.getAnalysis().setBlockReason(blockReason(scope.decisions()));
+            resp.getAnalysis().setDegraded(scope.degraded());
+            resp.getAnalysis().setSuccess(!scope.degraded());
+            resp.setResults(List.of());
+            resp.setTotalHits(null);
+            resp.setTotalHitsExact(false);
+            resp.setCandidateTotalHits(null);
+            finish(resp, stages);
             return resp;
         }
 
         int returnLimit = req.getTopK() == null || req.getTopK() <= 0 ? 10 : Math.min(req.getTopK(), MAX_RETURN);
         long bm25Start = System.currentTimeMillis();
-        Bm25Searcher.SearchHits searchHits = bm25Searcher.searchExactPhraseWithTotal(
-                req.getExactText(), req.getTenantId(), kbIds, MAX_EXACT_CANDIDATES, req.getDocumentIds());
+        Bm25Searcher.ExactSearchExecution execution = bm25Searcher.searchExactPhraseWithStatus(
+                req.getExactText(), req.getTenantId(), kbIds, MAX_EXACT_CANDIDATES,
+                scope.documentIds().isEmpty() ? null : scope.documentIds());
         long bm25Ms = System.currentTimeMillis() - bm25Start;
-        resp.setCandidateTotalHits(searchHits.totalHits());
+        addStage(stages, "BM25_EXACT_PHRASE", bm25Ms, execution.failed() ? "FAILED" : "SUCCEEDED", false,
+                "exactText=" + StrUtil.maxLength(req.getExactText(), 120) + "; documentIds=" + scope.documentIds(),
+                execution.failed() ? "failed=" + execution.errorMessage()
+                        : "candidateTotal=" + execution.searchHits().totalHits());
+        if (execution.failed()) {
+            resp.getAnalysis().setSuccess(false);
+            resp.getAnalysis().setDegraded(true);
+            resp.setResults(List.of());
+            resp.setTotalHits(null);
+            resp.setTotalHitsExact(false);
+            resp.setCandidateTotalHits(null);
+            finish(resp, stages);
+            return resp;
+        }
 
+        Bm25Searcher.SearchHits searchHits = execution.searchHits();
+        resp.setCandidateTotalHits(searchHits.totalHits());
         List<Map.Entry<Long, Double>> hits = searchHits.hits();
         List<Long> orderedIds = hits.stream().map(Map.Entry::getKey).distinct().toList();
         boolean allCandidatesInspected = searchHits.totalHits() <= MAX_EXACT_CANDIDATES;
@@ -78,7 +167,10 @@ public class ExactTextRetrievalService {
             resp.setTotalHits(allCandidatesInspected ? 0L : null);
             resp.setTotalHitsExact(allCandidatesInspected);
             resp.getChannels().setBm25(0);
-            attachStages(resp, System.currentTimeMillis() - start, bm25Ms, true);
+            resp.getChannels().setRecall(Map.of("exact_text", 0));
+            addStage(stages, "EXACT_TEXT_VERIFY", 0, "SUCCEEDED", false,
+                    "candidateCount=0", "exactCount=0; complete=" + allCandidatesInspected);
+            finish(resp, stages);
             return resp;
         }
 
@@ -86,6 +178,7 @@ public class ExactTextRetrievalService {
         List<Long> candidateIds = orderedIds.stream().filter(published::contains).toList();
         Map<Long, String> contents = resultFilter.getChunkContents(candidateIds);
 
+        long verifyStart = System.currentTimeMillis();
         // 第二道“原文逐字”门禁：match_phrase 只是召回候选，不直接算 exact hit。
         List<Long> exactIds = candidateIds.stream()
                 .filter(id -> {
@@ -93,6 +186,7 @@ public class ExactTextRetrievalService {
                     return content != null && content.contains(req.getExactText());
                 })
                 .toList();
+        long verifyMs = System.currentTimeMillis() - verifyStart;
 
         if (allCandidatesInspected) {
             resp.setTotalHits((long) exactIds.size());
@@ -130,9 +224,14 @@ public class ExactTextRetrievalService {
         resp.getChannels().setBm25(results.size());
         resp.getChannels().setVector(0);
         resp.getChannels().setFused(0);
-        attachStages(resp, System.currentTimeMillis() - start, bm25Ms, true);
-        log.info("[search][EXACT_TEXT_SEARCH phrase={}, exactReturned={}, exactTotal={}, totalExact={}, candidateTotal={}, elapsedMs={}]",
-                StrUtil.maxLength(req.getExactText(), 80), results.size(), resp.getTotalHits(),
+        resp.getChannels().setRecall(Map.of("exact_text", results.size()));
+        addStage(stages, "EXACT_TEXT_VERIFY", verifyMs, "SUCCEEDED", false,
+                "candidateCount=" + candidateIds.size(),
+                "exactCount=" + exactIds.size() + "; returned=" + results.size()
+                        + "; complete=" + allCandidatesInspected);
+        finish(resp, stages);
+        log.info("[search][EXACT_TEXT_SEARCH domain={}, phrase={}, exactReturned={}, exactTotal={}, totalExact={}, candidateTotal={}, elapsedMs={}]",
+                domain.domainCode(), StrUtil.maxLength(req.getExactText(), 80), results.size(), resp.getTotalHits(),
                 resp.getTotalHitsExact(), searchHits.totalHits(), System.currentTimeMillis() - start);
         return resp;
     }
@@ -148,37 +247,60 @@ public class ExactTextRetrievalService {
         analysis.setRewrites(List.of());
         analysis.setSubQuestions(List.of());
         analysis.setSuccess(true);
-        analysis.setRoute("HYBRID_RAG");
+        analysis.setDegraded(false);
+        analysis.setBlocked(false);
+        analysis.setRoute("EXACT_TEXT_PLUGIN_SCOPE");
         resp.setAnalysis(analysis);
         RetrievalSearchRespDTO.RetrievalChannelStatDTO channels = new RetrievalSearchRespDTO.RetrievalChannelStatDTO();
         channels.setBm25(0);
         channels.setVector(0);
         channels.setFused(0);
+        channels.setRecall(Map.of());
         resp.setChannels(channels);
         return resp;
     }
 
-    private void attachStages(RetrievalSearchRespDTO resp, long elapsedMs, long bm25Ms, boolean executed) {
-        List<QueryStageTimingDTO> stages = new ArrayList<>();
-        int seq = 0;
-        stages.add(stage("ANALYZE", ++seq, 0, "SKIPPED", true));
-        stages.add(stage("ROUTE", ++seq, 0, "SUCCEEDED", false));
-        stages.add(stage("SCOPE_FILTER", ++seq, Math.max(0, elapsedMs - bm25Ms), "SUCCEEDED", false));
-        stages.add(stage("BM25", ++seq, bm25Ms, executed ? "SUCCEEDED" : "SKIPPED", !executed));
-        stages.add(stage("EXACT_TEXT_VERIFY", ++seq, Math.max(0, elapsedMs - bm25Ms), executed ? "SUCCEEDED" : "SKIPPED", !executed));
-        stages.add(stage("VECTOR", ++seq, 0, "SKIPPED", true));
-        stages.add(stage("FUSION", ++seq, 0, "SKIPPED", true));
-        stages.add(stage("RERANK", ++seq, 0, "SKIPPED", true));
-        if (resp.getAnalysis() != null) resp.getAnalysis().setStages(stages);
+    private void finish(RetrievalSearchRespDTO resp, List<QueryStageTimingDTO> stages) {
+        addStage(stages, "VECTOR", 0, "SKIPPED", true, null, null);
+        addStage(stages, "FUSION", 0, "SKIPPED", true, null, null);
+        addStage(stages, "RERANK", 0, "SKIPPED", true, null, null);
+        if (resp.getAnalysis() != null) resp.getAnalysis().setStages(List.copyOf(stages));
     }
 
-    private QueryStageTimingDTO stage(String name, int seq, long elapsedMs, String status, boolean skipped) {
+    private void addStage(List<QueryStageTimingDTO> stages, String name, long elapsedMs,
+                          String status, boolean skipped, String input, String output) {
         QueryStageTimingDTO dto = new QueryStageTimingDTO();
         dto.setStage(name);
-        dto.setSeq(seq);
+        dto.setSeq(stages.size() + 1);
         dto.setElapsedMs(elapsedMs);
         dto.setStatus(status);
         dto.setSkipped(skipped);
-        return dto;
+        dto.setInputSummary(input);
+        dto.setOutputSummary(output);
+        stages.add(dto);
+    }
+
+    private String scopeSummary(List<RetrievalScopeDecision> decisions) {
+        if (decisions == null || decisions.isEmpty()) return "[]";
+        return decisions.stream().map(d -> "{plugin=" + d.pluginId() + ",applied=" + d.applied()
+                        + ",blocked=" + d.blocked() + ",degraded=" + d.degraded() + suffix(d.message()) + "}")
+                .collect(java.util.stream.Collectors.joining(",", "[", "]"));
+    }
+
+    private String blockReason(List<RetrievalScopeDecision> decisions) {
+        if (decisions == null || decisions.isEmpty()) return "hard scope resolved to empty set";
+        String reason = null;
+        for (RetrievalScopeDecision decision : decisions) {
+            if (decision != null && decision.blocked()) reason = decision.message();
+        }
+        return StrUtil.blankToDefault(reason, "hard scope resolved to empty set");
+    }
+
+    private String suffix(String message) {
+        return StrUtil.isBlank(message) ? "" : "; message=" + message;
+    }
+
+    private String safeList(List<Long> ids) {
+        return ids == null ? "[]" : ids.toString();
     }
 }
