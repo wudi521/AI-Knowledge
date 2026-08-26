@@ -38,7 +38,11 @@ public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
             2. “相关”不等于“充分”。如果目标要求更强事实，而执行结果只证明较弱事实，必须 INSUFFICIENT。
                例如：某字段存在，只能证明有值；不能证明元素数量、阈值、重复、极值、先后、相似、关系或比较结论。
             3. 如果目标要求数量、去重数量、分组、阈值、极值、排序、派生值或关系，必须看到执行计划/结果确实计算或检验了对应属性；不能从相邻事实推导。
-            4. 对“全部/总共/有没有任何/最早/最多/唯一值数量”等全集结论，若相关结构化结果 completeDataset=false、outputComplete=false、存在 missingValueCount>0 或 source failure，则不得 SATISFIED。
+            4. 对“全部/总共/有没有任何/最早/最晚/最多/最少/最大/最小/排名/TopN”等全集结论，判断的是计算源覆盖，不是最终返回行数：
+               - coverageComplete=true 且 sourceTruncated=false 且 missingValueCount=0，表示计算确实覆盖目标范围；
+               - outputLimited=true、limited=true 或 outputComplete=false 只表示最终展示被 limit，不代表计算源不完整；绝不能仅因此判 INSUFFICIENT；
+               - coverageComplete=false、sourceTruncated=true、missingValueCount>0 或 source failure 才表示全集证明不足。
+               - 兼容旧 observation：若没有 coverageComplete，但 completeDataset=true 且 sourceTruncated 不为 true 且 missingValueCount=0，也应视为源覆盖完整。
             5. authoritativeEmpty=true 只有在该结构化查询与 originalGoal 的目标条件直接一致时，才能证明“没有/为0”。普通语义检索 NO_MATCHES 不能证明全集不存在。
             6. 语义检索证据必须实际包含回答 originalGoal 所需事实；候选相似、关键词相关或命中数量本身不能替代目标事实。
             7. 如果 originalGoal 本身存在会改变答案含义的关键歧义，而且 observations 没有消除歧义，返回 NEED_MORE_INFO，并给出简短 clarificationMessage。
