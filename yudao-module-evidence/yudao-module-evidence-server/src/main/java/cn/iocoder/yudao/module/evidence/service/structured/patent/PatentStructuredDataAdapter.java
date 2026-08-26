@@ -12,12 +12,14 @@ import cn.iocoder.yudao.module.evidence.service.structured.core.MultiValueSuppor
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryPlan;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryResult;
 import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
+import cn.iocoder.yudao.module.knowledge.api.KnowledgeStructuredPageApi;
 import cn.iocoder.yudao.module.knowledge.api.dto.KnowledgeDocumentRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.PatentDocumentLookupReqDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryReqDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRowDTO;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -32,6 +34,8 @@ import java.util.regex.Matcher;
 @Slf4j
 @Component
 public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter, DomainEntityResolver {
+
+    private static final int SOURCE_PAGE_SIZE = 1000;
 
     private static final Set<String> EXECUTABLE_METRICS = Set.of(
             PatentStructuredPack.METRIC_PATENT_COUNT,
@@ -48,9 +52,20 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             PatentStructuredPack.FIELD_PUBLICATION_DATE);
 
     private final KnowledgeApi knowledgeApi;
+    private final KnowledgeStructuredPageApi structuredPageApi;
 
+    /** 正式 Spring 运行路径：分页 API 是完整结构化源的物理访问合同。 */
+    @Autowired
+    public PatentStructuredDataAdapter(KnowledgeApi knowledgeApi,
+                                       KnowledgeStructuredPageApi structuredPageApi) {
+        this.knowledgeApi = knowledgeApi;
+        this.structuredPageApi = structuredPageApi;
+    }
+
+    /** 兼容既有纯 Java 单元测试；测试桩仍可只实现旧 KnowledgeApi。 */
     public PatentStructuredDataAdapter(KnowledgeApi knowledgeApi) {
         this.knowledgeApi = knowledgeApi;
+        this.structuredPageApi = null;
     }
 
     @Override
@@ -97,6 +112,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
 
         StructuredQueryReqDTO req = new StructuredQueryReqDTO();
         req.setKbId(plan.getScope().getCurrentKbId());
+        req.setDomainCode(PatentStructuredPack.DOMAIN_CODE);
         req.setMetricCode(PatentStructuredPack.METRIC_PATENT_COUNT.equals(metricCode)
                 ? PatentStructuredPack.METRIC_DOCUMENT_COUNT : metricCode);
         req.setFieldCode(fieldCode);
@@ -105,28 +121,14 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         req.setResolvedEntityIds(plan.getScope().getResolvedEntityIds());
 
         try {
-            CommonResult<StructuredQueryRespDTO> resp = knowledgeApi.structuredQuery(req);
-            if (resp == null) {
-                return StructuredQueryResult.unsupported("知识库结构化数据访问失败: downstream response is null");
-            }
-            if (!resp.isSuccess()) {
-                return StructuredQueryResult.unsupported("知识库结构化数据访问失败: code=" + resp.getCode()
-                        + "; msg=" + StrUtil.blankToDefault(resp.getMsg(), "unknown"));
-            }
-            if (resp.getData() == null) {
-                return StructuredQueryResult.unsupported("知识库结构化数据访问失败: downstream data is null");
-            }
-            StructuredQueryRespDTO data = resp.getData();
-            List<StructuredQueryRowDTO> sourceRows = data.getRows() == null ? List.of() : data.getRows();
-            List<Long> docIds = sourceRows.stream().map(StructuredQueryRowDTO::getDocumentId)
-                    .filter(java.util.Objects::nonNull).distinct().toList();
-            Map<Long, KnowledgeDocumentRespDTO> documents = docIds.isEmpty()
-                    ? Map.of() : safeDocumentMap(docIds);
+            SourceRead source = readCompleteSource(req);
+            List<StructuredQueryRowDTO> sourceRows = source.rows();
 
             List<StructuredQueryResult.Row> rows = new ArrayList<>();
             boolean metricRequested = StrUtil.isNotBlank(metricCode) && EXECUTABLE_METRICS.contains(metricCode);
             for (StructuredQueryRowDTO r : sourceRows) {
-                KnowledgeDocumentRespDTO doc = documents.get(r.getDocumentId());
+                // 分页 RPC 已经把专利白名单字段全部映射到 DTO；不再为整个结果集追加一次 getDocumentMap 大调用。
+                KnowledgeDocumentRespDTO doc = null;
                 String fieldValue = fieldValueOf(r, doc, fieldCode);
                 String identity = patentIdentity(r);
                 Map<String, String> fields = allFilterableValues(r, doc);
@@ -175,7 +177,7 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
                     .rowCount(rows.size())
                     .conflict(!merge.conflictFields().isEmpty())
                     .conflictFields(merge.conflictFields())
-                    .truncated(data.isTruncated())
+                    .truncated(source.truncated())
                     .build();
         } catch (Exception e) {
             log.warn("[execute][kbId({}) field({}) metric({}) 数据访问失败: {}]",
@@ -183,6 +185,50 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             return StructuredQueryResult.unsupported("知识库结构化数据访问异常: "
                     + e.getClass().getSimpleName() + ": " + StrUtil.blankToDefault(e.getMessage(), "unknown"));
         }
+    }
+
+    /**
+     * 正式路径沿 keyset 游标读到末页；只有末页确认后才返回 truncated=false。
+     * 测试兼容路径保留旧单 RPC 语义，并原样传播其 truncated 标志。
+     */
+    private SourceRead readCompleteSource(StructuredQueryReqDTO req) {
+        if (structuredPageApi == null) {
+            CommonResult<StructuredQueryRespDTO> response = knowledgeApi.structuredQuery(req);
+            StructuredQueryRespDTO data = checkedData(response, "legacy structured query");
+            return new SourceRead(data.getRows() == null ? List.of() : List.copyOf(data.getRows()), data.isTruncated());
+        }
+
+        List<StructuredQueryRowDTO> all = new ArrayList<>();
+        Long cursor = null;
+        while (true) {
+            req.setAfterDocumentId(cursor);
+            req.setRowCap(SOURCE_PAGE_SIZE);
+            CommonResult<StructuredQueryRespDTO> response = structuredPageApi.page(req);
+            StructuredQueryRespDTO data = checkedData(response, "structured page");
+            List<StructuredQueryRowDTO> pageRows = data.getRows() == null ? List.of() : data.getRows();
+            all.addAll(pageRows);
+
+            if (!data.isTruncated()) return new SourceRead(List.copyOf(all), false);
+
+            Long next = data.getNextDocumentId();
+            if (next == null || next <= 0 || (cursor != null && next <= cursor)) {
+                throw new IllegalStateException("structured page cursor did not advance");
+            }
+            if (pageRows.isEmpty()) {
+                throw new IllegalStateException("structured page claims more data but returned no rows");
+            }
+            cursor = next;
+        }
+    }
+
+    private StructuredQueryRespDTO checkedData(CommonResult<StructuredQueryRespDTO> response, String source) {
+        if (response == null) throw new IllegalStateException(source + " downstream response is null");
+        if (!response.isSuccess()) {
+            throw new IllegalStateException(source + " failed: code=" + response.getCode()
+                    + "; msg=" + StrUtil.blankToDefault(response.getMsg(), "unknown"));
+        }
+        if (response.getData() == null) throw new IllegalStateException(source + " downstream data is null");
+        return response.getData();
     }
 
     private void collectFilterFields(FilterExpression expression, Set<String> out) {
@@ -201,16 +247,6 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         }
         return expression.getChildren() != null
                 && expression.getChildren().stream().anyMatch(child -> referencesField(child, fieldCode));
-    }
-
-    private Map<Long, KnowledgeDocumentRespDTO> safeDocumentMap(List<Long> ids) {
-        try {
-            Map<Long, KnowledgeDocumentRespDTO> map = knowledgeApi.getDocumentMap(ids).getCheckedData();
-            return map == null ? Map.of() : map;
-        } catch (Exception e) {
-            log.warn("[safeDocumentMap][专利元数据读取失败, 仅使用基础结构化字段: {}]", e.getMessage());
-            return Map.of();
-        }
     }
 
     private List<String> normalizedProjections(StructuredQueryPlan plan) {
@@ -392,5 +428,6 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
         return new ArrayList<>(resolved);
     }
 
+    private record SourceRead(List<StructuredQueryRowDTO> rows, boolean truncated) { }
     private record MergeResult(List<StructuredQueryResult.Row> rows, Set<String> conflictFields) { }
 }
