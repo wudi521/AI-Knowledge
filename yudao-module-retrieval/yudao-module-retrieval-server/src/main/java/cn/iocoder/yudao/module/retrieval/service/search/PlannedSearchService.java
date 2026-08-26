@@ -75,6 +75,7 @@ public class PlannedSearchService {
         analysis.setIntent("PLANNED_SEARCH");
         analysis.setRoute("PLANNED_PLUGIN_PIPELINE");
         analysis.setSuccess(true);
+        analysis.setDegraded(false);
         resp.setAnalysis(analysis);
         RetrievalSearchRespDTO.RetrievalChannelStatDTO channels = new RetrievalSearchRespDTO.RetrievalChannelStatDTO();
         resp.setChannels(channels);
@@ -109,6 +110,7 @@ public class PlannedSearchService {
                 "documentIds=" + scope.documentIds() + "; blocked=" + scope.blocked()
                         + "; degraded=" + scope.degraded() + "; decisions=" + scopeSummary(scope.decisions())));
         if (scope.blocked()) {
+            analysis.setDegraded(scope.degraded());
             analysis.setSuccess(!scope.degraded());
             analysis.setStages(stages);
             channels.setBm25(0);
@@ -122,6 +124,7 @@ public class PlannedSearchService {
                 req.getQuery(), variants, req.getTenantId(), kbIds,
                 scope.documentIds(), RECALL_TOP_K, domainCode);
         List<RetrievalRecallResult> recallResults = recallPipeline.recall(recallContext);
+        boolean degraded = scope.degraded() || recallResults.stream().anyMatch(RetrievalRecallResult::degraded);
         Map<String, Set<Long>> channelIds = new LinkedHashMap<>();
         Map<String, Integer> channelCounts = new LinkedHashMap<>();
         for (RetrievalRecallResult recall : recallResults) {
@@ -141,6 +144,7 @@ public class PlannedSearchService {
         long fusionStart = System.currentTimeMillis();
         RetrievalFusionResult fusion = fusionPipeline.fuse(
                 new RetrievalFusionContext(domainCode, recallResults, RECALL_TOP_K));
+        degraded |= fusion.degraded();
         List<Map.Entry<Long, Double>> fused = fusion.hits();
         Set<Long> published = resultFilter.filterPublished(fused.stream().map(Map.Entry::getKey).collect(Collectors.toSet()));
         fused = fused.stream().filter(e -> published.contains(e.getKey())).toList();
@@ -159,6 +163,7 @@ public class PlannedSearchService {
 
         RetrievalRerankResult rerank = rerankPipeline.rerank(
                 new RetrievalRerankContext(req.getQuery(), candidateContents, domainCode));
+        degraded |= rerank.degraded();
         List<Map.Entry<Integer, Float>> reranked = rerank.rankings();
 
         int topK = req.getTopK() == null || req.getTopK() <= 0 ? 8 : Math.min(req.getTopK(), RECALL_TOP_K);
@@ -197,6 +202,9 @@ public class PlannedSearchService {
                 "plugin=" + rerank.pluginId() + "; domain=" + domainCode + "; query=" + req.getQuery()
                         + "; candidates=" + candidateIds.size(),
                 "topResults=" + summarize(results) + "; degraded=" + rerank.degraded() + suffix(rerank.message())));
+        analysis.setDegraded(degraded);
+        // 降级但仍拿到可靠候选可继续回答；降级且最终为空时，不能把它冒充正常零命中。
+        analysis.setSuccess(!degraded || !results.isEmpty());
         analysis.setStages(stages);
         return resp;
     }
