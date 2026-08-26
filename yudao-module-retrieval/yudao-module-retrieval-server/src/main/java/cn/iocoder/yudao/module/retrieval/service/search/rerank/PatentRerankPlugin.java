@@ -12,7 +12,10 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * 专利领域 Rerank 插件：复用通用相关性打分，并把专利强标识硬过滤留在领域边界内。
+ * 专利领域 Rerank 插件：复用通用相关性打分，只保留真正属于 Rerank 阶段的内容约束。
+ *
+ * <p>申请号/公布号若已由 Scope 插件权威绑定 documentIds，Rerank 不得再次要求每个 chunk 文本重复出现编号；
+ * 否则会把同一目标文档中的正文片段误删。没有 Scope provenance 的直接调用仍保留原 fail-closed 文本门禁。</p>
  */
 @Component
 public class PatentRerankPlugin implements RetrievalRerankPlugin {
@@ -42,32 +45,36 @@ public class PatentRerankPlugin implements RetrievalRerankPlugin {
         if (hints == null) {
             return new RetrievalRerankResult(pluginId(), base, false, null, 0L);
         }
-        boolean exact = hints.hasExactDocumentIdentifier()
-                || (hints.getClaimNos() != null && !hints.getClaimNos().isEmpty());
-        if (!exact) {
+        boolean hasDocumentIdentifier = hints.hasExactDocumentIdentifier();
+        boolean hasClaimConstraint = hints.getClaimNos() != null && !hints.getClaimNos().isEmpty();
+        if (!hasDocumentIdentifier && !hasClaimConstraint) {
             return new RetrievalRerankResult(pluginId(), base, false, null, 0L);
         }
 
+        // 文档标识已经在 Scope 阶段绑定时，不再用 chunk 文本重复验证文档身份。
+        boolean requireDocumentIdentifierInChunk = hasDocumentIdentifier && !context.hardScoped();
         List<Map.Entry<Integer, Float>> filtered = new ArrayList<>();
         for (Map.Entry<Integer, Float> ranked : base) {
             int index = ranked.getKey();
             if (index < 0 || index >= context.candidateContents().size()) continue;
             String content = StrUtil.nullToEmpty(context.candidateContents().get(index));
-            if (StrUtil.isNotBlank(hints.getApplicationNo()) && !content.contains(hints.getApplicationNo())) continue;
-            if (StrUtil.isNotBlank(hints.getPublicationNo())
+            if (requireDocumentIdentifierInChunk
+                    && StrUtil.isNotBlank(hints.getApplicationNo())
+                    && !content.contains(hints.getApplicationNo())) continue;
+            if (requireDocumentIdentifierInChunk
+                    && StrUtil.isNotBlank(hints.getPublicationNo())
                     && !normalizePublication(content).contains(normalizePublication(hints.getPublicationNo()))) continue;
-            if (hints.getClaimNos() != null && !hints.getClaimNos().isEmpty()
-                    && hints.getClaimNos().stream().noneMatch(no -> matchesClaim(content, no))) continue;
+            if (hasClaimConstraint && hints.getClaimNos().stream().noneMatch(no -> matchesClaim(content, no))) continue;
 
             float score = ranked.getValue() == null ? 0F : ranked.getValue();
-            if (hints.hasExactDocumentIdentifier()) score += 2F;
-            if (hints.getClaimNos() != null && !hints.getClaimNos().isEmpty()) score += 2F;
+            if (hasDocumentIdentifier) score += 2F;
+            if (hasClaimConstraint) score += 2F;
             filtered.add(Map.entry(index, score));
         }
         filtered.sort(Map.Entry.<Integer, Float>comparingByValue().reversed()
                 .thenComparing(Map.Entry.comparingByKey()));
         return new RetrievalRerankResult(pluginId(), filtered, false,
-                filtered.isEmpty() ? "patent exact identifier gate removed all candidates" : null, 0L);
+                filtered.isEmpty() ? "patent rerank constraints removed all candidates" : null, 0L);
     }
 
     private boolean matchesClaim(String content, Integer claimNo) {
