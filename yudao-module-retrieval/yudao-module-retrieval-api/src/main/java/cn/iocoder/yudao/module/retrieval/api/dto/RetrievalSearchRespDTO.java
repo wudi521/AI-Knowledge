@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.retrieval.api.dto;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 /** 检索 RPC 响应 DTO */
 @Data
@@ -46,8 +47,12 @@ public class RetrievalSearchRespDTO {
 
     @Data
     public static class RetrievalChannelStatDTO {
+        /** 兼容旧前端/指标。 */
         private Integer bm25;
+        /** 兼容旧前端/指标。 */
         private Integer vector;
         private Integer fused;
+        /** 通用 Recall 插件统计：channel -> 去重命中数。 */
+        private Map<String, Integer> recall;
     }
 }
