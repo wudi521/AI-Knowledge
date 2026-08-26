@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.evidence.service.structured.patent;
 
+import cn.iocoder.yudao.module.evidence.service.structured.core.DataGrain;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainEntityRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainFieldRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainMetricRegistry;
@@ -65,7 +66,7 @@ public class PatentStructuredPack {
 
         metricRegistry.register(MetricDefinition.builder()
                 .metricCode(METRIC_PATENT_COUNT).domainCode(DOMAIN_CODE)
-                .entityType(ENTITY_PATENT_DOCUMENT).valueType("INTEGER")
+                .entityType(ENTITY_PATENT_DOCUMENT).dataGrain(DataGrain.LOGICAL_ENTITY).valueType("INTEGER")
                 .supportedOperations(Set.of(Operation.COUNT)).supportedGroupBy(List.of(ENTITY_PATENT_DOCUMENT))
                 .aliases(List.of("专利数量", "专利个数", "专利数", "专利总数", "多少个专利", "几个专利", "多少件专利"))
                 .displayName("专利").unit("件")
@@ -73,31 +74,31 @@ public class PatentStructuredPack {
                 .adapterKey(ADAPTER_KEY).build());
         metricRegistry.register(MetricDefinition.builder()
                 .metricCode(METRIC_DOCUMENT_COUNT).domainCode(DOMAIN_CODE)
-                .entityType(ENTITY_PATENT_DOCUMENT).valueType("INTEGER")
+                .entityType(ENTITY_PATENT_DOCUMENT).dataGrain(DataGrain.SOURCE_RECORD).valueType("INTEGER")
                 .supportedOperations(Set.of(Operation.COUNT)).supportedGroupBy(List.of(ENTITY_PATENT_DOCUMENT))
                 .aliases(List.of("专利文献数量", "专利文档数量", "文档数量", "文档数", "文件数量", "文件数"))
-                .displayName("专利文档").unit("份").description("已发布物理知识文档记录数；重复导入分别计数")
+                .displayName("专利文档").unit("份").description("已发布物理知识文档记录数；每个知识库文档记录独立计数，不做逻辑专利去重")
                 .adapterKey(ADAPTER_KEY).build());
         metricRegistry.register(MetricDefinition.builder()
                 .metricCode(METRIC_CLAIM_COUNT).domainCode(DOMAIN_CODE)
-                .entityType(ENTITY_PATENT_DOCUMENT).valueType("INTEGER")
+                .entityType(ENTITY_PATENT_DOCUMENT).dataGrain(DataGrain.LOGICAL_ENTITY).valueType("INTEGER")
                 .supportedOperations(Set.of(Operation.SUM, Operation.AVG, Operation.MIN, Operation.MAX))
                 .supportedGroupBy(List.of(ENTITY_PATENT_DOCUMENT))
                 .aliases(List.of("权利要求数量", "权项数量", "权项数", "专利要求数量", "专利要求", "权利要求"))
-                .displayName("权利要求").unit("项").description("单件专利的权利要求数")
+                .displayName("权利要求").unit("项").description("单件逻辑专利的权利要求数")
                 .adapterKey(ADAPTER_KEY).build());
 
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_PUBLICATION_NO).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
                 .valueType("STRING").aliases(List.of("公布号", "公开编号", "公开号"))
-                .allowedOperators(Set.of(EQ, IN)).exactIdentifier(true)
+                .allowedOperators(Set.of(EQ, IN, EXISTS)).exactIdentifier(true)
                 .identifierPatterns(PatentIdentifierSupport.publicationPatterns())
                 .sortable(true).filterable(true).groupable(true)
                 .allowedTransforms(Set.of(StructuredValueTransform.LENGTH)).build());
         fieldRegistry.register(FieldDefinition.builder()
                 .fieldCode(FIELD_APPLICATION_NO).domainCode(DOMAIN_CODE).entityType(ENTITY_PATENT_DOCUMENT)
                 .valueType("STRING").aliases(List.of("申请号", "申请编号", "专利号"))
-                .allowedOperators(Set.of(EQ, IN)).exactIdentifier(true)
+                .allowedOperators(Set.of(EQ, IN, EXISTS)).exactIdentifier(true)
                 .identifierPatterns(PatentIdentifierSupport.applicationPatterns())
                 .sortable(true).filterable(true).groupable(true)
                 .allowedTransforms(Set.of(StructuredValueTransform.LENGTH)).build());
