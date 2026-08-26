@@ -25,7 +25,7 @@ class ExactTextSearchCapabilityTest {
                 .content("这里逐字包含磁涌技术").score(1D).products(List.of()).channels(List.of("bm25"))
                 .build();
         when(retriever.exactText("磁涌", List.of(6L), List.of(74L), 20,
-                1L, 2L, "ag-exact")).thenReturn(new PlannedEvidenceRetriever.Result(
+                1L, 2L, "PATENT", "ag-exact")).thenReturn(new PlannedEvidenceRetriever.Result(
                 List.of(evidence), null, null, 1L, true));
 
         DomainEvidenceEntityMapper mapper = new DomainEvidenceEntityMapper() {
@@ -50,7 +50,7 @@ class ExactTextSearchCapabilityTest {
         assertTrue(output.verifiedEntityIds().isEmpty(), "原文命中不是新的 trusted entity 来源");
         assertEquals(true, result.metadata().get("candidateEntityMapped"));
         verify(retriever).exactText("磁涌", List.of(6L), List.of(74L), 20,
-                1L, 2L, "ag-exact");
+                1L, 2L, "PATENT", "ag-exact");
     }
 
     @Test
@@ -58,7 +58,7 @@ class ExactTextSearchCapabilityTest {
         PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
         Evidence evidence = Evidence.builder().chunkId(102L).documentId("74").content("逐字命中").build();
         when(retriever.exactText("x", List.of(6L), null, 20,
-                1L, 2L, "ag-exact-no-map")).thenReturn(new PlannedEvidenceRetriever.Result(
+                1L, 2L, "CONTRACT", "ag-exact-no-map")).thenReturn(new PlannedEvidenceRetriever.Result(
                 List.of(evidence), null, null, 1L, true));
 
         ExactTextSearchCapability capability = new ExactTextSearchCapability(retriever);
