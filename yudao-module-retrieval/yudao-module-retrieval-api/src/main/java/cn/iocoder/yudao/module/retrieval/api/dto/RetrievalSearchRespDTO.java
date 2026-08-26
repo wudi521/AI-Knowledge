@@ -36,7 +36,10 @@ public class RetrievalSearchRespDTO {
         private List<String> entities;
         private List<String> rewrites;
         private List<String> subQuestions;
+        /** 核心检索流程是否完成；false 表示不能把空结果解释成正常零命中。 */
         private Boolean success;
+        /** 任一 Scope/Recall/Fusion/Rerank 插件发生能力降级。可有结果，但证明强度下降。 */
+        private Boolean degraded;
         private String route;
         private List<QueryStageTimingDTO> stages;
     }
