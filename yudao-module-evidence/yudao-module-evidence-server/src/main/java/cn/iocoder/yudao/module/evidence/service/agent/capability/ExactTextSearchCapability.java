@@ -69,6 +69,7 @@ public class ExactTextSearchCapability implements KnowledgeCapability {
         List<Long> candidateEntityIds = entityMapperRegistry.candidateEntityIds(context.domainCode(), evidences);
         boolean exactTotal = Boolean.TRUE.equals(result.totalHitsExact());
         boolean authoritativeEmpty = exactTotal && result.totalHits() != null && result.totalHits() == 0L;
+        boolean scopeBlocked = result.blocked();
         Output output = new Output(evidences, candidateEntityIds, result.totalHits(), result.totalHitsExact(), summary(evidences));
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("evidenceCount", evidences.size());
@@ -79,6 +80,10 @@ public class ExactTextSearchCapability implements KnowledgeCapability {
         metadata.put("totalHitsExact", exactTotal);
         metadata.put("candidateTotalHits", result.candidateTotalHits() == null ? -1L : result.candidateTotalHits());
         metadata.put("retrievalOutcome", result.status().name());
+        metadata.put("scopeBlocked", scopeBlocked);
+        if (scopeBlocked && StrUtil.isNotBlank(result.errorMessage())) {
+            metadata.put("blockReason", result.errorMessage());
+        }
         metadata.put("completeDataset", exactTotal);
         metadata.put("authoritativeEmpty", authoritativeEmpty);
         metadata.put("outputComplete", true);
