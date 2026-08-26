@@ -14,14 +14,11 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * 重排: BGE 优先 → LLM 兜底 → 原序。
+ * 通用重排器：BGE 优先 -> LLM 兜底 -> 原序。
  *
- * 专利强标识查询采用 fail-closed 硬过滤：用户明确给出申请号/公布号/权利要求号时，
- * 不允许其它专利或其它 claim 仅凭语义相似度进入最终结果。
+ * <p>本类不包含任何专利/合同/法规等领域规则。领域精确标识门禁由对应 RetrievalRerankPlugin 负责。</p>
  */
 @Slf4j
 @Service
@@ -33,9 +30,6 @@ public class Reranker {
             """;
 
     private static final int CANDIDATE_MAX_LEN = 256;
-    private static final Pattern APPLICATION_NO = Pattern.compile("(?<!\\d)(20\\d{10}\\.\\d)(?!\\d)");
-    private static final Pattern PUBLICATION_NO = Pattern.compile("(?i)\\bCN\\s*\\d{8,12}\\s*[A-Z]\\b");
-    private static final Pattern CLAIM_NO = Pattern.compile("权利要求\\s*(\\d+)");
 
     @Resource private ModelApi modelApi;
     @Resource private PromptSupport promptSupport;
@@ -76,52 +70,15 @@ public class Reranker {
             baseScores = new ArrayList<>();
             for (int i = 0; i < contents.size(); i++) baseScores.add(0F);
         }
-        return sortWithPatentHardFilter(query, contents, baseScores);
-    }
 
-    private List<Map.Entry<Integer, Float>> sortWithPatentHardFilter(String query, List<String> contents, List<Float> scores) {
-        String applicationNo = first(APPLICATION_NO, query);
-        String publicationNo = first(PUBLICATION_NO, query);
-        String claimNo = first(CLAIM_NO, query);
-        boolean exactPatentQuery = StrUtil.isNotBlank(applicationNo) || StrUtil.isNotBlank(publicationNo) || StrUtil.isNotBlank(claimNo);
-
-        List<Map.Entry<Integer, Float>> result = new ArrayList<>();
-        for (int i = 0; i < scores.size(); i++) {
-            String content = StrUtil.nullToEmpty(contents.get(i));
-            if (StrUtil.isNotBlank(applicationNo) && !content.contains(applicationNo)) continue;
-            if (StrUtil.isNotBlank(publicationNo)) {
-                String normalizedContent = normalizePublication(content);
-                if (!normalizedContent.contains(normalizePublication(publicationNo))) continue;
-            }
-            if (StrUtil.isNotBlank(claimNo) && !matchesClaim(content, claimNo)) continue;
-
-            float score = scores.get(i) == null ? 0F : scores.get(i);
-            if (StrUtil.isNotBlank(applicationNo) || StrUtil.isNotBlank(publicationNo)) score += 2F;
-            if (StrUtil.isNotBlank(claimNo)) score += 2F;
-            result.add(Map.entry(i, score));
+        List<Map.Entry<Integer, Float>> result = new ArrayList<>(baseScores.size());
+        for (int i = 0; i < baseScores.size(); i++) {
+            Float score = baseScores.get(i);
+            result.add(Map.entry(i, score == null ? 0F : score));
         }
-
-        if (exactPatentQuery && result.isEmpty()) {
-            log.warn("[rerank][专利精确标识硬过滤后无候选: applicationNo={}, publicationNo={}, claimNo={}]",
-                    applicationNo, publicationNo, claimNo);
-            return List.of();
-        }
-        result.sort(Map.Entry.<Integer, Float>comparingByValue().reversed());
+        result.sort(Map.Entry.<Integer, Float>comparingByValue().reversed()
+                .thenComparing(Map.Entry.comparingByKey()));
         return result;
-    }
-
-    private boolean matchesClaim(String content, String claimNo) {
-        return Pattern.compile("(?s).*\\[权利要求]\\s*" + Pattern.quote(claimNo) + "(?:\\D.*|$)").matcher(content).matches();
-    }
-
-    private String normalizePublication(String value) {
-        return StrUtil.nullToEmpty(value).replaceAll("\\s+", "").toUpperCase();
-    }
-
-    private String first(Pattern pattern, String text) {
-        if (text == null) return null;
-        Matcher matcher = pattern.matcher(text);
-        return matcher.find() ? matcher.group(matcher.groupCount() >= 1 ? 1 : 0).trim() : null;
     }
 
     private List<Float> parseScoreArray(String resp, int size) {
