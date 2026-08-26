@@ -27,8 +27,16 @@ public record CapabilityResult(CapabilityResultStatus status,
         // authoritativeEmpty 只表示“这个 Tool 在其声明范围内权威为空”，不等于 OriginalGoal 已证明不存在。
         if (status == CapabilityResultStatus.SUCCESS) {
             boolean authoritativeEmpty = Boolean.TRUE.equals(safeMetadata.get("authoritativeEmpty"));
-            boolean explicitPartial = Boolean.FALSE.equals(safeMetadata.get("outputComplete"))
-                    || Boolean.TRUE.equals(safeMetadata.get("partial"));
+            boolean outputLimited = Boolean.TRUE.equals(safeMetadata.get("outputLimited"))
+                    || Boolean.TRUE.equals(safeMetadata.get("limited"));
+            if (!safeMetadata.containsKey("outputLimited") && safeMetadata.containsKey("limited")) {
+                safeMetadata.put("outputLimited", outputLimited);
+            }
+            // final limit 只描述“最终返回多少行”，不代表计算源/证明范围不完整。
+            // 真正的 PARTIAL 必须来自显式 partial、source truncation，或非 limit 导致的 incomplete output。
+            boolean explicitPartial = Boolean.TRUE.equals(safeMetadata.get("partial"))
+                    || Boolean.TRUE.equals(safeMetadata.get("sourceTruncated"))
+                    || (Boolean.FALSE.equals(safeMetadata.get("outputComplete")) && !outputLimited);
             boolean retrievalNoMatches = "NO_MATCHES".equalsIgnoreCase(String.valueOf(safeMetadata.get("retrievalOutcome")))
                     || "EMPTY".equalsIgnoreCase(String.valueOf(safeMetadata.get("resultStatus")));
             if (authoritativeEmpty || retrievalNoMatches) {
