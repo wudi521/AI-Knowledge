@@ -4,6 +4,7 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.retrieval.api.RetrievalApi;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalResultDTO;
+import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchMode;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
 import lombok.extern.slf4j.Slf4j;
@@ -46,7 +47,7 @@ public class PlannedEvidenceRetriever {
         req.setUserId(userId);
         req.setDomainCode(domainCode);
         req.setTraceId(traceId);
-        req.setSearchMode("PLANNED_HYBRID");
+        req.setSearchMode(RetrievalSearchMode.PLANNED_HYBRID.code());
         return execute(req);
     }
 
@@ -69,7 +70,7 @@ public class PlannedEvidenceRetriever {
         req.setUserId(userId);
         req.setDomainCode(domainCode);
         req.setTraceId(traceId);
-        req.setSearchMode("EXACT_TEXT_SEARCH");
+        req.setSearchMode(RetrievalSearchMode.EXACT_TEXT_SEARCH.code());
         return execute(req);
     }
 
