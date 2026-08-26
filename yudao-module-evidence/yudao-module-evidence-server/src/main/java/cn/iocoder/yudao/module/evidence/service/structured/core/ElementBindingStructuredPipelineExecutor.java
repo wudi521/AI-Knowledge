@@ -5,7 +5,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -26,7 +25,6 @@ import java.util.Map;
 @Component
 public class ElementBindingStructuredPipelineExecutor extends StructuredPipelineExecutor {
 
-    private final DomainFieldRegistry fieldRegistry;
     private final StructuredValueEvaluator values;
 
     public ElementBindingStructuredPipelineExecutor(DomainFieldRegistry fieldRegistry,
@@ -34,7 +32,6 @@ public class ElementBindingStructuredPipelineExecutor extends StructuredPipeline
                                                     List<DomainStructuredDataAdapter> adapters,
                                                     StructuredValueEvaluator values) {
         super(fieldRegistry, metricRegistry, adapters, values);
-        this.fieldRegistry = fieldRegistry;
         this.values = values;
     }
 
@@ -228,10 +225,7 @@ public class ElementBindingStructuredPipelineExecutor extends StructuredPipeline
         Map<String, List<StructuredValueExpression>> out = new LinkedHashMap<>();
         if (select == null) return out;
         for (StructuredValueExpression expression : select) {
-            if (expression == null || !expression.explode()) continue;
-            FieldDefinition field = fieldRegistry.byCode(null, expression.fieldCode()).orElse(null);
-            // 某些 registry 要求 domainCode；这里只按 plan 已验证后的 expression 分组，field lookup 仅是防御性检查。
-            if (field == null && expression.fieldCode() == null) continue;
+            if (expression == null || !expression.explode() || expression.fieldCode() == null) continue;
             out.computeIfAbsent(expression.fieldCode(), ignored -> new ArrayList<>()).add(expression);
         }
         return out;
