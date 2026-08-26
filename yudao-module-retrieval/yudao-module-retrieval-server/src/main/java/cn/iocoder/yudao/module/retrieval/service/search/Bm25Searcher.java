@@ -33,7 +33,23 @@ public class Bm25Searcher {
 
     /** 带 ES 真实总命中数的检索结果，避免将 TopK 返回条数误当全集数量。 */
     public record SearchHits(List<Map.Entry<Long, Double>> hits, long totalHits) {
+        public SearchHits {
+            hits = hits == null ? List.of() : List.copyOf(hits);
+        }
         public static SearchHits empty() { return new SearchHits(List.of(), 0L); }
+    }
+
+    /** 插件执行使用的结果；显式区分“正常零命中”和“ES 执行失败”。 */
+    public record SearchExecution(List<Map.Entry<Long, Double>> hits, boolean failed, String errorMessage) {
+        public SearchExecution {
+            hits = hits == null ? List.of() : List.copyOf(hits);
+        }
+        public static SearchExecution success(List<Map.Entry<Long, Double>> hits) {
+            return new SearchExecution(hits, false, null);
+        }
+        public static SearchExecution failure(String message) {
+            return new SearchExecution(List.of(), true, message);
+        }
     }
 
     @PostConstruct
@@ -71,9 +87,15 @@ public class Bm25Searcher {
         return search(query, tenantId, kbIds, topK, null);
     }
 
+    /** 旧调用保持 List 语义；新 Recall 插件应使用 searchWithStatus 区分基础设施失败。 */
     public List<Map.Entry<Long, Double>> search(String query, Long tenantId, List<Long> kbIds, int topK,
                                                 List<Long> documentIds) {
-        if (client == null) return List.of();
+        return searchWithStatus(query, tenantId, kbIds, topK, documentIds).hits();
+    }
+
+    public SearchExecution searchWithStatus(String query, Long tenantId, List<Long> kbIds, int topK,
+                                            List<Long> documentIds) {
+        if (client == null) return SearchExecution.failure("Elasticsearch client is not initialized");
         try {
             List<Map<String, Object>> filter = baseFilters(tenantId, kbIds);
             if (documentIds != null && !documentIds.isEmpty()) {
@@ -82,10 +104,11 @@ public class Bm25Searcher {
             Map<String, Object> bool = new HashMap<>();
             bool.put("must", List.of(Map.of("match", Map.of("content", Map.of("query", query, "analyzer", "ik_smart")))));
             bool.put("filter", filter);
-            return execute(Map.of("query", Map.of("bool", bool), "size", topK, "track_scores", true)).hits();
+            return SearchExecution.success(execute(Map.of(
+                    "query", Map.of("bool", bool), "size", topK, "track_scores", true)).hits());
         } catch (Exception e) {
             log.error("[bm25][检索失败, query={}]", query, e);
-            return List.of();
+            return SearchExecution.failure(e.getClass().getSimpleName() + ": " + safeMessage(e.getMessage()));
         }
     }
 
@@ -185,5 +208,10 @@ public class Bm25Searcher {
             if (value instanceof Number number) return number.longValue();
         }
         return fallback;
+    }
+
+    private String safeMessage(String message) {
+        if (message == null) return "";
+        return message.length() <= 300 ? message : message.substring(0, 300);
     }
 }
