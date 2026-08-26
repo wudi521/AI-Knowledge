@@ -36,6 +36,9 @@ import java.util.stream.Collectors;
  * <p>调用方已经完成自然语言规划，本服务禁止再次调用 QueryAnalysis/意图路由。
  * 核心只编排强类型扩展阶段：Domain Resolution -> Scope[] -> Recall[] -> Fusion -> Rerank。
  * 每个阶段按 domainCode 选择插件；领域规则不允许重新渗入本类。</p>
+ *
+ * <p>一次执行只绑定一个 domainCode。多领域 KB scope 必须由上游先按领域分区，
+ * 禁止把 PATENT/CONTRACT 等专业规则降成 GENERAL 后继续检索。</p>
  */
 @Service
 public class PlannedSearchService {
@@ -123,6 +126,18 @@ public class PlannedSearchService {
             resp.setResults(List.of());
             return resp;
         }
+        if (domainResolution.mixedDomainScope()) {
+            analysis.setBlocked(true);
+            analysis.setBlockReason("mixed-domain knowledge scope must be partitioned by domain before retrieval");
+            analysis.setSuccess(true);
+            analysis.setDegraded(false);
+            analysis.setStages(stages);
+            channels.setBm25(0);
+            channels.setVector(0);
+            channels.setFused(0);
+            resp.setResults(List.of());
+            return resp;
+        }
         String domainCode = domainResolution.domainCode();
 
         long scopeStart = System.currentTimeMillis();
@@ -134,7 +149,7 @@ public class PlannedSearchService {
                 "documentIds=" + scope.documentIds() + "; blocked=" + scope.blocked()
                         + "; degraded=" + scope.degraded() + "; decisions=" + scopeSummary(scope.decisions())));
         if (scope.blocked()) {
-            boolean degraded = domainResolution.mixedDomainScope() || scope.degraded();
+            boolean degraded = scope.degraded();
             analysis.setBlocked(true);
             analysis.setBlockReason(blockReason(scope.decisions()));
             analysis.setDegraded(degraded);
@@ -151,8 +166,7 @@ public class PlannedSearchService {
                 req.getQuery(), variants, req.getTenantId(), kbIds,
                 scope.documentIds(), RECALL_TOP_K, domainCode);
         List<RetrievalRecallResult> recallResults = recallPipeline.recall(recallContext);
-        boolean degraded = domainResolution.mixedDomainScope() || scope.degraded()
-                || recallResults.stream().anyMatch(RetrievalRecallResult::degraded);
+        boolean degraded = scope.degraded() || recallResults.stream().anyMatch(RetrievalRecallResult::degraded);
         Map<String, Set<Long>> channelIds = new LinkedHashMap<>();
         Map<String, Integer> channelCounts = new LinkedHashMap<>();
         for (RetrievalRecallResult recall : recallResults) {
