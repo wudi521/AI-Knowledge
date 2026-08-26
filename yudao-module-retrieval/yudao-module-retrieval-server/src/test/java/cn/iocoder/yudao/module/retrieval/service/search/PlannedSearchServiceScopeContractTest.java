@@ -42,12 +42,7 @@ class PlannedSearchServiceScopeContractTest {
 
         PlannedSearchService service = new PlannedSearchService(
                 scopePipeline, recallPipeline, fusionPipeline, rerankPipeline, domainResolver, resultFilter);
-        RetrievalSearchReqDTO req = new RetrievalSearchReqDTO();
-        req.setQuery("q");
-        req.setUserId(2L);
-        req.setTenantId(1L);
-        req.setKbIds(List.of(6L));
-        req.setDomainCode("PATENT");
+        RetrievalSearchReqDTO req = request(List.of(6L), "PATENT");
 
         RetrievalSearchRespDTO resp = service.search(req);
 
@@ -57,5 +52,42 @@ class PlannedSearchServiceScopeContractTest {
         assertTrue(Boolean.TRUE.equals(resp.getAnalysis().getSuccess()));
         assertTrue(resp.getResults().isEmpty());
         verifyNoInteractions(recallPipeline, fusionPipeline, rerankPipeline);
+    }
+
+    @Test
+    void mixedDomainScopeMustBePartitionedBeforeAnyDomainPluginRuns() {
+        RetrievalScopePipeline scopePipeline = mock(RetrievalScopePipeline.class);
+        RetrievalRecallPipeline recallPipeline = mock(RetrievalRecallPipeline.class);
+        RetrievalFusionPipeline fusionPipeline = mock(RetrievalFusionPipeline.class);
+        RetrievalRerankPipeline rerankPipeline = mock(RetrievalRerankPipeline.class);
+        RetrievalDomainResolver domainResolver = mock(RetrievalDomainResolver.class);
+        ResultFilter resultFilter = mock(ResultFilter.class);
+
+        when(resultFilter.getVisibleKbIds(2L)).thenReturn(Set.of(6L, 7L));
+        when(domainResolver.resolveWithStatus(null, List.of(6L, 7L)))
+                .thenReturn(RetrievalDomainResolver.Resolution.success("GENERAL", true));
+
+        PlannedSearchService service = new PlannedSearchService(
+                scopePipeline, recallPipeline, fusionPipeline, rerankPipeline, domainResolver, resultFilter);
+        RetrievalSearchReqDTO req = request(List.of(6L, 7L), null);
+
+        RetrievalSearchRespDTO resp = service.search(req);
+
+        assertTrue(Boolean.TRUE.equals(resp.getAnalysis().getBlocked()));
+        assertEquals("mixed-domain knowledge scope must be partitioned by domain before retrieval",
+                resp.getAnalysis().getBlockReason());
+        assertFalse(Boolean.TRUE.equals(resp.getAnalysis().getDegraded()));
+        assertTrue(Boolean.TRUE.equals(resp.getAnalysis().getSuccess()));
+        verifyNoInteractions(scopePipeline, recallPipeline, fusionPipeline, rerankPipeline);
+    }
+
+    private RetrievalSearchReqDTO request(List<Long> kbIds, String domainCode) {
+        RetrievalSearchReqDTO req = new RetrievalSearchReqDTO();
+        req.setQuery("q");
+        req.setUserId(2L);
+        req.setTenantId(1L);
+        req.setKbIds(kbIds);
+        req.setDomainCode(domainCode);
+        return req;
     }
 }
