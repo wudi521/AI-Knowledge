@@ -39,37 +39,52 @@ public class CapabilityRegistry {
         for (KnowledgeCapability capability : capabilities.values()) {
             CapabilityDefinition plannerDefinition = capability.plannerDefinition(context);
             if (plannerDefinition != null && isVisible(plannerDefinition, context)) {
-                out.add(withExpressionBindingGuidance(plannerDefinition));
+                out.add(withPlannerGuidance(plannerDefinition));
             }
         }
         return Collections.unmodifiableList(out);
     }
 
     /**
-     * 对同时暴露 select + filter 的类型化数据能力补充统一 Planner 契约。
+     * 在 Tool Contract 边界补充领域无关的关系代数/结果形态规则。
      *
-     * <p>这不是领域 intent 规则，而是 relational pipeline 的通用语义：如果用户筛选的是字段派生值，
-     * transform 必须出现在 filter value expression 上；如果用户要返回 multi-value 中真正命中的元素，
-     * filter/select 必须基于同一 explode source，由执行层做 element binding。这样 Planner 不会把
-     * “派生值等于 X”降级成“原始字符串 CONTAINS X”。</p>
+     * <p>这里不识别“姓氏/重复文档”等用户意图，只声明四类稳定语义：
+     * transform-before-filter、multi-value element binding、metric data grain、result shape。</p>
      */
-    private CapabilityDefinition withExpressionBindingGuidance(CapabilityDefinition definition) {
+    private CapabilityDefinition withPlannerGuidance(CapabilityDefinition definition) {
         Map<String, String> schema = definition.argumentSchema();
-        if (schema == null || !schema.containsKey("filter") || !schema.containsKey("select")) return definition;
+        Map<String, String> enriched = schema == null ? new LinkedHashMap<>() : new LinkedHashMap<>(schema);
+        StringBuilder description = new StringBuilder(definition.description());
 
-        Map<String, String> enriched = new LinkedHashMap<>(schema);
-        enriched.computeIfPresent("filter", (key, value) -> value
-                + " 派生值条件必须把 transforms/explode 写在 filter 的 value expression 自身，operator 比较变换后的值；"
-                + "不要只在 select 中变换后再对原字段使用 CONTAINS/STARTS_WITH 近似替代。"
-                + " 对 multi-value 的元素级条件，应使用 explode=true。" );
-        enriched.computeIfPresent("select", (key, value) -> value
-                + " 当目标是返回 multi-value 中真正命中的元素时，select 与 filter 应基于同一 field 且 explode=true；"
-                + "select 可返回原始元素，filter 可在同一源元素上使用 transforms，Runtime 会做 element binding，"
-                + "不会把同一实体中的其它未命中元素带入结果。" );
+        if (enriched.containsKey("filter") && enriched.containsKey("select")) {
+            enriched.computeIfPresent("filter", (key, value) -> value
+                    + " 派生值条件必须把 transforms/explode 写在 filter 的 value expression 自身，operator 比较变换后的值；"
+                    + "不要只在 select 中变换后再对原字段使用 CONTAINS/STARTS_WITH 近似替代。"
+                    + " 对 multi-value 的元素级条件，应使用 explode=true。" );
+            enriched.computeIfPresent("select", (key, value) -> value
+                    + " 当目标是返回 multi-value 中真正命中的元素时，select 与 filter 应基于同一 field 且 explode=true；"
+                    + "select 可返回原始元素，filter 可在同一源元素上使用 transforms，Runtime 会做 element binding，"
+                    + "不会把同一实体中的其它未命中元素带入结果。" );
+            description.append(" 对派生值过滤执行 transform-before-filter；对同一 explode 多值源执行 element-bound filter/projection。");
+        }
 
-        String description = definition.description()
-                + " 对派生值过滤执行 transform-before-filter；对同一 explode 多值源执行 element-bound filter/projection。";
-        return new CapabilityDefinition(definition.name(), definition.version(), description,
+        if (enriched.containsKey("aggregate")) {
+            enriched.computeIfPresent("aggregate", (key, value) -> value
+                    + " Metric 的 description 会声明 dataGrain=LOGICAL_ENTITY 或 SOURCE_RECORD；"
+                    + "使用 metric 聚合/分组时必须选择与目标事实相同的数据粒度。"
+                    + "COUNT 不带 metric 只统计当前逻辑实体行，不能用它代替物理记录计数。" );
+            description.append(" 聚合必须遵守 Metric 声明的数据粒度，禁止把 SOURCE_RECORD 与 LOGICAL_ENTITY 当成同一集合。");
+        }
+
+        description.append(" outputType=").append(definition.outputType()).append("。");
+        if ("CANDIDATE_ENTITY_ID_SET".equals(definition.outputType())) {
+            description.append(" 该能力只接受/产生实体 ID 集合，禁止用于标量数字比较。");
+        }
+        if ("BOOLEAN_SCALAR".equals(definition.outputType())) {
+            description.append(" 该能力产生确定性布尔标量，不产生实体集合。");
+        }
+
+        return new CapabilityDefinition(definition.name(), definition.version(), description.toString(),
                 enriched, definition.requiredArguments(), definition.outputType(), definition.readOnly(),
                 definition.requiredPermissions(), definition.supportedDomains(), definition.requiredKbCapabilities(),
                 definition.timeoutMs(), definition.maxRows());
