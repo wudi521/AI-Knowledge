@@ -39,7 +39,7 @@ public class Bm25Searcher {
         public static SearchHits empty() { return new SearchHits(List.of(), 0L); }
     }
 
-    /** 插件执行使用的结果；显式区分“正常零命中”和“ES 执行失败”。 */
+    /** 插件执行使用的普通 BM25 结果；显式区分“正常零命中”和“ES 执行失败”。 */
     public record SearchExecution(List<Map.Entry<Long, Double>> hits, boolean failed, String errorMessage) {
         public SearchExecution {
             hits = hits == null ? List.of() : List.copyOf(hits);
@@ -49,6 +49,19 @@ public class Bm25Searcher {
         }
         public static SearchExecution failure(String message) {
             return new SearchExecution(List.of(), true, message);
+        }
+    }
+
+    /** 精确短语执行结果；保留 totalHits，同时显式区分 ES 故障与权威零命中。 */
+    public record ExactSearchExecution(SearchHits searchHits, boolean failed, String errorMessage) {
+        public ExactSearchExecution {
+            searchHits = searchHits == null ? SearchHits.empty() : searchHits;
+        }
+        public static ExactSearchExecution success(SearchHits hits) {
+            return new ExactSearchExecution(hits, false, null);
+        }
+        public static ExactSearchExecution failure(String message) {
+            return new ExactSearchExecution(SearchHits.empty(), true, message);
         }
     }
 
@@ -119,12 +132,21 @@ public class Bm25Searcher {
     }
 
     /**
-     * EXACT_TEXT_SEARCH：只使用 ES match_phrase，并返回真实 totalHits。
-     * track_total_hits=true，禁止用 hits.size() 推断全集数量。
+     * 兼容旧调用：返回 SearchHits；ES 失败仍退化为空。新的 ExactText 主链必须使用
+     * {@link #searchExactPhraseWithStatus(String, Long, List, int, List)} 保留失败语义。
      */
     public SearchHits searchExactPhraseWithTotal(String phrase, Long tenantId, List<Long> kbIds,
                                                  int topK, List<Long> documentIds) {
-        if (client == null || phrase == null || phrase.isBlank()) return SearchHits.empty();
+        return searchExactPhraseWithStatus(phrase, tenantId, kbIds, topK, documentIds).searchHits();
+    }
+
+    /**
+     * EXACT_TEXT_SEARCH：match_phrase + track_total_hits，并显式返回基础设施状态。
+     */
+    public ExactSearchExecution searchExactPhraseWithStatus(String phrase, Long tenantId, List<Long> kbIds,
+                                                            int topK, List<Long> documentIds) {
+        if (phrase == null || phrase.isBlank()) return ExactSearchExecution.success(SearchHits.empty());
+        if (client == null) return ExactSearchExecution.failure("Elasticsearch client is not initialized");
         try {
             List<Map<String, Object>> filter = baseFilters(tenantId, kbIds);
             if (documentIds != null && !documentIds.isEmpty()) {
@@ -133,14 +155,14 @@ public class Bm25Searcher {
             Map<String, Object> bool = new HashMap<>();
             bool.put("must", List.of(Map.of("match_phrase", Map.of("content", Map.of("query", phrase, "slop", 0)))));
             bool.put("filter", filter);
-            return execute(Map.of(
+            return ExactSearchExecution.success(execute(Map.of(
                     "query", Map.of("bool", bool),
                     "size", topK,
                     "track_scores", true,
-                    "track_total_hits", true));
+                    "track_total_hits", true)));
         } catch (Exception e) {
-            log.error("[searchExactPhraseWithTotal][精确短语检索失败, phrase={}]", phrase, e);
-            return SearchHits.empty();
+            log.error("[searchExactPhraseWithStatus][精确短语检索失败, phrase={}]", phrase, e);
+            return ExactSearchExecution.failure(e.getClass().getSimpleName() + ": " + safeMessage(e.getMessage()));
         }
     }
 
