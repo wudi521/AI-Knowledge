@@ -24,8 +24,18 @@ public class PlannedEvidenceRetriever {
         this.retrievalApi = retrievalApi;
     }
 
+    /** 迁移兼容：旧调用方没有显式领域时由 Retrieval 侧按 KB Registry 解析。 */
     public Result search(String query, List<String> variants, List<Long> kbIds, List<Long> documentIds,
                          Integer topK, Long tenantId, Long userId, String traceId) {
+        return search(query, variants, kbIds, documentIds, topK, tenantId, userId, null, traceId);
+    }
+
+    /**
+     * Planned semantic retrieval。domainCode 若已由 Agent Runtime 确认则直接透传，
+     * Retrieval 不再为了插件选择重复反查 Knowledge Registry。
+     */
+    public Result search(String query, List<String> variants, List<Long> kbIds, List<Long> documentIds,
+                         Integer topK, Long tenantId, Long userId, String domainCode, String traceId) {
         RetrievalSearchReqDTO req = new RetrievalSearchReqDTO();
         req.setQuery(query);
         req.setQueryVariants(variants);
@@ -34,13 +44,21 @@ public class PlannedEvidenceRetriever {
         req.setTopK(topK == null ? 8 : topK);
         req.setTenantId(tenantId);
         req.setUserId(userId);
+        req.setDomainCode(domainCode);
         req.setTraceId(traceId);
         req.setSearchMode("PLANNED_HYBRID");
         return execute(req);
     }
 
+    /** 迁移兼容：旧调用方没有显式领域时保持原行为。 */
     public Result exactText(String exactText, List<Long> kbIds, List<Long> documentIds,
                             Integer topK, Long tenantId, Long userId, String traceId) {
+        return exactText(exactText, kbIds, documentIds, topK, tenantId, userId, null, traceId);
+    }
+
+    /** Exact text retrieval，同样透传上游已经确认的领域作用域。 */
+    public Result exactText(String exactText, List<Long> kbIds, List<Long> documentIds,
+                            Integer topK, Long tenantId, Long userId, String domainCode, String traceId) {
         RetrievalSearchReqDTO req = new RetrievalSearchReqDTO();
         req.setQuery(exactText);
         req.setExactText(exactText);
@@ -49,6 +67,7 @@ public class PlannedEvidenceRetriever {
         req.setTopK(topK == null ? 20 : topK);
         req.setTenantId(tenantId);
         req.setUserId(userId);
+        req.setDomainCode(domainCode);
         req.setTraceId(traceId);
         req.setSearchMode("EXACT_TEXT_SEARCH");
         return execute(req);
