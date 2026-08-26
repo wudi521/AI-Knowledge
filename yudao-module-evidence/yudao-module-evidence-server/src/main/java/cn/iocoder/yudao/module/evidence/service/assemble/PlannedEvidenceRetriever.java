@@ -65,6 +65,17 @@ public class PlannedEvidenceRetriever {
             }
             RetrievalSearchRespDTO data = response.getData();
             List<RetrievalResultDTO> rows = data.getResults() == null ? Collections.emptyList() : data.getResults();
+            RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis = data.getAnalysis();
+            boolean pipelineFailed = analysis != null && Boolean.FALSE.equals(analysis.getSuccess());
+            boolean degradedEmpty = rows.isEmpty() && analysis != null && Boolean.TRUE.equals(analysis.getDegraded());
+            if (rows.isEmpty() && (pipelineFailed || degradedEmpty)) {
+                return new Result(Status.FAILED,
+                        degradedEmpty ? "retrieval pipeline degraded with no reliable matches"
+                                : "retrieval pipeline reported execution failure",
+                        List.of(), analysis, data.getChannels(), data.getTotalHits(),
+                        data.getTotalHitsExact(), data.getCandidateTotalHits());
+            }
+
             List<Double> raw = new ArrayList<>(rows.size());
             for (RetrievalResultDTO row : rows) {
                 if (row.getRerankScore() != null && row.getRerankScore() >= 0) {
@@ -92,7 +103,7 @@ public class PlannedEvidenceRetriever {
                         .build());
             }
             Status status = evidences.isEmpty() ? Status.EMPTY : Status.MATCHES;
-            return new Result(status, null, evidences, data.getAnalysis(), data.getChannels(),
+            return new Result(status, null, evidences, analysis, data.getChannels(),
                     data.getTotalHits(), data.getTotalHitsExact(), data.getCandidateTotalHits());
         } catch (Exception e) {
             log.warn("[planned-evidence][retrieval failed: {}]", e.getMessage());
