@@ -94,6 +94,13 @@ public class PlannedEvidenceRetriever {
                         List.of(), analysis, data.getChannels(), data.getTotalHits(),
                         data.getTotalHitsExact(), data.getCandidateTotalHits());
             }
+            boolean scopeBlocked = rows.isEmpty() && analysis != null && Boolean.TRUE.equals(analysis.getBlocked());
+            if (scopeBlocked) {
+                return new Result(Status.BLOCKED,
+                        analysis.getBlockReason() == null ? "hard scope resolved to empty set" : analysis.getBlockReason(),
+                        List.of(), analysis, data.getChannels(), data.getTotalHits(),
+                        data.getTotalHitsExact(), data.getCandidateTotalHits());
+            }
 
             List<Double> raw = new ArrayList<>(rows.size());
             for (RetrievalResultDTO row : rows) {
@@ -133,6 +140,7 @@ public class PlannedEvidenceRetriever {
     public enum Status {
         MATCHES,
         EMPTY,
+        BLOCKED,
         FAILED
     }
 
@@ -151,7 +159,7 @@ public class PlannedEvidenceRetriever {
 
         /**
          * 迁移兼容构造器：旧单测/调用点没有 status 时，由 evidence 是否为空推导合法 MATCHES/EMPTY。
-         * FAILED 必须显式使用 failed(...)，避免再次把基础设施故障伪装成零命中。
+         * FAILED/BLOCKED 必须显式构造，避免把基础设施故障或 hard-scope 阻断伪装成普通零命中。
          */
         public Result(List<Evidence> evidences,
                       RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis,
@@ -170,8 +178,12 @@ public class PlannedEvidenceRetriever {
             return status == Status.FAILED;
         }
 
+        public boolean blocked() {
+            return status == Status.BLOCKED;
+        }
+
         public boolean empty() {
-            return status == Status.EMPTY;
+            return status == Status.EMPTY || status == Status.BLOCKED;
         }
     }
 }
