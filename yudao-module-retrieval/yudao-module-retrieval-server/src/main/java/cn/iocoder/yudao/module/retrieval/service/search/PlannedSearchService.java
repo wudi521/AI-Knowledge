@@ -6,10 +6,16 @@ import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalResultDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
+import cn.iocoder.yudao.module.retrieval.service.search.fusion.RetrievalFusionContext;
+import cn.iocoder.yudao.module.retrieval.service.search.fusion.RetrievalFusionPipeline;
+import cn.iocoder.yudao.module.retrieval.service.search.fusion.RetrievalFusionResult;
 import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalDomainResolver;
 import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalRecallContext;
 import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalRecallPipeline;
 import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalRecallResult;
+import cn.iocoder.yudao.module.retrieval.service.search.rerank.RetrievalRerankContext;
+import cn.iocoder.yudao.module.retrieval.service.search.rerank.RetrievalRerankPipeline;
+import cn.iocoder.yudao.module.retrieval.service.search.rerank.RetrievalRerankResult;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -25,8 +31,8 @@ import java.util.stream.Collectors;
  * Query Engine V3 的纯执行检索器。
  *
  * <p>调用方已经完成自然语言规划，本服务禁止再次调用 QueryAnalysis/意图路由。
- * 核心流程固定为：领域 Recall 插件 -> RRF Fusion -> Rerank -> 权限/发布过滤。
- * BM25、Vector 只是当前两个通用 Recall 插件；新增领域召回能力不再修改本类。</p>
+ * 核心只编排三个强类型扩展阶段：Recall[] -> Fusion -> Rerank。
+ * 每个阶段按 domainCode 选择插件；BM25/Vector、RRF、Model Rerank 都只是默认实现。</p>
  */
 @Service
 public class PlannedSearchService {
@@ -35,20 +41,20 @@ public class PlannedSearchService {
     private static final int VARIANT_LIMIT = 6;
 
     private final RetrievalRecallPipeline recallPipeline;
+    private final RetrievalFusionPipeline fusionPipeline;
+    private final RetrievalRerankPipeline rerankPipeline;
     private final RetrievalDomainResolver domainResolver;
-    private final RrfMerger rrfMerger;
-    private final Reranker reranker;
     private final ResultFilter resultFilter;
 
     public PlannedSearchService(RetrievalRecallPipeline recallPipeline,
+                                RetrievalFusionPipeline fusionPipeline,
+                                RetrievalRerankPipeline rerankPipeline,
                                 RetrievalDomainResolver domainResolver,
-                                RrfMerger rrfMerger,
-                                Reranker reranker,
                                 ResultFilter resultFilter) {
         this.recallPipeline = recallPipeline;
+        this.fusionPipeline = fusionPipeline;
+        this.rerankPipeline = rerankPipeline;
         this.domainResolver = domainResolver;
-        this.rrfMerger = rrfMerger;
-        this.reranker = reranker;
         this.resultFilter = resultFilter;
     }
 
@@ -61,7 +67,7 @@ public class PlannedSearchService {
         resp.setQuery(req.getQuery());
         RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis = new RetrievalSearchRespDTO.RetrievalAnalysisDTO();
         analysis.setIntent("PLANNED_SEARCH");
-        analysis.setRoute("PLANNED_HYBRID");
+        analysis.setRoute("PLANNED_PLUGIN_PIPELINE");
         analysis.setSuccess(true);
         resp.setAnalysis(analysis);
         RetrievalSearchRespDTO.RetrievalChannelStatDTO channels = new RetrievalSearchRespDTO.RetrievalChannelStatDTO();
@@ -92,11 +98,9 @@ public class PlannedSearchService {
                 req.getQuery(), variants, req.getTenantId(), kbIds,
                 req.getDocumentIds(), RECALL_TOP_K, domainCode);
         List<RetrievalRecallResult> recallResults = recallPipeline.recall(recallContext);
-        List<List<Map.Entry<Long, Double>>> rankedLists = new ArrayList<>();
         Map<String, Set<Long>> channelIds = new LinkedHashMap<>();
         Map<String, Integer> channelCounts = new LinkedHashMap<>();
         for (RetrievalRecallResult recall : recallResults) {
-            rankedLists.add(recall.hits());
             Set<Long> ids = channelIds.computeIfAbsent(recall.channel(), ignored -> new LinkedHashSet<>());
             for (Map.Entry<Long, Double> hit : recall.hits()) ids.add(hit.getKey());
             channelCounts.put(recall.channel(), ids.size());
@@ -105,37 +109,33 @@ public class PlannedSearchService {
                             + "; variants=" + variants + "; kbIds=" + kbIds
                             + "; documentIds=" + safeList(req.getDocumentIds()),
                     "hits=" + recall.hits().size() + "; degraded=" + recall.degraded()
-                            + (StrUtil.isBlank(recall.message()) ? "" : "; message=" + recall.message())));
+                            + suffix(recall.message())));
         }
         channels.setBm25(channelIds.getOrDefault("bm25", Set.of()).size());
         channels.setVector(channelIds.getOrDefault("vector", Set.of()).size());
 
-        long start = System.currentTimeMillis();
-        List<Map.Entry<Long, Double>> fused = rrfMerger.merge(rankedLists, RECALL_TOP_K);
+        long fusionStart = System.currentTimeMillis();
+        RetrievalFusionResult fusion = fusionPipeline.fuse(
+                new RetrievalFusionContext(domainCode, recallResults, RECALL_TOP_K));
+        List<Map.Entry<Long, Double>> fused = fusion.hits();
         Set<Long> published = resultFilter.filterPublished(fused.stream().map(Map.Entry::getKey).collect(Collectors.toSet()));
         fused = fused.stream().filter(e -> published.contains(e.getKey())).toList();
-        long fusionMs = System.currentTimeMillis() - start;
+        long fusionMs = System.currentTimeMillis() - fusionStart;
         channels.setFused(fused.size());
         stages.add(stage("FUSION", ++seq, fusionMs,
-                "domain=" + domainCode + "; channels=" + channelCounts,
-                "publishedFused=" + fused.size()));
+                "plugin=" + fusion.pluginId() + "; domain=" + domainCode + "; channels=" + channelCounts,
+                "publishedFused=" + fused.size() + "; degraded=" + fusion.degraded() + suffix(fusion.message())));
 
         List<Long> candidateIds = fused.stream().map(Map.Entry::getKey).toList();
         Map<Long, String> contents = resultFilter.getChunkContents(candidateIds);
         Map<Long, ChunkDocInfoDTO> docInfo = resultFilter.getChunkDocInfo(candidateIds);
         Map<Long, String> metadata = resultFilter.getChunkMetadatas(candidateIds);
         List<String> candidateContents = candidateIds.stream().map(id -> contents.getOrDefault(id, "")).toList();
-        Map<Long, Double> rrfScores = fused.stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        Map<Long, Double> fusionScores = fused.stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
-        start = System.currentTimeMillis();
-        List<Map.Entry<Integer, Float>> reranked;
-        if (candidateContents.isEmpty() || candidateContents.stream().allMatch(StrUtil::isBlank)) {
-            reranked = new ArrayList<>();
-            for (int i = 0; i < candidateContents.size(); i++) reranked.add(Map.entry(i, 0F));
-        } else {
-            reranked = reranker.rerank(req.getQuery(), candidateContents);
-        }
-        long rerankMs = System.currentTimeMillis() - start;
+        RetrievalRerankResult rerank = rerankPipeline.rerank(
+                new RetrievalRerankContext(req.getQuery(), candidateContents, domainCode));
+        List<Map.Entry<Integer, Float>> reranked = rerank.rankings();
 
         int topK = req.getTopK() == null || req.getTopK() <= 0 ? 8 : Math.min(req.getTopK(), RECALL_TOP_K);
         List<RetrievalResultDTO> results = new ArrayList<>();
@@ -158,7 +158,7 @@ public class PlannedSearchService {
                 item.setVersionNo(info.getVersionNo());
                 item.setVersionId(info.getVersionId());
             }
-            item.setRrfScore(rrfScores.get(chunkId));
+            item.setRrfScore(fusionScores.get(chunkId));
             item.setRerankScore(ranked.getValue());
             List<String> hitChannels = new ArrayList<>();
             for (Map.Entry<String, Set<Long>> channel : channelIds.entrySet()) {
@@ -169,9 +169,10 @@ public class PlannedSearchService {
             results.add(item);
         }
         resp.setResults(results);
-        stages.add(stage("RERANK", ++seq, rerankMs,
-                "domain=" + domainCode + "; query=" + req.getQuery() + "; candidates=" + candidateIds.size(),
-                "topResults=" + summarize(results)));
+        stages.add(stage("RERANK", ++seq, rerank.elapsedMs(),
+                "plugin=" + rerank.pluginId() + "; domain=" + domainCode + "; query=" + req.getQuery()
+                        + "; candidates=" + candidateIds.size(),
+                "topResults=" + summarize(results) + "; degraded=" + rerank.degraded() + suffix(rerank.message())));
         analysis.setStages(stages);
         return resp;
     }
@@ -186,6 +187,10 @@ public class PlannedSearchService {
         stage.setInputSummary(limit(input));
         stage.setOutputSummary(limit(output));
         return stage;
+    }
+
+    private String suffix(String message) {
+        return StrUtil.isBlank(message) ? "" : "; message=" + message;
     }
 
     private String summarize(List<RetrievalResultDTO> results) {
