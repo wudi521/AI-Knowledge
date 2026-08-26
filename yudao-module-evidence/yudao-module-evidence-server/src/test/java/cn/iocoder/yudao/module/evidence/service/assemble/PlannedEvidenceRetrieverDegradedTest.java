@@ -75,6 +75,25 @@ class PlannedEvidenceRetrieverDegradedTest {
         assertEquals("PLANNED_HYBRID", captor.getValue().getSearchMode());
     }
 
+    @Test
+    void exactScopeQueryAndLiteralTextRemainSeparateOnRpcContract() {
+        RetrievalApi api = mock(RetrievalApi.class);
+        when(api.search(any())).thenReturn(CommonResult.success(response(true, false)));
+        PlannedEvidenceRetriever retriever = new PlannedEvidenceRetriever(api);
+        String scopeQuery = "申请号 202311832214.0 的原文是否包含磁涌";
+
+        retriever.exactText(scopeQuery, "磁涌", List.of(1L), null, 20,
+                2L, 3L, "PATENT", "trace-exact");
+
+        ArgumentCaptor<RetrievalSearchReqDTO> captor = ArgumentCaptor.forClass(RetrievalSearchReqDTO.class);
+        verify(api).search(captor.capture());
+        RetrievalSearchReqDTO req = captor.getValue();
+        assertEquals(scopeQuery, req.getQuery());
+        assertEquals("磁涌", req.getExactText());
+        assertEquals("PATENT", req.getDomainCode());
+        assertEquals("EXACT_TEXT_SEARCH", req.getSearchMode());
+    }
+
     private RetrievalSearchRespDTO response(boolean success, boolean degraded) {
         RetrievalSearchRespDTO data = new RetrievalSearchRespDTO();
         data.setResults(List.of());
