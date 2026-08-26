@@ -424,7 +424,10 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     public CommonResult<StructuredQueryRespDTO> structuredQuery(StructuredQueryReqDTO req) {
         StructuredQueryRespDTO resp = new StructuredQueryRespDTO();
         resp.setRows(new ArrayList<>());
-        if (req == null || req.getKbId() == null || StrUtil.isBlank(req.getMetricCode())) return success(resp);
+        if (req == null || req.getKbId() == null
+                || (StrUtil.isBlank(req.getMetricCode()) && StrUtil.isBlank(req.getFieldCode()))) {
+            return success(resp);
+        }
         try {
             boolean published = !Boolean.FALSE.equals(req.getPublishedOnly());
             List<AiDocumentDO> docs = aiDocumentMapper.selectListByKbId(req.getKbId());
@@ -460,22 +463,30 @@ public class KnowledgeApiImpl implements KnowledgeApi {
                 row.setInventor(metadataListValue(metadata, "inventors", "inventor"));
                 row.setFilingDate(metadataValue(metadata, "filingDate", "applicationDate"));
                 row.setPublicationDate(metadataValue(metadata, "publicationDate", "publishDate"));
-                row.setValue(metricValue(doc, req.getMetricCode()));
+                row.setValue(StrUtil.isBlank(req.getMetricCode()) ? null : metricValue(doc, req.getMetricCode()));
                 resp.getRows().add(row);
             }
             return success(resp);
         } catch (Exception e) {
             // 数据源故障与“完整数据集确实为空”是两种不同事实。这里必须失败关闭，
             // 由上层转成 UNSUPPORTED，禁止把数据库/RPC 异常包装成可信空集。
-            log.error("[structuredQuery][kbId({}) metric({}) 结构化数据读取失败]",
-                    req.getKbId(), req.getMetricCode(), e);
+            log.error("[structuredQuery][kbId({}) field({}) metric({}) 结构化数据读取失败]",
+                    req.getKbId(), req.getFieldCode(), req.getMetricCode(), e);
             throw new IllegalStateException("结构化数据读取失败", e);
         }
     }
 
     private JSONObject docMetadata(AiDocumentDO doc) {
         if (doc == null || StrUtil.isBlank(doc.getDomainMetadata())) return new JSONObject();
-        return JSONUtil.parseObj(doc.getDomainMetadata());
+        try {
+            return JSONUtil.parseObj(doc.getDomainMetadata());
+        } catch (Exception e) {
+            // 单个历史脏元数据不能把整库结构化读取打成 dependency failure。
+            // 返回空对象，由上层按具体必需字段做 DATA_INCOMPLETE 判断。
+            log.warn("[docMetadata][documentId({}) domainMetadata 非法, 按缺失字段处理: {}]",
+                    doc.getId(), e.getMessage());
+            return new JSONObject();
+        }
     }
 
     private String metadataValue(JSONObject metadata, String... keys) {
@@ -501,6 +512,7 @@ public class KnowledgeApiImpl implements KnowledgeApi {
     }
 
     private Double metricValue(AiDocumentDO doc, String metricCode) {
+        if (StrUtil.isBlank(metricCode)) return null;
         switch (metricCode.toUpperCase()) {
             case "DOCUMENT_COUNT":
                 return 1d;
