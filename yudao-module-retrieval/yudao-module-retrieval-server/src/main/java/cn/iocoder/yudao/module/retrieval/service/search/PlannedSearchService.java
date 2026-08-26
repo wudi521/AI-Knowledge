@@ -34,11 +34,11 @@ import java.util.stream.Collectors;
  * Query Engine V3 的纯执行检索器。
  *
  * <p>调用方已经完成自然语言规划，本服务禁止再次调用 QueryAnalysis/意图路由。
- * 核心只编排强类型扩展阶段：Domain Resolution -> Scope[] -> Recall[] -> Fusion -> Rerank。
- * 每个阶段按 domainCode 选择插件；领域规则不允许重新渗入本类。</p>
+ * 核心只编排强类型扩展阶段：Visibility -> Domain Resolution -> Scope[] -> Recall[] ->
+ * Fusion -> Published Filter -> Hydration -> Rerank。</p>
  *
  * <p>一次执行只绑定一个 domainCode。多领域 KB scope 必须由上游先按领域分区，
- * 禁止把 PATENT/CONTRACT 等专业规则降成 GENERAL 后继续检索。</p>
+ * 禁止把专业领域规则降成 GENERAL 后继续检索。</p>
  */
 @Service
 public class PlannedSearchService {
@@ -85,17 +85,30 @@ public class PlannedSearchService {
         channels.setRecall(Map.of());
         resp.setChannels(channels);
 
-        Set<Long> visible = resultFilter.getVisibleKbIds(req.getUserId());
+        List<QueryStageTimingDTO> stages = new ArrayList<>();
+        int seq = 0;
+
+        long visibilityStart = System.currentTimeMillis();
+        ResultFilter.ReadResult<Set<Long>> visibility = resultFilter.getVisibleKbIdsResult(req.getUserId());
+        stages.add(stage("VISIBILITY", ++seq, System.currentTimeMillis() - visibilityStart,
+                visibility.failed() ? "FAILED" : "SUCCEEDED",
+                "userId=" + req.getUserId(),
+                visibility.failed() ? "failed=" + visibility.errorMessage()
+                        : "visibleKbIds=" + visibility.data()));
+        if (visibility.failed()) {
+            return failSource(resp, analysis, channels, stages);
+        }
+
+        Set<Long> visible = visibility.data();
         List<Long> kbIds = req.getKbIds() != null && !req.getKbIds().isEmpty()
                 ? req.getKbIds().stream().filter(visible::contains).distinct().toList()
                 : new ArrayList<>(visible);
         if (kbIds.isEmpty()) {
             analysis.setBlocked(true);
             analysis.setBlockReason("no visible knowledge base in requested scope");
-            channels.setBm25(0);
-            channels.setVector(0);
-            channels.setFused(0);
+            zeroChannels(channels);
             resp.setResults(List.of());
+            analysis.setStages(stages);
             return resp;
         }
 
@@ -107,24 +120,16 @@ public class PlannedSearchService {
         analysis.setSubQuestions(List.of());
         analysis.setEntities(List.of());
 
-        List<QueryStageTimingDTO> stages = new ArrayList<>();
-        int seq = 0;
         long domainStart = System.currentTimeMillis();
         RetrievalDomainResolver.Resolution domainResolution = domainResolver.resolveWithStatus(req.getDomainCode(), kbIds);
         long domainMs = System.currentTimeMillis() - domainStart;
         stages.add(stage("DOMAIN_RESOLUTION", ++seq, domainMs,
+                domainResolution.failed() ? "FAILED" : "SUCCEEDED",
                 "requestedDomain=" + StrUtil.blankToDefault(req.getDomainCode(), "<registry>") + "; kbIds=" + kbIds,
                 "domain=" + domainResolution.domainCode() + "; failed=" + domainResolution.failed()
                         + "; mixed=" + domainResolution.mixedDomainScope() + suffix(domainResolution.message())));
         if (domainResolution.failed()) {
-            analysis.setSuccess(false);
-            analysis.setDegraded(true);
-            analysis.setStages(stages);
-            channels.setBm25(0);
-            channels.setVector(0);
-            channels.setFused(0);
-            resp.setResults(List.of());
-            return resp;
+            return failSource(resp, analysis, channels, stages);
         }
         if (domainResolution.mixedDomainScope()) {
             analysis.setBlocked(true);
@@ -132,9 +137,7 @@ public class PlannedSearchService {
             analysis.setSuccess(true);
             analysis.setDegraded(false);
             analysis.setStages(stages);
-            channels.setBm25(0);
-            channels.setVector(0);
-            channels.setFused(0);
+            zeroChannels(channels);
             resp.setResults(List.of());
             return resp;
         }
@@ -145,6 +148,7 @@ public class PlannedSearchService {
                 req.getQuery(), req.getTenantId(), kbIds, req.getDocumentIds(), domainCode));
         long scopeMs = System.currentTimeMillis() - scopeStart;
         stages.add(stage("SCOPE", ++seq, scopeMs,
+                scope.degraded() ? "DEGRADED" : "SUCCEEDED",
                 "domain=" + domainCode + "; initialDocumentIds=" + safeList(req.getDocumentIds()),
                 "documentIds=" + scope.documentIds() + "; blocked=" + scope.blocked()
                         + "; degraded=" + scope.degraded() + "; decisions=" + scopeSummary(scope.decisions())));
@@ -155,9 +159,7 @@ public class PlannedSearchService {
             analysis.setDegraded(degraded);
             analysis.setSuccess(!degraded);
             analysis.setStages(stages);
-            channels.setBm25(0);
-            channels.setVector(0);
-            channels.setFused(0);
+            zeroChannels(channels);
             resp.setResults(List.of());
             return resp;
         }
@@ -174,6 +176,7 @@ public class PlannedSearchService {
             for (Map.Entry<Long, Double> hit : recall.hits()) ids.add(hit.getKey());
             channelCounts.put(recall.channel(), ids.size());
             stages.add(stage(recall.channel().toUpperCase(Locale.ROOT), ++seq, recall.elapsedMs(),
+                    recall.degraded() ? "DEGRADED" : "SUCCEEDED",
                     "plugin=" + recall.pluginId() + "; domain=" + domainCode
                             + "; variants=" + variants + "; kbIds=" + kbIds
                             + "; documentIds=" + scope.documentIds(),
@@ -189,18 +192,56 @@ public class PlannedSearchService {
                 new RetrievalFusionContext(domainCode, recallResults, RECALL_TOP_K));
         degraded |= fusion.degraded();
         List<Map.Entry<Long, Double>> fused = fusion.hits();
-        Set<Long> published = resultFilter.filterPublished(fused.stream().map(Map.Entry::getKey).collect(Collectors.toSet()));
-        fused = fused.stream().filter(e -> published.contains(e.getKey())).toList();
         long fusionMs = System.currentTimeMillis() - fusionStart;
-        channels.setFused(fused.size());
         stages.add(stage("FUSION", ++seq, fusionMs,
+                fusion.degraded() ? "DEGRADED" : "SUCCEEDED",
                 "plugin=" + fusion.pluginId() + "; domain=" + domainCode + "; channels=" + channelCounts,
-                "publishedFused=" + fused.size() + "; degraded=" + fusion.degraded() + suffix(fusion.message())));
+                "fused=" + fused.size() + "; degraded=" + fusion.degraded() + suffix(fusion.message())));
+
+        long publishStart = System.currentTimeMillis();
+        ResultFilter.ReadResult<Set<Long>> publishedRead = resultFilter.filterPublishedResult(
+                fused.stream().map(Map.Entry::getKey).collect(Collectors.toSet()));
+        stages.add(stage("PUBLISHED_FILTER", ++seq, System.currentTimeMillis() - publishStart,
+                publishedRead.failed() ? "FAILED" : "SUCCEEDED",
+                "candidateCount=" + fused.size(),
+                publishedRead.failed() ? "failed=" + publishedRead.errorMessage()
+                        : "publishedCount=" + publishedRead.data().size()));
+        if (publishedRead.failed()) {
+            return failSource(resp, analysis, channels, stages);
+        }
+        Set<Long> published = publishedRead.data();
+        fused = fused.stream().filter(e -> published.contains(e.getKey())).toList();
+        channels.setFused(fused.size());
 
         List<Long> candidateIds = fused.stream().map(Map.Entry::getKey).toList();
-        Map<Long, String> contents = resultFilter.getChunkContents(candidateIds);
-        Map<Long, ChunkDocInfoDTO> docInfo = resultFilter.getChunkDocInfo(candidateIds);
-        Map<Long, String> metadata = resultFilter.getChunkMetadatas(candidateIds);
+        long hydrateStart = System.currentTimeMillis();
+        ResultFilter.ReadResult<Map<Long, String>> contentsRead = resultFilter.getChunkContentsResult(candidateIds);
+        ResultFilter.ReadResult<Map<Long, ChunkDocInfoDTO>> docInfoRead = resultFilter.getChunkDocInfoResult(candidateIds);
+        ResultFilter.ReadResult<Map<Long, String>> metadataRead = resultFilter.getChunkMetadatasResult(candidateIds);
+        boolean missingContents = !contentsRead.failed() && !contentsRead.data().keySet().containsAll(candidateIds);
+        boolean missingDocInfo = !docInfoRead.failed() && !docInfoRead.data().keySet().containsAll(candidateIds);
+        boolean hydrateFailed = contentsRead.failed() || docInfoRead.failed() || missingContents || missingDocInfo;
+        boolean metadataDegraded = metadataRead.failed();
+        String hydrateOutput = "contents=" + contentsRead.data().size()
+                + "; docInfo=" + docInfoRead.data().size()
+                + "; metadata=" + metadataRead.data().size()
+                + (contentsRead.failed() ? "; contentError=" + contentsRead.errorMessage() : "")
+                + (docInfoRead.failed() ? "; docInfoError=" + docInfoRead.errorMessage() : "")
+                + (missingContents ? "; missingContentKeys=true" : "")
+                + (missingDocInfo ? "; missingDocInfoKeys=true" : "")
+                + (metadataRead.failed() ? "; metadataError=" + metadataRead.errorMessage() : "");
+        stages.add(stage("HYDRATE", ++seq, System.currentTimeMillis() - hydrateStart,
+                hydrateFailed ? "FAILED" : metadataDegraded ? "DEGRADED" : "SUCCEEDED",
+                "candidateIds=" + candidateIds,
+                hydrateOutput));
+        if (hydrateFailed) {
+            return failSource(resp, analysis, channels, stages);
+        }
+        degraded |= metadataDegraded;
+
+        Map<Long, String> contents = contentsRead.data();
+        Map<Long, ChunkDocInfoDTO> docInfo = docInfoRead.data();
+        Map<Long, String> metadata = metadataRead.data();
         List<String> candidateContents = candidateIds.stream().map(id -> contents.getOrDefault(id, "")).toList();
         Map<Long, Double> fusionScores = fused.stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
@@ -218,18 +259,16 @@ public class PlannedSearchService {
             Long chunkId = candidateIds.get(idx);
             ChunkDocInfoDTO info = docInfo.get(chunkId);
             if (!scope.documentIds().isEmpty()
-                    && (info == null || info.getDocumentId() == null || !scope.documentIds().contains(info.getDocumentId()))) {
+                    && (info.getDocumentId() == null || !scope.documentIds().contains(info.getDocumentId()))) {
                 continue;
             }
             RetrievalResultDTO item = new RetrievalResultDTO();
             item.setChunkId(chunkId);
             item.setContent(contents.getOrDefault(chunkId, ""));
-            if (info != null) {
-                item.setDocumentId(info.getDocumentId());
-                item.setDocumentName(info.getDocumentName());
-                item.setVersionNo(info.getVersionNo());
-                item.setVersionId(info.getVersionId());
-            }
+            item.setDocumentId(info.getDocumentId());
+            item.setDocumentName(info.getDocumentName());
+            item.setVersionNo(info.getVersionNo());
+            item.setVersionId(info.getVersionId());
             item.setRrfScore(fusionScores.get(chunkId));
             item.setRerankScore(ranked.getValue());
             List<String> hitChannels = new ArrayList<>();
@@ -242,6 +281,7 @@ public class PlannedSearchService {
         }
         resp.setResults(results);
         stages.add(stage("RERANK", ++seq, rerank.elapsedMs(),
+                rerank.degraded() ? "DEGRADED" : "SUCCEEDED",
                 "plugin=" + rerank.pluginId() + "; domain=" + domainCode + "; query=" + req.getQuery()
                         + "; candidates=" + candidateIds.size() + "; scopedDocuments=" + scope.documentIds(),
                 "topResults=" + summarize(results) + "; degraded=" + rerank.degraded() + suffix(rerank.message())));
@@ -252,11 +292,35 @@ public class PlannedSearchService {
         return resp;
     }
 
-    private QueryStageTimingDTO stage(String name, int seq, long ms, String input, String output) {
+    private RetrievalSearchRespDTO failSource(RetrievalSearchRespDTO resp,
+                                               RetrievalSearchRespDTO.RetrievalAnalysisDTO analysis,
+                                               RetrievalSearchRespDTO.RetrievalChannelStatDTO channels,
+                                               List<QueryStageTimingDTO> stages) {
+        analysis.setSuccess(false);
+        analysis.setDegraded(true);
+        analysis.setStages(List.copyOf(stages));
+        zeroChannelsIfNull(channels);
+        resp.setResults(List.of());
+        return resp;
+    }
+
+    private void zeroChannels(RetrievalSearchRespDTO.RetrievalChannelStatDTO channels) {
+        channels.setBm25(0);
+        channels.setVector(0);
+        channels.setFused(0);
+    }
+
+    private void zeroChannelsIfNull(RetrievalSearchRespDTO.RetrievalChannelStatDTO channels) {
+        if (channels.getBm25() == null) channels.setBm25(0);
+        if (channels.getVector() == null) channels.setVector(0);
+        if (channels.getFused() == null) channels.setFused(0);
+    }
+
+    private QueryStageTimingDTO stage(String name, int seq, long ms, String status, String input, String output) {
         QueryStageTimingDTO stage = new QueryStageTimingDTO();
         stage.setStage(name);
         stage.setSeq(seq);
-        stage.setStatus("SUCCEEDED");
+        stage.setStatus(status);
         stage.setElapsedMs(ms);
         stage.setSkipped(false);
         stage.setInputSummary(limit(input));
