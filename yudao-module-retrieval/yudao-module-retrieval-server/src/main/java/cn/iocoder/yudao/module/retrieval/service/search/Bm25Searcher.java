@@ -3,11 +3,7 @@ package cn.iocoder.yudao.module.retrieval.service.search;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
-import cn.iocoder.yudao.module.knowledge.api.KnowledgeApi;
-import cn.iocoder.yudao.module.knowledge.api.dto.PatentDocumentLookupReqDTO;
-import cn.iocoder.yudao.module.retrieval.service.domain.PatentQueryPreParser;
 import jakarta.annotation.PostConstruct;
-import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.http.HttpHost;
 import org.elasticsearch.client.Request;
@@ -21,16 +17,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** BM25 检索(ES ai_chunk_bm25)。明确专利编号时先解析 documentId 并做 ES 硬过滤。 */
+/**
+ * 通用 BM25 检索(ES ai_chunk_bm25)。
+ *
+ * <p>本类只执行文本检索和显式 hard scope，不解析专利/合同/法规标识；领域范围收敛由 RetrievalScopePlugin 完成。</p>
+ */
 @Slf4j
 @Service
 public class Bm25Searcher {
 
     @Value("${spring.elasticsearch.uris:http://127.0.0.1:9200}") private String uris;
     @Value("${yudao.ai.es.index:ai_chunk_bm25}") private String index;
-
-    @Resource private KnowledgeApi knowledgeApi;
-    @Resource private PatentQueryPreParser patentQueryPreParser;
 
     private RestClient client;
 
@@ -81,15 +78,6 @@ public class Bm25Searcher {
             List<Map<String, Object>> filter = baseFilters(tenantId, kbIds);
             if (documentIds != null && !documentIds.isEmpty()) {
                 filter.add(Map.of("terms", Map.of("document_id", documentIds)));
-            } else {
-                List<Long> patentDocumentIds = resolvePatentDocumentIds(query, kbIds);
-                if (patentDocumentIds != null) {
-                    if (patentDocumentIds.isEmpty()) {
-                        log.info("[search][专利精确标识未定位到文档, BM25 fail-closed 返回空: query={}]", query);
-                        return List.of();
-                    }
-                    filter.add(Map.of("terms", Map.of("document_id", patentDocumentIds)));
-                }
             }
             Map<String, Object> bool = new HashMap<>();
             bool.put("must", List.of(Map.of("match", Map.of("content", Map.of("query", query, "analyzer", "ik_smart")))));
@@ -133,23 +121,28 @@ public class Bm25Searcher {
         }
     }
 
-    public List<Map.Entry<Long, Double>> searchExactDocument(String query, Long tenantId, List<Long> kbIds, int topK) {
-        if (client == null) return List.of();
+    /**
+     * 显式文档范围内返回片段，不再自行解析任何领域标识。
+     * 调用方必须先通过 Scope Pipeline 得到 documentIds。
+     */
+    public List<Map.Entry<Long, Double>> searchExactDocument(String query, Long tenantId, List<Long> kbIds,
+                                                             int topK, List<Long> documentIds) {
+        if (client == null || documentIds == null || documentIds.isEmpty()) return List.of();
         try {
-            List<Long> documentIds = resolvePatentDocumentIds(query, kbIds);
-            if (documentIds == null || documentIds.isEmpty()) {
-                log.info("[searchExactDocument][未定位专利文档, fail-closed: query={}]", query);
-                return List.of();
-            }
             List<Map<String, Object>> filter = baseFilters(tenantId, kbIds);
             filter.add(Map.of("terms", Map.of("document_id", documentIds)));
             Map<String, Object> bool = new HashMap<>();
             bool.put("filter", filter);
             return execute(Map.of("query", Map.of("bool", bool), "size", topK, "track_scores", false)).hits();
         } catch (Exception e) {
-            log.error("[searchExactDocument][精确专利文档检索失败, query={}]", query, e);
+            log.error("[searchExactDocument][显式文档范围检索失败, query={}]", query, e);
             return List.of();
         }
+    }
+
+    /** 兼容旧签名；没有显式 documentIds 时 fail-closed，不再暗含专利解析。 */
+    public List<Map.Entry<Long, Double>> searchExactDocument(String query, Long tenantId, List<Long> kbIds, int topK) {
+        return List.of();
     }
 
     private List<Map<String, Object>> baseFilters(Long tenantId, List<Long> kbIds) {
@@ -192,22 +185,5 @@ public class Bm25Searcher {
             if (value instanceof Number number) return number.longValue();
         }
         return fallback;
-    }
-
-    private List<Long> resolvePatentDocumentIds(String query, List<Long> kbIds) {
-        if (kbIds == null || kbIds.isEmpty()) return null;
-        PatentQueryPreParser.PatentQueryHints hints = patentQueryPreParser.parse(query);
-        if (hints == null || !hints.hasExactDocumentIdentifier()) return null;
-        try {
-            PatentDocumentLookupReqDTO req = new PatentDocumentLookupReqDTO();
-            req.setKbIds(kbIds);
-            req.setApplicationNo(hints.getApplicationNo());
-            req.setPublicationNo(hints.getPublicationNo());
-            List<Long> ids = knowledgeApi.lookupPatentDocuments(req).getCheckedData();
-            return ids == null ? List.of() : ids;
-        } catch (Exception e) {
-            log.warn("[resolvePatentDocumentIds][专利文档定位失败, fail-closed: {}]", e.getMessage());
-            return List.of();
-        }
     }
 }
