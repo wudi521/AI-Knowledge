@@ -14,6 +14,7 @@ import cn.iocoder.yudao.module.evidence.service.structured.core.Operation;
 import cn.iocoder.yudao.module.evidence.service.structured.core.QueryScope;
 import cn.iocoder.yudao.module.evidence.service.structured.core.SortDirection;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredAggregateSpec;
+import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredHavingSpec;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredOrderSpec;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredPipelineExecutor;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredPipelinePlan;
@@ -129,6 +130,7 @@ public class StructuredPipelineCapabilityDelegate {
         schema.put("filter", "可选。类型化过滤树：条件 {field,operator,values,explode,transforms}；组合 {logic:'AND|OR',children:[...]}。");
         schema.put("groupBy", "可选。分组值表达式或数组；字段必须 groupable=true。多值字段可 explode=true；日期可 YEAR/YEAR_MONTH。");
         schema.put("aggregate", "可选。{operation:'COUNT|COUNT_DISTINCT|SUM|AVG|MIN|MAX', field?, metric?, explode?, transforms?}。COUNT 可不带 field/metric。");
+        schema.put("having", "可选。仅 GROUP BY 后使用，对 aggregateValue 做类型化过滤：{operator:'EQ|NE|GT|GTE|LT|LTE|BETWEEN|IN', values:[number...]}。");
         schema.put("orderBy", "可选。排序对象或数组：{field?,metric?,aggregateValue?,explode?,transforms?,direction:'ASC|DESC'}。字段必须 sortable=true。");
         schema.put("distinct", "可选 boolean。对最终 select 值去重。");
         schema.put("limit", "可选 1~50。只限制最终输出；底层仍基于完整集合计算。" );
@@ -154,6 +156,7 @@ public class StructuredPipelineCapabilityDelegate {
             }
             List<StructuredValueExpression> groupBy = expressions(domainCode, args.get("groupBy"), true);
             StructuredAggregateSpec aggregate = aggregate(domainCode, args.get("aggregate"));
+            StructuredHavingSpec having = having(args.get("having"));
             List<StructuredOrderSpec> orderBy = orders(domainCode, args.get("orderBy"));
             int limit = intValue(args.get("limit"), 20, 1, 50);
             boolean distinct = bool(args.get("distinct"));
@@ -175,6 +178,9 @@ public class StructuredPipelineCapabilityDelegate {
                     && orderBy.get(0).value() != null) {
                 select = List.of(orderBy.get(0).value());
             }
+            if (having != null && groupBy.isEmpty()) {
+                return CompileResult.failure("HAVING requires GROUP BY");
+            }
 
             String entityType = entityType(domainCode, select, filter, groupBy, aggregate, orderBy);
             if (StrUtil.isBlank(entityType)) return CompileResult.failure("cannot resolve structured entity type from fields/metrics");
@@ -188,6 +194,7 @@ public class StructuredPipelineCapabilityDelegate {
                     .filter(filter)
                     .groupBy(groupBy)
                     .aggregate(aggregate)
+                    .having(having)
                     .orderBy(orderBy)
                     .distinct(distinct)
                     .limit(aggregate != null && groupBy.isEmpty() ? null : limit)
@@ -255,6 +262,15 @@ public class StructuredPipelineCapabilityDelegate {
                 ? valueExpression(domainCode, valueRaw, true)
                 : expression(domainCode, text(valueRaw), true, transforms(map.get("transforms")));
         return new StructuredAggregateSpec(op, value, null);
+    }
+
+    private StructuredHavingSpec having(Object raw) {
+        Map<String, Object> map = map(raw);
+        if (map.isEmpty()) return null;
+        FilterOperator operator = FilterOperator.fromExternal(text(map.get("operator")))
+                .orElseThrow(() -> new IllegalArgumentException("having.operator is required or invalid"));
+        List<Double> values = numbers(firstNonNull(map.get("values"), map.get("value")), 50);
+        return new StructuredHavingSpec(operator, values);
     }
 
     private List<StructuredOrderSpec> orders(String domainCode, Object raw) {
@@ -497,7 +513,8 @@ public class StructuredPipelineCapabilityDelegate {
 
     private String summarizePlan(StructuredPipelinePlan plan) {
         return "select=" + safe(plan.getSelect()) + "; filter=" + plan.getFilter() + "; groupBy=" + safe(plan.getGroupBy())
-                + "; aggregate=" + plan.getAggregate() + "; orderBy=" + safe(plan.getOrderBy())
+                + "; aggregate=" + plan.getAggregate() + "; having=" + plan.getHaving()
+                + "; orderBy=" + safe(plan.getOrderBy())
                 + "; distinct=" + plan.isDistinct() + "; limit=" + plan.getLimit();
     }
 
@@ -563,6 +580,23 @@ public class StructuredPipelineCapabilityDelegate {
         }
         String value = text(raw);
         return StrUtil.isBlank(value) ? List.of() : List.of(value);
+    }
+
+    private List<Double> numbers(Object raw, int limit) {
+        if (raw == null) return List.of();
+        List<Double> out = new ArrayList<>();
+        for (Object item : objectList(raw)) {
+            double value;
+            try {
+                value = item instanceof Number number ? number.doubleValue() : Double.parseDouble(text(item));
+            } catch (Exception e) {
+                throw new IllegalArgumentException("having value is not numeric: " + text(item));
+            }
+            if (!Double.isFinite(value)) throw new IllegalArgumentException("having value must be finite");
+            out.add(value);
+            if (out.size() >= limit) break;
+        }
+        return List.copyOf(out);
     }
 
     private List<Object> objectList(Object raw) {
