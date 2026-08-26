@@ -25,7 +25,7 @@ class KnowledgeRetrievalCapabilityTest {
                 .content("一种无人机技术方案").score(1D).products(List.of()).channels(List.of("vector"))
                 .build();
         when(retriever.search("垂直起降无人机技术", List.of("无人机垂直起降技术"),
-                List.of(6L), null, 8, 1L, 2L, "ag-retrieval"))
+                List.of(6L), null, 8, 1L, 2L, "PATENT", "ag-retrieval"))
                 .thenReturn(new PlannedEvidenceRetriever.Result(List.of(candidate), null, null, null, null));
 
         DomainEvidenceEntityMapper mapper = numericDocumentMapper("PATENT");
@@ -42,7 +42,7 @@ class KnowledgeRetrievalCapabilityTest {
         assertTrue(output.verifiedEntityIds().isEmpty(), "普通语义候选绝不能升级为 trusted entity");
         assertEquals(true, result.metadata().get("candidateEntityMapped"));
         verify(retriever).search("垂直起降无人机技术", List.of("无人机垂直起降技术"),
-                List.of(6L), null, 8, 1L, 2L, "ag-retrieval");
+                List.of(6L), null, 8, 1L, 2L, "PATENT", "ag-retrieval");
         capability.shutdown();
     }
 
@@ -50,7 +50,8 @@ class KnowledgeRetrievalCapabilityTest {
     void domainWithoutMapperKeepsSemanticCandidatesAsEvidenceOnly() {
         PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
         Evidence candidate = Evidence.builder().chunkId(201L).documentId("74").content("候选").build();
-        when(retriever.search("q", List.of(), List.of(6L), null, 8, 1L, 2L, "ag-no-map"))
+        when(retriever.search("q", List.of(), List.of(6L), null, 8, 1L, 2L,
+                "CONTRACT", "ag-no-map"))
                 .thenReturn(new PlannedEvidenceRetriever.Result(List.of(candidate), null, null, null, null));
 
         KnowledgeRetrievalCapability capability = new KnowledgeRetrievalCapability(retriever);
@@ -61,6 +62,28 @@ class KnowledgeRetrievalCapabilityTest {
         assertTrue(output.candidateEntityIds().isEmpty());
         assertTrue(output.verifiedEntityIds().isEmpty());
         assertEquals(false, result.metadata().get("candidateEntityMapped"));
+        capability.shutdown();
+    }
+
+    @Test
+    void scopeBlockedIsExplicitOutcomeNotAuthoritativeEmpty() {
+        PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
+        when(retriever.search("q", List.of(), List.of(6L), null, 8, 1L, 2L,
+                "PATENT", "ag-blocked"))
+                .thenReturn(new PlannedEvidenceRetriever.Result(
+                        PlannedEvidenceRetriever.Status.BLOCKED, "exact identifier resolved to no document",
+                        List.of(), null, null, null, null, null));
+
+        KnowledgeRetrievalCapability capability = new KnowledgeRetrievalCapability(retriever);
+        CapabilityResult result = capability.execute(
+                new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "ag-blocked"), Map.of("query", "q"));
+
+        assertTrue(result.success());
+        KnowledgeRetrievalCapability.Output output = (KnowledgeRetrievalCapability.Output) result.data();
+        assertEquals("SCOPE_BLOCKED", output.retrievalOutcome());
+        assertEquals(1, result.metadata().get("blockedSubqueryCount"));
+        assertEquals(true, result.metadata().get("scopeBlocked"));
+        assertEquals(false, result.metadata().get("authoritativeEmpty"));
         capability.shutdown();
     }
 
