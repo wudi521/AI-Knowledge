@@ -51,17 +51,26 @@ public class PlannedEvidenceRetriever {
         return execute(req);
     }
 
-    /** 迁移兼容：旧调用方没有显式领域时保持原行为。 */
+    /** 迁移兼容：没有独立 scopeQuery 时，范围解析输入退回 exactText 本身。 */
     public Result exactText(String exactText, List<Long> kbIds, List<Long> documentIds,
                             Integer topK, Long tenantId, Long userId, String traceId) {
-        return exactText(exactText, kbIds, documentIds, topK, tenantId, userId, null, traceId);
+        return exactText(exactText, exactText, kbIds, documentIds, topK, tenantId, userId, null, traceId);
     }
 
-    /** Exact text retrieval，同样透传上游已经确认的领域作用域。 */
+    /** 迁移兼容：没有独立 scopeQuery 时，范围解析输入退回 exactText 本身。 */
     public Result exactText(String exactText, List<Long> kbIds, List<Long> documentIds,
                             Integer topK, Long tenantId, Long userId, String domainCode, String traceId) {
+        return exactText(exactText, exactText, kbIds, documentIds, topK, tenantId, userId, domainCode, traceId);
+    }
+
+    /**
+     * Exact text retrieval 的完整合同：scopeQuery 只用于领域 Scope 插件解析硬范围；
+     * exactText 只用于逐字匹配。编号、地区、产品、版本等范围限定不再污染原文短语。
+     */
+    public Result exactText(String scopeQuery, String exactText, List<Long> kbIds, List<Long> documentIds,
+                            Integer topK, Long tenantId, Long userId, String domainCode, String traceId) {
         RetrievalSearchReqDTO req = new RetrievalSearchReqDTO();
-        req.setQuery(exactText);
+        req.setQuery(scopeQuery == null || scopeQuery.isBlank() ? exactText : scopeQuery);
         req.setExactText(exactText);
         req.setKbIds(kbIds);
         req.setDocumentIds(documentIds);
