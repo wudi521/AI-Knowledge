@@ -16,6 +16,9 @@ public class StructuredQueryReqDTO {
     /** 知识库编号(必填; 权限已在调用方裁剪) */
     private Long kbId;
 
+    /** 领域编码；分页数据源据此选择服务端白名单物理映射。 */
+    private String domainCode;
+
     /** 指标编码(白名单: DOCUMENT_COUNT / CLAIM_COUNT ...) */
     private String metricCode;
 
@@ -34,7 +37,10 @@ public class StructuredQueryReqDTO {
     /** 排序: 逗号分隔 "fieldCode:ASC|DESC" (如 "filingDate:ASC", CQ-18) */
     private String sort;
 
-    /** 单次返回行数上限(防御性截断标记用) */
+    /** 单次返回行数上限；分页接口会服务端钳制，不代表最终全集上限。 */
     private Integer rowCap;
+
+    /** keyset 分页游标：只返回 documentId > afterDocumentId 的下一页。 */
+    private Long afterDocumentId;
 
 }
