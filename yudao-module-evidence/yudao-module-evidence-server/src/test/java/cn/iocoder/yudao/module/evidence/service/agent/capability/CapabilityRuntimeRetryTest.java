@@ -1,12 +1,15 @@
 package cn.iocoder.yudao.module.evidence.service.agent.capability;
 
+import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentStopReason;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -77,6 +80,36 @@ class CapabilityRuntimeRetryTest {
     }
 
     @Test
+    void invocationTenantMustBeBoundInsideRuntimeWorker() {
+        TenantAwareCapability capability = new TenantAwareCapability();
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(List.of(capability), List.of()));
+        Long oldTenantId = TenantContextHolder.getTenantId();
+        boolean oldIgnore = TenantContextHolder.isIgnore();
+        try {
+            // 模拟提交任务时调用线程携带了另一个租户。worker 必须以服务端注入的 invocation context 为准。
+            TenantContextHolder.setTenantId(999L);
+            TenantContextHolder.setIgnore(true);
+            CapabilityInvocationContext context = new CapabilityInvocationContext(
+                    1L, 2L, 6L, "PATENT", "trace-tenant-propagation");
+            CapabilityInvoker.PreparedCall call = invoker.prepare("tenant-aware", Map.of("query", "x"), context);
+
+            CapabilityResult result = invoker.invoke(call, context);
+
+            assertTrue(result.success());
+            assertEquals(1L, capability.observedTenantId.get());
+            assertFalse(capability.observedIgnore.get());
+            // worker 的上下文切换不能反向污染提交任务的调用线程。
+            assertEquals(999L, TenantContextHolder.getTenantId());
+            assertTrue(TenantContextHolder.isIgnore());
+        } finally {
+            invoker.shutdown();
+            TenantContextHolder.clear();
+            if (oldTenantId != null) TenantContextHolder.setTenantId(oldTenantId);
+            if (oldIgnore) TenantContextHolder.setIgnore(true);
+        }
+    }
+
+    @Test
     void onlyThreeRuntimeFailureTypesAreRetryable() {
         assertTrue(CapabilityFailureType.TIMEOUT.retryable());
         assertTrue(CapabilityFailureType.THROTTLED.retryable());
@@ -143,6 +176,25 @@ class CapabilityRuntimeRetryTest {
             calls.incrementAndGet();
             return CapabilityResult.failure(CapabilityFailureType.DATA_INCOMPLETE,
                     AgentStopReason.NO_RELIABLE_EVIDENCE, "required source data is incomplete");
+        }
+    }
+
+    private static final class TenantAwareCapability implements KnowledgeCapability {
+        private final AtomicReference<Long> observedTenantId = new AtomicReference<>();
+        private final AtomicBoolean observedIgnore = new AtomicBoolean(true);
+        private final CapabilityDefinition definition = new CapabilityDefinition(
+                "tenant-aware", "1", "tenant propagation test", Set.of("query"), true, 1_000L, 10);
+
+        @Override
+        public CapabilityDefinition definition() {
+            return definition;
+        }
+
+        @Override
+        public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+            observedTenantId.set(TenantContextHolder.getTenantId());
+            observedIgnore.set(TenantContextHolder.isIgnore());
+            return CapabilityResult.success("ok", Map.of("outputCount", 1));
         }
     }
 }
