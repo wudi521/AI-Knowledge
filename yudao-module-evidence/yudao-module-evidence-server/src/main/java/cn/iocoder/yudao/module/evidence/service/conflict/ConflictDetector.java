@@ -8,6 +8,7 @@ import cn.iocoder.yudao.module.evidence.domain.Conflict;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.service.assemble.EvidenceSimilarity;
 import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
+import cn.iocoder.yudao.module.evidence.service.validation.DomainEvidenceValidationPolicyRegistry;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import jakarta.annotation.Resource;
@@ -18,11 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * 通用证据冲突判定器。
- * PATENT 文献默认不使用“客服政策冲突”门禁：不同专利、不同权利要求、不同实施例的差异本身就是正常研究对象，
- * 不能因为文字不同就阻断回答；专利领域的矛盾/对比应由专门的 Patent Evidence Policy 在后续版本实现。
- */
+/** 通用证据冲突判定器；行业差异由 DomainEvidenceValidationPolicy 注入。 */
 @Slf4j
 @Component
 public class ConflictDetector {
@@ -46,11 +43,12 @@ public class ConflictDetector {
 
     @Resource private ModelApi modelApi;
     @Resource private PromptSupport promptSupport;
+    @Resource private DomainEvidenceValidationPolicyRegistry domainValidationPolicies;
 
     public List<Conflict> detect(List<Evidence> evidences) {
         if (evidences == null || evidences.size() < 2) return List.of();
-        if (isPatentEvidenceSet(evidences)) {
-            log.debug("[detect][PATENT 证据集跳过通用冲突检测, evidenceCount={}]", evidences.size());
+        if (domainValidationPolicies != null && domainValidationPolicies.skipGenericConflictDetection(evidences)) {
+            log.debug("[detect][领域验证插件要求跳过通用冲突检测, evidenceCount={}]", evidences.size());
             return List.of();
         }
         List<int[]> pairs = buildCandidatePairs(evidences);
@@ -64,21 +62,6 @@ public class ConflictDetector {
             log.warn("[detect][LLM 冲突判定调用异常, 保守降级为无冲突: {}]", e.getMessage());
             return List.of();
         }
-    }
-
-    private boolean isPatentEvidenceSet(List<Evidence> evidences) {
-        boolean sawPatent = false;
-        for (Evidence evidence : evidences) {
-            if (evidence == null || StrUtil.isBlank(evidence.getChunkMetadata())) return false;
-            try {
-                JSONObject meta = JSONUtil.parseObj(evidence.getChunkMetadata());
-                if (!"PATENT".equalsIgnoreCase(meta.getStr("domainCode"))) return false;
-                sawPatent = true;
-            } catch (Exception e) {
-                return false;
-            }
-        }
-        return sawPatent;
     }
 
     private List<int[]> buildCandidatePairs(List<Evidence> evidences) {

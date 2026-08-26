@@ -10,17 +10,19 @@ import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.conflict.JsonExtract;
 import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
+import cn.iocoder.yudao.module.evidence.service.validation.DomainEvidenceValidationPolicyRegistry;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/** 断言验证器: 回答逐句核对证据。 */
+/** 断言验证器：通用证据约束固定，行业附加规则由 DomainEvidenceValidationPolicy 注入。 */
 @Slf4j
 @Component
 public class ClaimVerifier {
@@ -39,9 +41,7 @@ public class ClaimVerifier {
             5. “依据当前资料无法确认/无法确定/不能据此确认”等证据边界或谨慎性表述不是外部事实断言，
                当它表达的是“现有证据不足以证明某结论”时视为允许的 EPISTEMIC_LIMITATION，不应作为幻觉阻断；
                可以输出 SUPPORTED，evidenceIndex=-1；
-            6. 专利公开文本中的医疗/科学效果若回答明确表述为“文献记载/声称，不能据此确认真实性/疗效/安全性”，
-               其中谨慎性限制句同样允许 evidenceIndex=-1；
-            7. 真正新增的事实若证据中找不到，一律 UNSUPPORTED。
+            6. 真正新增的事实若证据中找不到，一律 UNSUPPORTED。
             """;
 
     private static final int CONTENT_MAX_LEN = 300;
@@ -50,8 +50,19 @@ public class ClaimVerifier {
     @Resource private PromptSupport promptSupport;
     @SuppressWarnings("unused")
     private final EvidenceProperties properties;
+    private final DomainEvidenceValidationPolicyRegistry domainValidationPolicies;
 
-    public ClaimVerifier(EvidenceProperties properties) { this.properties = properties; }
+    @Autowired
+    public ClaimVerifier(EvidenceProperties properties,
+                         DomainEvidenceValidationPolicyRegistry domainValidationPolicies) {
+        this.properties = properties;
+        this.domainValidationPolicies = domainValidationPolicies;
+    }
+
+    /** 兼容纯单元测试/旧调用；生产 Spring 路径使用插件构造器。 */
+    public ClaimVerifier(EvidenceProperties properties) {
+        this(properties, null);
+    }
 
     public List<ClaimResult> verify(String query, String answer, List<Evidence> evidences) {
         return verify(query, answer, evidences, null);
@@ -61,7 +72,7 @@ public class ClaimVerifier {
         try {
             if (StrUtil.isBlank(answer)) return null;
             ModelChatReqDTO req = new ModelChatReqDTO();
-            req.setSystem(promptSupport.get("claim-verify", SYSTEM_PROMPT));
+            req.setSystem(buildSystemPrompt(evidences));
             req.setUser(buildUserPrompt(query, answer, evidences, history));
             List<ClaimResult> claims = parseClaims(modelApi.chat(req).getCheckedData());
             if (claims == null) return null;
@@ -77,7 +88,6 @@ public class ClaimVerifier {
                     claim.setVerdict("UNSUPPORTED");
                 }
                 if (isEpistemicLimitation(claim.getText())) {
-                    // 这是系统对证据边界的陈述，不是知识事实；避免“拒答语句本身被判无证据”导致无限重试。
                     claim.setVerdict("SUPPORTED");
                     if (claim.getEvidenceIndex() == null) claim.setEvidenceIndex(-1);
                 }
@@ -97,6 +107,17 @@ public class ClaimVerifier {
             if (!"SUPPORTED".equals(claim.getVerdict())) return false;
         }
         return true;
+    }
+
+    private String buildSystemPrompt(List<Evidence> evidences) {
+        String base = promptSupport.get("claim-verify", SYSTEM_PROMPT);
+        if (domainValidationPolicies == null) return base;
+        List<String> rules = domainValidationPolicies.claimVerificationRules(evidences);
+        if (rules.isEmpty()) return base;
+        StringBuilder sb = new StringBuilder(StrUtil.nullToEmpty(base));
+        sb.append("\n领域附加核查规则（只能加严/澄清，不能绕过通用证据约束）：\n");
+        for (int i = 0; i < rules.size(); i++) sb.append("D").append(i + 1).append(". ").append(rules.get(i)).append('\n');
+        return sb.toString();
     }
 
     private boolean isEpistemicLimitation(String text) {

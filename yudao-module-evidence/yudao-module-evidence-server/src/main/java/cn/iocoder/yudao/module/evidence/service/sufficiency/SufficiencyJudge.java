@@ -1,13 +1,13 @@
 package cn.iocoder.yudao.module.evidence.service.sufficiency;
 
 import cn.hutool.core.util.StrUtil;
-import cn.hutool.json.JSONObject;
-import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.evidence.domain.Conflict;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.domain.Judgement;
 import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
+import cn.iocoder.yudao.module.evidence.service.validation.DomainEvidenceValidationPolicyRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -15,7 +15,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
-/** 证据充分性判定器。 */
+/** 证据充分性判定器；行业最小证据数/权威证据规则由领域验证插件提供。 */
 @Slf4j
 @Component
 public class SufficiencyJudge {
@@ -29,9 +29,18 @@ public class SufficiencyJudge {
     private static final int DEFAULT_MIN_EVIDENCE_COUNT = 2;
 
     private final EvidenceProperties properties;
+    private final DomainEvidenceValidationPolicyRegistry domainValidationPolicies;
 
-    public SufficiencyJudge(EvidenceProperties properties) {
+    @Autowired
+    public SufficiencyJudge(EvidenceProperties properties,
+                            DomainEvidenceValidationPolicyRegistry domainValidationPolicies) {
         this.properties = properties;
+        this.domainValidationPolicies = domainValidationPolicies;
+    }
+
+    /** 兼容纯单元测试/旧调用；生产 Spring 路径使用上面的插件构造器。 */
+    public SufficiencyJudge(EvidenceProperties properties) {
+        this(properties, null);
     }
 
     public Judgement judge(List<Evidence> evidences, List<Conflict> conflicts, List<String> questionProducts) {
@@ -54,15 +63,9 @@ public class SufficiencyJudge {
             double confidence = fuse(topScore, countMetric, coverageMetric, cfg);
 
             List<String> reasons = new ArrayList<>(4);
-            if (StrUtil.isNotBlank(retrievalBlockReason)) {
-                reasons.add(retrievalBlockReason);
-            }
-            if (evidenceCount < minCount) {
-                reasons.add("证据不足(需至少" + minCount + "条)");
-            }
-            if (!cfs.isEmpty() && Boolean.TRUE.equals(cfg.getConflictBlock())) {
-                reasons.add("证据存在冲突");
-            }
+            if (StrUtil.isNotBlank(retrievalBlockReason)) reasons.add(retrievalBlockReason);
+            if (evidenceCount < minCount) reasons.add("证据不足(需至少" + minCount + "条)");
+            if (!cfs.isEmpty() && Boolean.TRUE.equals(cfg.getConflictBlock())) reasons.add("证据存在冲突");
             if (!products.isEmpty() && Boolean.TRUE.equals(cfg.getEntityConsistency()) && coverageMetric <= 0) {
                 reasons.add("产品不匹配");
             }
@@ -70,16 +73,12 @@ public class SufficiencyJudge {
                 return build(false, confidence, String.join(";", reasons), evidenceCount, cfs.size());
             }
 
-            // 专利中的著录信息、单项权利要求属于权威原文；命中一条高质量证据即可进入生成/验证，
-            // 不应为了凑“至少2条”引入其他专利造成污染。
-            if (isAuthoritativePatentEvidence(evs) && evidenceCount >= 1) {
+            if (isAuthoritativeEvidence(evs) && evidenceCount >= 1) {
                 return build(true, Math.max(confidence, answerThreshold(cfg)), null, evidenceCount, cfs.size());
             }
 
             double answerThreshold = answerThreshold(cfg);
-            if (confidence >= answerThreshold) {
-                return build(true, confidence, null, evidenceCount, cfs.size());
-            }
+            if (confidence >= answerThreshold) return build(true, confidence, null, evidenceCount, cfs.size());
             double consultThreshold = consultThreshold(cfg);
             String reason = confidence >= consultThreshold ? "证据充分度不足(可转人工)" : "证据充分度不足";
             return build(false, confidence, reason, evidenceCount, cfs.size());
@@ -91,31 +90,13 @@ public class SufficiencyJudge {
     }
 
     private int effectiveMinEvidenceCount(List<Evidence> evidences, EvidenceProperties.Sufficiency cfg) {
-        return isAuthoritativePatentEvidence(evidences) ? 1 : minEvidenceCount(cfg);
+        Integer override = domainValidationPolicies == null ? null
+                : domainValidationPolicies.minEvidenceCountOverride(evidences);
+        return override != null && override > 0 ? override : minEvidenceCount(cfg);
     }
 
-    private boolean isAuthoritativePatentEvidence(List<Evidence> evidences) {
-        if (evidences == null || evidences.isEmpty()) {
-            return false;
-        }
-        for (Evidence evidence : evidences) {
-            if (evidence == null || StrUtil.isBlank(evidence.getChunkMetadata())) {
-                continue;
-            }
-            try {
-                JSONObject meta = JSONUtil.parseObj(evidence.getChunkMetadata());
-                if (!"PATENT".equalsIgnoreCase(meta.getStr("domainCode"))) {
-                    continue;
-                }
-                String section = meta.getStr("sectionType");
-                if ("CLAIMS".equalsIgnoreCase(section) || "BIBLIOGRAPHIC".equalsIgnoreCase(section)) {
-                    return true;
-                }
-            } catch (Exception ignore) {
-                // 非法 metadata 不改变通用判定
-            }
-        }
-        return false;
+    private boolean isAuthoritativeEvidence(List<Evidence> evidences) {
+        return domainValidationPolicies != null && domainValidationPolicies.isAuthoritativeEvidence(evidences);
     }
 
     private double maxScore(List<Evidence> evidences) {
@@ -162,9 +143,7 @@ public class SufficiencyJudge {
         evidenceCount = Math.max(0.0, evidenceCount);
         entityCoverage = Math.max(0.0, entityCoverage);
         double sum = topScore + evidenceCount + entityCoverage;
-        if (sum <= 0) {
-            return new double[]{DEFAULT_WEIGHT_TOP_SCORE, DEFAULT_WEIGHT_EVIDENCE_COUNT, DEFAULT_WEIGHT_ENTITY_COVERAGE};
-        }
+        if (sum <= 0) return new double[]{DEFAULT_WEIGHT_TOP_SCORE, DEFAULT_WEIGHT_EVIDENCE_COUNT, DEFAULT_WEIGHT_ENTITY_COVERAGE};
         if (Math.abs(sum - 1.0) > WEIGHT_SUM_EPSILON) {
             topScore /= sum;
             evidenceCount /= sum;
@@ -175,7 +154,7 @@ public class SufficiencyJudge {
 
     private int minEvidenceCount(EvidenceProperties.Sufficiency cfg) {
         Integer value = cfg.getMinEvidenceCount();
-        return (value != null && value > 0) ? value : DEFAULT_MIN_EVIDENCE_COUNT;
+        return value != null && value > 0 ? value : DEFAULT_MIN_EVIDENCE_COUNT;
     }
 
     private double answerThreshold(EvidenceProperties.Sufficiency cfg) {
