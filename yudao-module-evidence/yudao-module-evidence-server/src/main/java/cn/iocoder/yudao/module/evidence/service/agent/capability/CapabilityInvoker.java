@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.evidence.service.agent.capability;
 
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentStopReason;
 import jakarta.annotation.PreDestroy;
@@ -160,7 +161,11 @@ public class CapabilityInvoker {
 
     private CapabilityResult invokeOnce(PreparedCall call, CapabilityInvocationContext context) {
         long timeoutMs = call.capability().definition().timeoutMs();
-        Future<CapabilityResult> future = executor.submit(() -> call.capability().execute(context, call.arguments()));
+        // capability 在独立线程池执行，不能依赖调用线程的 ThreadLocal。使用服务端注入的可信 tenantId
+        // 显式建立租户上下文，并由 TenantUtils 在 finally 中恢复 worker 原上下文，避免线程复用时串租户。
+        Future<CapabilityResult> future = executor.submit(() ->
+                TenantUtils.execute(context == null ? null : context.tenantId(),
+                        () -> call.capability().execute(context, call.arguments())));
         try {
             return future.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
