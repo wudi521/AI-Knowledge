@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.retrieval.api.dto.QueryStageTimingDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalResultDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchReqDTO;
 import cn.iocoder.yudao.module.retrieval.api.dto.RetrievalSearchRespDTO;
+import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalDomainResolver;
 import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalRecallContext;
 import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalRecallPipeline;
 import cn.iocoder.yudao.module.retrieval.service.search.recall.RetrievalRecallResult;
@@ -34,15 +35,18 @@ public class PlannedSearchService {
     private static final int VARIANT_LIMIT = 6;
 
     private final RetrievalRecallPipeline recallPipeline;
+    private final RetrievalDomainResolver domainResolver;
     private final RrfMerger rrfMerger;
     private final Reranker reranker;
     private final ResultFilter resultFilter;
 
     public PlannedSearchService(RetrievalRecallPipeline recallPipeline,
+                                RetrievalDomainResolver domainResolver,
                                 RrfMerger rrfMerger,
                                 Reranker reranker,
                                 ResultFilter resultFilter) {
         this.recallPipeline = recallPipeline;
+        this.domainResolver = domainResolver;
         this.rrfMerger = rrfMerger;
         this.reranker = reranker;
         this.resultFilter = resultFilter;
@@ -82,10 +86,11 @@ public class PlannedSearchService {
 
         List<QueryStageTimingDTO> stages = new ArrayList<>();
         int seq = 0;
+        String domainCode = domainResolver.resolve(req.getDomainCode(), kbIds);
 
         RetrievalRecallContext recallContext = new RetrievalRecallContext(
                 req.getQuery(), variants, req.getTenantId(), kbIds,
-                req.getDocumentIds(), RECALL_TOP_K, req.getDomainCode());
+                req.getDocumentIds(), RECALL_TOP_K, domainCode);
         List<RetrievalRecallResult> recallResults = recallPipeline.recall(recallContext);
         List<List<Map.Entry<Long, Double>>> rankedLists = new ArrayList<>();
         Map<String, Set<Long>> channelIds = new LinkedHashMap<>();
@@ -96,7 +101,7 @@ public class PlannedSearchService {
             for (Map.Entry<Long, Double> hit : recall.hits()) ids.add(hit.getKey());
             channelCounts.put(recall.channel(), ids.size());
             stages.add(stage(recall.channel().toUpperCase(Locale.ROOT), ++seq, recall.elapsedMs(),
-                    "plugin=" + recall.pluginId() + "; domain=" + StrUtil.blankToDefault(req.getDomainCode(), "GENERAL")
+                    "plugin=" + recall.pluginId() + "; domain=" + domainCode
                             + "; variants=" + variants + "; kbIds=" + kbIds
                             + "; documentIds=" + safeList(req.getDocumentIds()),
                     "hits=" + recall.hits().size() + "; degraded=" + recall.degraded()
@@ -112,7 +117,7 @@ public class PlannedSearchService {
         long fusionMs = System.currentTimeMillis() - start;
         channels.setFused(fused.size());
         stages.add(stage("FUSION", ++seq, fusionMs,
-                "channels=" + channelCounts,
+                "domain=" + domainCode + "; channels=" + channelCounts,
                 "publishedFused=" + fused.size()));
 
         List<Long> candidateIds = fused.stream().map(Map.Entry::getKey).toList();
@@ -165,7 +170,7 @@ public class PlannedSearchService {
         }
         resp.setResults(results);
         stages.add(stage("RERANK", ++seq, rerankMs,
-                "query=" + req.getQuery() + "; candidates=" + candidateIds.size(),
+                "domain=" + domainCode + "; query=" + req.getQuery() + "; candidates=" + candidateIds.size(),
                 "topResults=" + summarize(results)));
         analysis.setStages(stages);
         return resp;
