@@ -16,6 +16,7 @@ import cn.iocoder.yudao.module.evidence.service.agent.runtime.AgentExecutionPlan
 import cn.iocoder.yudao.module.evidence.service.agent.runtime.AgentPlanningDecision;
 import cn.iocoder.yudao.module.evidence.service.agent.runtime.AgentRuntimeExecutor;
 import cn.iocoder.yudao.module.evidence.service.agent.runtime.AgentRuntimeResult;
+import cn.iocoder.yudao.module.evidence.service.agent.runtime.NoProgressGuard;
 import cn.iocoder.yudao.module.evidence.service.agent.runtime.PlanNode;
 import cn.iocoder.yudao.module.evidence.service.agent.runtime.ProvenanceRecord;
 import cn.iocoder.yudao.module.evidence.service.agent.runtime.ReferenceRecord;
@@ -95,6 +96,7 @@ public class AgenticKnowledgeRuntimeEngine {
         List<ActivityRecord> activities = new ArrayList<>();
         List<ReferenceRecord> references = new ArrayList<>();
         List<ProvenanceRecord> provenance = new ArrayList<>();
+        NoProgressGuard noProgressGuard = new NoProgressGuard();
         int replanAttempt = 0;
 
         while (true) {
@@ -165,6 +167,16 @@ public class AgenticKnowledgeRuntimeEngine {
                 return stopped(state, AgentStopReason.INVALID_CAPABILITY_CALL,
                         "执行计划未绑定 immutable OriginalGoal。", gatheredEvidence, traceSteps,
                         trustedEntityIds, activities, references, provenance);
+            }
+
+            if (noProgressGuard.repeatsInsufficient(plan)) {
+                traceSteps.add(trace(traceSteps, "NO_PROGRESS_GUARD", "REJECT_REPEATED_PLAN", null,
+                        state.getOriginalGoal(), planSummary(plan), "STOPPED", 0L,
+                        "semantic execution plan already ran successfully and was insufficient",
+                        AgentStopReason.NO_PROGRESS));
+                return stopped(state, AgentStopReason.NO_PROGRESS,
+                        "重新规划没有产生新的执行语义，停止重复访问同一数据源。",
+                        gatheredEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
             }
 
             String subGoal = plan.nodes().stream().map(PlanNode::purpose).filter(StrUtil::isNotBlank)
@@ -271,6 +283,11 @@ public class AgenticKnowledgeRuntimeEngine {
             }
             if (evaluation.verdict() == AgentGoalEvaluator.Verdict.INSUFFICIENT
                     && replanAttempt < MAX_REPLAN_ATTEMPTS) {
+                // 只有确定性执行完成且不存在 transient/recoverable failure 时才把计划标记为“已证明不足”。
+                // 运行时短暂故障仍允许 Planner 重新组织/重试，不被 no-progress 错杀。
+                if (!hasPlannerRecoverable(runtime) && !hasRuntimeRetryable(runtime)) {
+                    noProgressGuard.markInsufficient(plan);
+                }
                 replanAttempt++;
                 addGoalGapObservation(observations, state, evaluation, replanAttempt);
                 continue;
@@ -489,6 +506,13 @@ public class AgenticKnowledgeRuntimeEngine {
     private boolean hasPlannerRecoverable(AgentRuntimeResult runtime) {
         for (CapabilityResult result : runtime.nodeResults().values()) {
             if (result != null && result.recoverable()) return true;
+        }
+        return false;
+    }
+
+    private boolean hasRuntimeRetryable(AgentRuntimeResult runtime) {
+        for (CapabilityResult result : runtime.nodeResults().values()) {
+            if (result != null && result.runtimeRetryable()) return true;
         }
         return false;
     }
