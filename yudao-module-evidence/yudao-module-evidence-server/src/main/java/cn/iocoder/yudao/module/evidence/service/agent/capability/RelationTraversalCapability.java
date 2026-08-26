@@ -139,8 +139,11 @@ public class RelationTraversalCapability implements KnowledgeCapability {
                     AgentStopReason.NO_RELIABLE_EVIDENCE, "domain relation provider returned null");
         }
 
+        // RelationResult 的 edges 语义是集合关系，Map 本身不保证迭代顺序。按 source id 归一化后再展开，
+        // 保留每个 provider target list 内部顺序，同时保证 verifiedEntityIds / progressHash 跨 JVM 稳定。
         LinkedHashSet<Long> targets = new LinkedHashSet<>();
-        for (List<Long> values : providerResult.edges().values()) {
+        for (Long sourceId : providerResult.edges().keySet().stream().sorted().toList()) {
+            List<Long> values = providerResult.edges().get(sourceId);
             if (values != null) for (Long id : values) if (id != null) targets.add(id);
         }
         boolean truncated = targets.size() > limit;
