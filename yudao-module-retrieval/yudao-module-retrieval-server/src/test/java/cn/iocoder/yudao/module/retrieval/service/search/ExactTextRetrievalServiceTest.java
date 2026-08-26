@@ -48,23 +48,20 @@ class ExactTextRetrievalServiceTest {
 
     @Test
     void rawExactPathHydratesOnlyVerifiedContentAndSkipsOtherChannels() {
-        when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
+        when(resultFilter.getVisibleKbIdsResult(9L)).thenReturn(ResultFilter.ReadResult.success(Set.of(6L)));
         when(bm25Searcher.searchExactPhraseWithStatus(eq("粒子化磁涌"), eq(1L), eq(List.of(6L)), eq(200), any()))
                 .thenReturn(Bm25Searcher.ExactSearchExecution.success(
                         new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 7.2D)), 1L)));
-        when(resultFilter.filterPublished(Set.of(101L))).thenReturn(Set.of(101L));
-        when(resultFilter.getChunkContents(List.of(101L))).thenReturn(Map.of(101L, "本发明涉及一种粒子化磁涌装置。"));
-        when(resultFilter.getChunkMetadatas(List.of(101L))).thenReturn(Map.of(101L, "{}"));
-        ChunkDocInfoDTO info = new ChunkDocInfoDTO();
-        info.setChunkId(101L);
-        info.setDocumentId(67L);
-        info.setDocumentName("一种粒子化磁涌装置及其使用方法");
-        info.setVersionNo("V1");
-        info.setVersionId(7001L);
-        when(resultFilter.getChunkDocInfo(List.of(101L))).thenReturn(Map.of(101L, info));
+        when(resultFilter.filterPublishedResult(Set.of(101L))).thenReturn(ResultFilter.ReadResult.success(Set.of(101L)));
+        when(resultFilter.getChunkContentsResult(List.of(101L))).thenReturn(
+                ResultFilter.ReadResult.success(Map.of(101L, "本发明涉及一种粒子化磁涌装置。")));
+        when(resultFilter.getChunkMetadatasResult(List.of(101L))).thenReturn(
+                ResultFilter.ReadResult.success(Map.of(101L, "{}")));
+        ChunkDocInfoDTO info = info(101L, 67L, "一种粒子化磁涌装置及其使用方法");
+        when(resultFilter.getChunkDocInfoResult(List.of(101L))).thenReturn(
+                ResultFilter.ReadResult.success(Map.of(101L, info)));
 
-        RetrievalSearchReqDTO req = request("原文中包含“粒子化磁涌”吗？", "粒子化磁涌");
-        RetrievalSearchRespDTO resp = service.search(req);
+        RetrievalSearchRespDTO resp = service.search(request("原文中包含“粒子化磁涌”吗？", "粒子化磁涌"));
 
         assertThat(resp.getResults()).hasSize(1);
         assertThat(resp.getTotalHits()).isEqualTo(1L);
@@ -78,12 +75,15 @@ class ExactTextRetrievalServiceTest {
 
     @Test
     void phraseCandidateWithoutRawSubstringIsRejected() {
-        when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
+        when(resultFilter.getVisibleKbIdsResult(9L)).thenReturn(ResultFilter.ReadResult.success(Set.of(6L)));
         when(bm25Searcher.searchExactPhraseWithStatus(eq("甲乙"), eq(1L), eq(List.of(6L)), eq(200), any()))
                 .thenReturn(Bm25Searcher.ExactSearchExecution.success(
                         new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 1D)), 1L)));
-        when(resultFilter.filterPublished(Set.of(101L))).thenReturn(Set.of(101L));
-        when(resultFilter.getChunkContents(List.of(101L))).thenReturn(Map.of(101L, "甲，乙"));
+        when(resultFilter.filterPublishedResult(Set.of(101L))).thenReturn(ResultFilter.ReadResult.success(Set.of(101L)));
+        when(resultFilter.getChunkContentsResult(List.of(101L))).thenReturn(
+                ResultFilter.ReadResult.success(Map.of(101L, "甲，乙")));
+        when(resultFilter.getChunkMetadatasResult(List.of())).thenReturn(ResultFilter.ReadResult.success(Map.of()));
+        when(resultFilter.getChunkDocInfoResult(List.of())).thenReturn(ResultFilter.ReadResult.success(Map.of()));
 
         RetrievalSearchRespDTO resp = service.search(request("原文是否包含“甲乙”？", "甲乙"));
 
@@ -95,14 +95,16 @@ class ExactTextRetrievalServiceTest {
 
     @Test
     void oversizedCandidateSetDoesNotPretendExactTotalIsKnown() {
-        when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
+        when(resultFilter.getVisibleKbIdsResult(9L)).thenReturn(ResultFilter.ReadResult.success(Set.of(6L)));
         when(bm25Searcher.searchExactPhraseWithStatus(eq("测试短语"), eq(1L), eq(List.of(6L)), eq(200), any()))
                 .thenReturn(Bm25Searcher.ExactSearchExecution.success(
                         new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 1D)), 201L)));
-        when(resultFilter.filterPublished(Set.of(101L))).thenReturn(Set.of(101L));
-        when(resultFilter.getChunkContents(List.of(101L))).thenReturn(Map.of(101L, "测试短语"));
-        when(resultFilter.getChunkMetadatas(List.of(101L))).thenReturn(Map.of());
-        when(resultFilter.getChunkDocInfo(List.of(101L))).thenReturn(Map.of());
+        when(resultFilter.filterPublishedResult(Set.of(101L))).thenReturn(ResultFilter.ReadResult.success(Set.of(101L)));
+        when(resultFilter.getChunkContentsResult(List.of(101L))).thenReturn(
+                ResultFilter.ReadResult.success(Map.of(101L, "测试短语")));
+        when(resultFilter.getChunkMetadatasResult(List.of(101L))).thenReturn(ResultFilter.ReadResult.success(Map.of()));
+        when(resultFilter.getChunkDocInfoResult(List.of(101L))).thenReturn(
+                ResultFilter.ReadResult.success(Map.of(101L, info(101L, 67L, "测试文档"))));
 
         RetrievalSearchRespDTO resp = service.search(request("哪些地方出现“测试短语”？", "测试短语"));
 
@@ -114,7 +116,7 @@ class ExactTextRetrievalServiceTest {
 
     @Test
     void authoritativeScopeIsAppliedBeforeExactPhraseRecall() {
-        when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
+        when(resultFilter.getVisibleKbIdsResult(9L)).thenReturn(ResultFilter.ReadResult.success(Set.of(6L)));
         when(scopePipeline.refine(any())).thenReturn(new RetrievalScopePipeline.Result(
                 List.of(74L), false, false,
                 List.of(new RetrievalScopeDecision("patent-scope", List.of(74L), true, false, false, null))));
@@ -131,18 +133,58 @@ class ExactTextRetrievalServiceTest {
 
     @Test
     void elasticsearchFailureMustNotBecomeAuthoritativeZeroHit() {
-        when(resultFilter.getVisibleKbIds(9L)).thenReturn(Set.of(6L));
+        when(resultFilter.getVisibleKbIdsResult(9L)).thenReturn(ResultFilter.ReadResult.success(Set.of(6L)));
         when(bm25Searcher.searchExactPhraseWithStatus(eq("磁涌"), eq(1L), eq(List.of(6L)), eq(200), any()))
                 .thenReturn(Bm25Searcher.ExactSearchExecution.failure("ES unavailable"));
 
         RetrievalSearchRespDTO resp = service.search(request("原文是否包含磁涌？", "磁涌"));
 
+        assertSourceFailure(resp);
+    }
+
+    @Test
+    void contentHydrationFailureMustNotBecomeAuthoritativeZeroHit() {
+        when(resultFilter.getVisibleKbIdsResult(9L)).thenReturn(ResultFilter.ReadResult.success(Set.of(6L)));
+        when(bm25Searcher.searchExactPhraseWithStatus(eq("磁涌"), eq(1L), eq(List.of(6L)), eq(200), any()))
+                .thenReturn(Bm25Searcher.ExactSearchExecution.success(
+                        new Bm25Searcher.SearchHits(List.of(Map.entry(101L, 1D)), 1L)));
+        when(resultFilter.filterPublishedResult(Set.of(101L))).thenReturn(ResultFilter.ReadResult.success(Set.of(101L)));
+        when(resultFilter.getChunkContentsResult(List.of(101L))).thenReturn(
+                ResultFilter.ReadResult.failure(Map.of(), "content source unavailable"));
+
+        RetrievalSearchRespDTO resp = service.search(request("原文是否包含磁涌？", "磁涌"));
+
+        assertSourceFailure(resp);
+    }
+
+    @Test
+    void visibilityFailureIsNotNoVisibleKnowledgeBaseBlock() {
+        when(resultFilter.getVisibleKbIdsResult(9L)).thenReturn(
+                ResultFilter.ReadResult.failure(Set.of(), "permission service unavailable"));
+
+        RetrievalSearchRespDTO resp = service.search(request("原文是否包含磁涌？", "磁涌"));
+
+        assertThat(resp.getAnalysis().getBlocked()).isFalse();
+        assertSourceFailure(resp);
+    }
+
+    private void assertSourceFailure(RetrievalSearchRespDTO resp) {
         assertThat(resp.getResults()).isEmpty();
         assertThat(resp.getAnalysis().getSuccess()).isFalse();
         assertThat(resp.getAnalysis().getDegraded()).isTrue();
         assertThat(resp.getTotalHits()).isNull();
         assertThat(resp.getTotalHitsExact()).isFalse();
         assertThat(resp.getCandidateTotalHits()).isNull();
+    }
+
+    private ChunkDocInfoDTO info(Long chunkId, Long documentId, String name) {
+        ChunkDocInfoDTO info = new ChunkDocInfoDTO();
+        info.setChunkId(chunkId);
+        info.setDocumentId(documentId);
+        info.setDocumentName(name);
+        info.setVersionNo("V1");
+        info.setVersionId(7001L);
+        return info;
     }
 
     private RetrievalSearchReqDTO request(String query, String exactText) {
