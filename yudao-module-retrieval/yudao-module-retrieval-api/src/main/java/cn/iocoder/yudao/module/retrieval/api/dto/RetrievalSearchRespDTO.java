@@ -41,6 +41,10 @@ public class RetrievalSearchRespDTO {
         private Boolean success;
         /** 任一 Scope/Recall/Fusion/Rerank 插件发生能力降级。可有结果，但证明强度下降。 */
         private Boolean degraded;
+        /** hard scope 是否被确定性门禁收敛为空；这与基础设施失败、普通零命中是不同状态。 */
+        private Boolean blocked;
+        /** Scope 阻断原因，仅用于执行事实/诊断，不由回答层重新解释。 */
+        private String blockReason;
         private String route;
         private List<QueryStageTimingDTO> stages;
     }
