@@ -5,18 +5,21 @@ import lombok.Data;
 import java.util.List;
 
 /**
- * Structured Query 数据响应(完整结构化数据集)。
- * <p>
- * truncated=true 表示数据源未返回完整集(超过上限), 调用方 Completeness Guard 禁止基于部分 rows
- * 计算 COUNT/SUM/AVG/MIN/MAX 等全集结论。
+ * Structured Query 数据响应。
+ *
+ * <p>单页接口里 truncated=true 表示当前页后仍有数据，调用方必须继续使用 nextDocumentId
+ * 拉取后续页，直到 truncated=false，才能把结果标记为 completeDataset=true。</p>
  */
 @Data
 public class StructuredQueryRespDTO {
 
-    /** 每对象一行(完整数据集) */
+    /** 当前页的结构化对象行。 */
     private List<StructuredQueryRowDTO> rows;
 
-    /** 是否被截断(超过 rowCap) */
+    /** 当前页之后是否仍有数据。 */
     private boolean truncated;
+
+    /** keyset 下一页游标；truncated=true 时必须非空且严格前进。 */
+    private Long nextDocumentId;
 
 }
