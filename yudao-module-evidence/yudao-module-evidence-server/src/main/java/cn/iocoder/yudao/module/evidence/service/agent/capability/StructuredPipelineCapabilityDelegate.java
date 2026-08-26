@@ -87,8 +87,14 @@ public class StructuredPipelineCapabilityDelegate {
                 diagnostics.put("errorKind", "PIPELINE_CONTRACT");
                 return CapabilityResult.recoverableFailure(message, diagnostics);
             }
+            if (isDependencyError(message)) {
+                diagnostics.put("errorKind", "STRUCTURED_DEPENDENCY");
+                return CapabilityResult.failure(CapabilityFailureType.DEPENDENCY,
+                        AgentStopReason.NO_RELIABLE_EVIDENCE, message, diagnostics);
+            }
             diagnostics.putIfAbsent("errorKind", "STRUCTURED_DATA_INCOMPLETE");
-            return CapabilityResult.failure(AgentStopReason.NO_RELIABLE_EVIDENCE, message, diagnostics);
+            return CapabilityResult.failure(CapabilityFailureType.DATA_INCOMPLETE,
+                    AgentStopReason.NO_RELIABLE_EVIDENCE, message, diagnostics);
         }
 
         String shape = result.scalarValue() != null ? "SCALAR"
@@ -500,6 +506,13 @@ public class StructuredPipelineCapabilityDelegate {
         return lower.contains("not registered") || lower.contains("not sortable") || lower.contains("not groupable")
                 || lower.contains("not allowed") || lower.contains("requires") || lower.contains("invalid")
                 || lower.contains("order-by source") || lower.contains("does not accept") || lower.contains("compatible");
+    }
+
+    private boolean isDependencyError(String message) {
+        String lower = message == null ? "" : message.toLowerCase(Locale.ROOT);
+        return lower.contains("知识库结构化数据访问失败") || lower.contains("知识库结构化数据访问异常")
+                || lower.contains("downstream response") || lower.contains("downstream data")
+                || lower.contains("dependency") || lower.contains("rpc") || lower.contains("feign");
     }
 
     private FieldDefinition resolveField(String domainCode, String raw) {
