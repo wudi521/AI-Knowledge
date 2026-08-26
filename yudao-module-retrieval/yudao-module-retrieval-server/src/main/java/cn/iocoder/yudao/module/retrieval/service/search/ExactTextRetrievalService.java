@@ -22,16 +22,14 @@ import java.util.Set;
 /**
  * EXACT_TEXT_SEARCH 快路径。
  *
- * <p>与 Planned Hybrid 共用 Domain Resolution + Scope Pipeline；差异仅在 Recall/Verify：
+ * <p>与 Planned Hybrid 共用 Visibility + Domain Resolution + Scope 合同；差异仅在 Recall/Verify：
  * ES match_phrase 只做候选召回，随后必须对原文 content.contains(exactText) 做逐字二次校验。</p>
  */
 @Slf4j
 @Service
 public class ExactTextRetrievalService {
 
-    /** 最终返回给上层的证据上限。 */
     private static final int MAX_RETURN = 20;
-    /** 单次用于逐字二次校验的 phrase 候选上限；超过后不得宣称 exact 全集完整。 */
     private static final int MAX_EXACT_CANDIDATES = 200;
 
     private final Bm25Searcher bm25Searcher;
@@ -62,15 +60,23 @@ public class ExactTextRetrievalService {
             resp.getAnalysis().setSuccess(false);
             resp.getAnalysis().setBlocked(true);
             resp.getAnalysis().setBlockReason("exact text is blank");
+            clearExactTotals(resp);
             resp.setResults(List.of());
-            resp.setTotalHits(null);
-            resp.setTotalHitsExact(false);
-            resp.setCandidateTotalHits(null);
             finish(resp, stages);
             return resp;
         }
 
-        Set<Long> visible = resultFilter.getVisibleKbIds(req.getUserId());
+        long visibilityStart = System.currentTimeMillis();
+        ResultFilter.ReadResult<Set<Long>> visibility = resultFilter.getVisibleKbIdsResult(req.getUserId());
+        addStage(stages, "VISIBILITY", System.currentTimeMillis() - visibilityStart,
+                visibility.failed() ? "FAILED" : "SUCCEEDED", false,
+                "userId=" + req.getUserId(),
+                visibility.failed() ? "failed=" + visibility.errorMessage() : "visibleKbIds=" + visibility.data());
+        if (visibility.failed()) {
+            return failSource(resp, stages);
+        }
+
+        Set<Long> visible = visibility.data();
         List<Long> kbIds = req.getKbIds() != null && !req.getKbIds().isEmpty()
                 ? req.getKbIds().stream().filter(visible::contains).distinct().toList()
                 : new ArrayList<>(visible);
@@ -78,11 +84,7 @@ public class ExactTextRetrievalService {
             resp.getAnalysis().setBlocked(true);
             resp.getAnalysis().setBlockReason("no visible knowledge base in requested scope");
             resp.setResults(List.of());
-            resp.setTotalHits(null);
-            resp.setTotalHitsExact(false);
-            resp.setCandidateTotalHits(null);
-            addStage(stages, "SCOPE", System.currentTimeMillis() - start, "SUCCEEDED", false,
-                    "requestedKbIds=" + safeList(req.getKbIds()), "blocked=no visible knowledge base");
+            clearExactTotals(resp);
             finish(resp, stages);
             return resp;
         }
@@ -95,22 +97,13 @@ public class ExactTextRetrievalService {
                 "domain=" + domain.domainCode() + "; mixed=" + domain.mixedDomainScope()
                         + suffix(domain.message()));
         if (domain.failed()) {
-            resp.getAnalysis().setSuccess(false);
-            resp.getAnalysis().setDegraded(true);
-            resp.setResults(List.of());
-            resp.setTotalHits(null);
-            resp.setTotalHitsExact(false);
-            resp.setCandidateTotalHits(null);
-            finish(resp, stages);
-            return resp;
+            return failSource(resp, stages);
         }
         if (domain.mixedDomainScope()) {
             resp.getAnalysis().setBlocked(true);
             resp.getAnalysis().setBlockReason("mixed-domain knowledge scope must be partitioned by domain before retrieval");
             resp.setResults(List.of());
-            resp.setTotalHits(null);
-            resp.setTotalHitsExact(false);
-            resp.setCandidateTotalHits(null);
+            clearExactTotals(resp);
             finish(resp, stages);
             return resp;
         }
@@ -129,9 +122,7 @@ public class ExactTextRetrievalService {
             resp.getAnalysis().setDegraded(scope.degraded());
             resp.getAnalysis().setSuccess(!scope.degraded());
             resp.setResults(List.of());
-            resp.setTotalHits(null);
-            resp.setTotalHitsExact(false);
-            resp.setCandidateTotalHits(null);
+            clearExactTotals(resp);
             finish(resp, stages);
             return resp;
         }
@@ -147,14 +138,7 @@ public class ExactTextRetrievalService {
                 execution.failed() ? "failed=" + execution.errorMessage()
                         : "candidateTotal=" + execution.searchHits().totalHits());
         if (execution.failed()) {
-            resp.getAnalysis().setSuccess(false);
-            resp.getAnalysis().setDegraded(true);
-            resp.setResults(List.of());
-            resp.setTotalHits(null);
-            resp.setTotalHitsExact(false);
-            resp.setCandidateTotalHits(null);
-            finish(resp, stages);
-            return resp;
+            return failSource(resp, stages);
         }
 
         Bm25Searcher.SearchHits searchHits = execution.searchHits();
@@ -174,17 +158,36 @@ public class ExactTextRetrievalService {
             return resp;
         }
 
-        Set<Long> published = resultFilter.filterPublished(new HashSet<>(orderedIds));
+        long publishStart = System.currentTimeMillis();
+        ResultFilter.ReadResult<Set<Long>> publishedRead = resultFilter.filterPublishedResult(new HashSet<>(orderedIds));
+        addStage(stages, "PUBLISHED_FILTER", System.currentTimeMillis() - publishStart,
+                publishedRead.failed() ? "FAILED" : "SUCCEEDED", false,
+                "candidateCount=" + orderedIds.size(),
+                publishedRead.failed() ? "failed=" + publishedRead.errorMessage()
+                        : "publishedCount=" + publishedRead.data().size());
+        if (publishedRead.failed()) {
+            return failSource(resp, stages);
+        }
+        Set<Long> published = publishedRead.data();
         List<Long> candidateIds = orderedIds.stream().filter(published::contains).toList();
-        Map<Long, String> contents = resultFilter.getChunkContents(candidateIds);
+
+        long contentStart = System.currentTimeMillis();
+        ResultFilter.ReadResult<Map<Long, String>> contentsRead = resultFilter.getChunkContentsResult(candidateIds);
+        boolean missingContentKeys = !contentsRead.failed() && !contentsRead.data().keySet().containsAll(candidateIds);
+        addStage(stages, "CONTENT_HYDRATE", System.currentTimeMillis() - contentStart,
+                contentsRead.failed() || missingContentKeys ? "FAILED" : "SUCCEEDED", false,
+                "candidateIds=" + candidateIds,
+                contentsRead.failed() ? "failed=" + contentsRead.errorMessage()
+                        : "contentCount=" + contentsRead.data().size()
+                        + (missingContentKeys ? "; missingContentKeys=true" : ""));
+        if (contentsRead.failed() || missingContentKeys) {
+            return failSource(resp, stages);
+        }
+        Map<Long, String> contents = contentsRead.data();
 
         long verifyStart = System.currentTimeMillis();
-        // 第二道“原文逐字”门禁：match_phrase 只是召回候选，不直接算 exact hit。
         List<Long> exactIds = candidateIds.stream()
-                .filter(id -> {
-                    String content = contents.get(id);
-                    return content != null && content.contains(req.getExactText());
-                })
+                .filter(id -> contents.get(id) != null && contents.get(id).contains(req.getExactText()))
                 .toList();
         long verifyMs = System.currentTimeMillis() - verifyStart;
 
@@ -197,8 +200,28 @@ public class ExactTextRetrievalService {
         }
 
         List<Long> returnIds = exactIds.stream().limit(returnLimit).toList();
-        Map<Long, String> metadata = resultFilter.getChunkMetadatas(returnIds);
-        Map<Long, ChunkDocInfoDTO> docInfo = resultFilter.getChunkDocInfo(returnIds);
+        long provenanceStart = System.currentTimeMillis();
+        ResultFilter.ReadResult<Map<Long, ChunkDocInfoDTO>> docInfoRead = resultFilter.getChunkDocInfoResult(returnIds);
+        ResultFilter.ReadResult<Map<Long, String>> metadataRead = resultFilter.getChunkMetadatasResult(returnIds);
+        boolean missingDocInfo = !docInfoRead.failed() && !docInfoRead.data().keySet().containsAll(returnIds);
+        boolean provenanceFailed = docInfoRead.failed() || missingDocInfo;
+        boolean metadataDegraded = metadataRead.failed();
+        addStage(stages, "PROVENANCE_HYDRATE", System.currentTimeMillis() - provenanceStart,
+                provenanceFailed ? "FAILED" : metadataDegraded ? "DEGRADED" : "SUCCEEDED", false,
+                "returnIds=" + returnIds,
+                "docInfo=" + docInfoRead.data().size() + "; metadata=" + metadataRead.data().size()
+                        + (docInfoRead.failed() ? "; docInfoError=" + docInfoRead.errorMessage() : "")
+                        + (missingDocInfo ? "; missingDocInfoKeys=true" : "")
+                        + (metadataRead.failed() ? "; metadataError=" + metadataRead.errorMessage() : ""));
+        if (provenanceFailed) {
+            return failSource(resp, stages);
+        }
+        if (metadataDegraded) {
+            resp.getAnalysis().setDegraded(true);
+        }
+
+        Map<Long, String> metadata = metadataRead.data();
+        Map<Long, ChunkDocInfoDTO> docInfo = docInfoRead.data();
         Map<Long, Double> scores = hits.stream().collect(java.util.stream.Collectors.toMap(
                 Map.Entry::getKey, Map.Entry::getValue, Math::max));
 
@@ -208,12 +231,10 @@ public class ExactTextRetrievalService {
             item.setChunkId(id);
             item.setContent(contents.get(id));
             ChunkDocInfoDTO info = docInfo.get(id);
-            if (info != null) {
-                item.setDocumentId(info.getDocumentId());
-                item.setDocumentName(info.getDocumentName());
-                item.setVersionNo(info.getVersionNo());
-                item.setVersionId(info.getVersionId());
-            }
+            item.setDocumentId(info.getDocumentId());
+            item.setDocumentName(info.getDocumentName());
+            item.setVersionNo(info.getVersionNo());
+            item.setVersionId(info.getVersionId());
             item.setRrfScore(scores.getOrDefault(id, 1D));
             item.setRerankScore(null);
             item.setChannels(List.of("exact_text"));
@@ -234,6 +255,21 @@ public class ExactTextRetrievalService {
                 domain.domainCode(), StrUtil.maxLength(req.getExactText(), 80), results.size(), resp.getTotalHits(),
                 resp.getTotalHitsExact(), searchHits.totalHits(), System.currentTimeMillis() - start);
         return resp;
+    }
+
+    private RetrievalSearchRespDTO failSource(RetrievalSearchRespDTO resp, List<QueryStageTimingDTO> stages) {
+        resp.getAnalysis().setSuccess(false);
+        resp.getAnalysis().setDegraded(true);
+        resp.setResults(List.of());
+        clearExactTotals(resp);
+        finish(resp, stages);
+        return resp;
+    }
+
+    private void clearExactTotals(RetrievalSearchRespDTO resp) {
+        resp.setTotalHits(null);
+        resp.setTotalHitsExact(false);
+        resp.setCandidateTotalHits(null);
     }
 
     private RetrievalSearchRespDTO base(RetrievalSearchReqDTO req) {
