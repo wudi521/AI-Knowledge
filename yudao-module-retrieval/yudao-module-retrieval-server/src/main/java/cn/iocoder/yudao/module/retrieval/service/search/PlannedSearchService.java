@@ -78,6 +78,7 @@ public class PlannedSearchService {
         analysis.setDegraded(false);
         resp.setAnalysis(analysis);
         RetrievalSearchRespDTO.RetrievalChannelStatDTO channels = new RetrievalSearchRespDTO.RetrievalChannelStatDTO();
+        channels.setRecall(Map.of());
         resp.setChannels(channels);
 
         Set<Long> visible = resultFilter.getVisibleKbIds(req.getUserId());
@@ -157,6 +158,7 @@ public class PlannedSearchService {
                     "hits=" + recall.hits().size() + "; degraded=" + recall.degraded()
                             + suffix(recall.message())));
         }
+        channels.setRecall(Map.copyOf(channelCounts));
         channels.setBm25(channelIds.getOrDefault("bm25", Set.of()).size());
         channels.setVector(channelIds.getOrDefault("vector", Set.of()).size());
 
