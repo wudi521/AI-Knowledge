@@ -23,7 +23,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
-/** 把现有 BM25 + Vector + Fusion + Rerank 整条检索链包装成一个 Agent 能力。 */
+/** 把通用 Retrieval Plugin Pipeline 包装成一个 Agent 语义证据能力。 */
 @Component
 public class KnowledgeRetrievalCapability implements KnowledgeCapability {
     public static final String NAME = "knowledge_retrieval";
@@ -56,7 +56,7 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
     @Override
     public CapabilityDefinition definition() {
         return new CapabilityDefinition(NAME, "3",
-                "在当前已授权知识库中检索语义证据；内部自动完成 BM25/Vector/Fusion/Rerank。复杂问题可提供 focused subqueries，系统并行检索后合并证据；若当前 Domain 显式注册 Evidence->Entity 映射，还会输出 candidateEntityIds，但绝不会输出 verifiedEntityIds。",
+                "在当前已授权知识库中检索语义证据；内部执行当前领域已注册的 Scope/Recall/Fusion/Rerank Pipeline。复杂问题可提供 focused subqueries，系统并行检索后合并证据；若当前 Domain 显式注册 Evidence->Entity 映射，还会输出 candidateEntityIds，但绝不会输出 verifiedEntityIds。",
                 Map.of(
                         "query", "必填。当前要补足的信息需求；不得从候选中发明新的硬事实。",
                         "subqueries", "可选。最多 4 个相互独立、共同覆盖当前信息需求的 focused 子查询。非空时系统并行执行这些子查询并合并结果。",
@@ -179,7 +179,7 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
             String traceId = context.traceId();
             PlannedEvidenceRetriever.Result result = retriever.search(q, variants, List.of(context.kbId()),
                     documentIds.isEmpty() ? null : documentIds, topK,
-                    context.tenantId(), context.userId(), traceId);
+                    context.tenantId(), context.userId(), context.domainCode(), traceId);
             return List.of(new QueryRun(q, traceId, result));
         }
         List<CompletableFuture<QueryRun>> futures = new ArrayList<>();
@@ -190,7 +190,7 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
             futures.add(CompletableFuture.supplyAsync(() -> {
                 PlannedEvidenceRetriever.Result result = retriever.search(q, List.of(), List.of(context.kbId()),
                         documentIds.isEmpty() ? null : documentIds, topK,
-                        context.tenantId(), context.userId(), subTrace);
+                        context.tenantId(), context.userId(), context.domainCode(), subTrace);
                 return new QueryRun(q, subTrace, result);
             }, subqueryExecutor));
         }
