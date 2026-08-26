@@ -44,19 +44,22 @@ public class VectorRecallPlugin implements RetrievalRecallPlugin {
     @Override
     public RetrievalRecallResult recall(RetrievalRecallContext context) {
         try {
-            List<List<Float>> vectors = modelApi.embedding(context.variants()).getCheckedData();
+            List<String> queries = context.variants().isEmpty() ? List.of(context.query()) : context.variants();
+            List<List<Float>> vectors = modelApi.embedding(queries).getCheckedData();
             if (vectors == null || vectors.isEmpty()) {
                 return new RetrievalRecallResult(pluginId(), channel(), List.of(), true,
                         "embedding returned no vectors", 0L);
             }
-            List<Map.Entry<Long, Double>> raw = searcher.search(vectors, context.tenantId(), context.kbIds(),
-                    context.topK(), context.documentIds().isEmpty() ? null : context.documentIds());
+            VectorSearcher.SearchExecution execution = searcher.searchWithStatus(
+                    vectors, context.tenantId(), context.kbIds(), context.topK(),
+                    context.documentIds().isEmpty() ? null : context.documentIds());
             Map<Long, Double> best = new LinkedHashMap<>();
-            for (Map.Entry<Long, Double> hit : raw) best.merge(hit.getKey(), hit.getValue(), Math::min);
+            for (Map.Entry<Long, Double> hit : execution.hits()) best.merge(hit.getKey(), hit.getValue(), Math::min);
             List<Map.Entry<Long, Double>> ranked = best.entrySet().stream()
                     .sorted(Map.Entry.<Long, Double>comparingByValue().thenComparing(Map.Entry.comparingByKey()))
                     .limit(context.topK()).toList();
-            return new RetrievalRecallResult(pluginId(), channel(), ranked, false, null, 0L);
+            return new RetrievalRecallResult(pluginId(), channel(), ranked, execution.failed(),
+                    execution.errorMessage(), 0L);
         } catch (Exception e) {
             return new RetrievalRecallResult(pluginId(), channel(), List.of(), true,
                     e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "" : e.getMessage()), 0L);
