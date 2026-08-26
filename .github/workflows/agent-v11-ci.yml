@@ -59,7 +59,7 @@ jobs:
           -pl yudao-module-ingestion/yudao-module-ingestion-server,yudao-module-retrieval/yudao-module-retrieval-server,yudao-module-evidence/yudao-module-evidence-server
           -am
           -Dsurefire.failIfNoSpecifiedTests=false
-          -Dtest=DomainPluginResolverTest,DomainChunkingPipelineTest,RetrievalRecallPipelineTest,RetrievalScopePipelineTest,PatentExactIdentifierScopePluginTest,RetrievalFusionPipelineTest,RetrievalRerankPipelineTest,PatentRerankPluginTest,DomainQueryPolicyRegistryTest,PluginAgentGoalEvaluatorTest
+          -Dtest=DomainPluginResolverTest,DomainChunkingPipelineTest,RetrievalRecallPipelineTest,Bm25RecallPluginDegradedTest,VectorRecallPluginDegradedTest,RetrievalScopePipelineTest,PatentExactIdentifierScopePluginTest,RetrievalFusionPipelineTest,RetrievalRerankPipelineTest,PatentRerankPluginTest,DomainQueryPolicyRegistryTest,PluginAgentGoalEvaluatorTest,PlannedEvidenceRetrieverDegradedTest
           test
 
       - name: Run Agent V1.1 contract tests
