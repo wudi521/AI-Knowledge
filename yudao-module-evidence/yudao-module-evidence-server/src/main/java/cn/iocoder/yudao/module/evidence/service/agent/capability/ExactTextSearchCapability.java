@@ -35,17 +35,39 @@ public class ExactTextSearchCapability implements KnowledgeCapability {
     @Override
     public CapabilityDefinition definition() {
         return new CapabilityDefinition(NAME, "3", "在当前授权知识库中执行逐字原文检索。仅用于用户明确要求‘原文包含/逐字出现/精确短语’的场景；若当前 Domain 显式注册 Evidence->Entity 映射，会额外产出 candidateEntityIds，但原文命中本身不会升级为 trusted entity。",
-                Map.of("text", "必填。需要逐字匹配的原文短语。", "topK", "可选。1~50，默认 20。",
+                Map.of("text", "必填。需要逐字匹配的原文短语；这里只能放要验证的原文，不得混入检索指令。",
+                        "scopeQuery", "可选。用于领域 Scope 插件确定硬范围的完整限定表达。如果原问题包含编号、地区、产品、版本等会改变检索范围的限定，必须把这些限定保留在这里；它不会参与逐字匹配。",
+                        "topK", "可选。1~50，默认 20。",
                         "scope", "可选。CURRENT_KB 或 CONTEXT；CONTEXT 只检索上一轮已验证对象集合。"),
                 Set.of("text"), "EXACT_TEXT_EVIDENCE_WITH_CANDIDATES", true, Set.of(), Set.of(), Set.of(), 8_000L, 50);
     }
 
     @Override
+    public CapabilityArgumentValidation validateArguments(CapabilityInvocationContext context,
+                                                           Map<String, Object> arguments) {
+        if (arguments == null || !(arguments.get("text") instanceof String text) || StrUtil.isBlank(text)) {
+            return CapabilityArgumentValidation.invalid("text must be a non-blank string");
+        }
+        if (arguments.get("scopeQuery") != null
+                && (!(arguments.get("scopeQuery") instanceof String query) || StrUtil.isBlank(query))) {
+            return CapabilityArgumentValidation.invalid("scopeQuery must be a non-blank string when provided");
+        }
+        if (arguments.get("scope") != null) {
+            String scope = String.valueOf(arguments.get("scope")).trim().toUpperCase();
+            if (!"CURRENT_KB".equals(scope) && !"CONTEXT".equals(scope)) {
+                return CapabilityArgumentValidation.invalid("scope must be CURRENT_KB or CONTEXT");
+            }
+        }
+        return CapabilityArgumentValidation.ok();
+    }
+
+    @Override
     public String canonicalExecutionKey(CapabilityInvocationContext context, Map<String, Object> arguments) {
         String text = normalizeText(arguments == null ? null : arguments.get("text"));
+        String scopeQuery = normalizeText(arguments == null ? null : arguments.get("scopeQuery"));
         String scope = arguments == null ? "CURRENT_KB" : String.valueOf(arguments.getOrDefault("scope", "CURRENT_KB")).trim().toUpperCase();
         int topK = intValue(arguments == null ? null : arguments.get("topK"), 20, 1, 50);
-        return "text=" + text + ";scope=" + scope + ";topK=" + topK;
+        return "text=" + text + ";scopeQuery=" + scopeQuery + ";scope=" + scope + ";topK=" + topK;
     }
 
     @Override
@@ -54,11 +76,13 @@ public class ExactTextSearchCapability implements KnowledgeCapability {
             return CapabilityResult.failure(AgentStopReason.PERMISSION_DENIED, "knowledge scope is incomplete");
         String text = String.valueOf(arguments.getOrDefault("text", "")).trim();
         if (StrUtil.isBlank(text)) return CapabilityResult.failure(AgentStopReason.INVALID_CAPABILITY_CALL, "text must not be blank");
+        String scopeQuery = arguments.get("scopeQuery") instanceof String value && StrUtil.isNotBlank(value)
+                ? value.trim() : text;
         List<Long> documentIds = scope(arguments.get("scope"), context);
         if (documentIds == null) return CapabilityResult.failure(AgentStopReason.NEED_USER_INPUT,
                 "conversation scope was requested but no verified context entity set exists");
         int topK = intValue(arguments.get("topK"), 20, 1, 50);
-        PlannedEvidenceRetriever.Result result = retriever.exactText(text, List.of(context.kbId()),
+        PlannedEvidenceRetriever.Result result = retriever.exactText(scopeQuery, text, List.of(context.kbId()),
                 documentIds.isEmpty() ? null : documentIds, topK, context.tenantId(), context.userId(),
                 context.domainCode(), context.traceId());
         if (result.failed()) {
@@ -81,6 +105,7 @@ public class ExactTextSearchCapability implements KnowledgeCapability {
         metadata.put("candidateTotalHits", result.candidateTotalHits() == null ? -1L : result.candidateTotalHits());
         metadata.put("retrievalOutcome", result.status().name());
         metadata.put("scopeBlocked", scopeBlocked);
+        metadata.put("scopeQuery", scopeQuery);
         if (scopeBlocked && StrUtil.isNotBlank(result.errorMessage())) {
             metadata.put("blockReason", result.errorMessage());
         }
