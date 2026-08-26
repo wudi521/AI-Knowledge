@@ -17,14 +17,13 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.stream.Collectors;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
- * 向量检索(Milvus ai_chunk_vector; 无 status 标量, 状态过滤在融合后)
- * <p>
- * 客户端自建(参考 ingestion MilvusChunkStore)。集合由入库管线创建, 向量字段名为 embedding
- * (已按线上集合 schema 核实), 若外部重建集合改名可经配置覆盖。
+ * 向量检索(Milvus ai_chunk_vector; 无 status 标量, 状态过滤在融合后)。
+ *
+ * <p>Searcher 保持领域无关；插件调用 searchWithStatus 显式区分正常零命中与 Milvus/Schema 能力降级。</p>
  */
 @Slf4j
 @Service
@@ -41,8 +40,20 @@ public class VectorSearcher {
 
     private MilvusServiceClient client;
 
-    /** 当前集合已存在的标量字段名(P0-07: SCOPED Vector 硬过滤前置检测) */
+    /** 当前集合已存在的标量字段名(SCOPED Vector 硬过滤前置检测)。 */
     private java.util.Set<String> scalarFields = java.util.Set.of();
+
+    public record SearchExecution(List<Map.Entry<Long, Double>> hits, boolean failed, String errorMessage) {
+        public SearchExecution {
+            hits = hits == null ? List.of() : List.copyOf(hits);
+        }
+        public static SearchExecution success(List<Map.Entry<Long, Double>> hits) {
+            return new SearchExecution(hits, false, null);
+        }
+        public static SearchExecution failure(String message) {
+            return new SearchExecution(List.of(), true, message);
+        }
+    }
 
     @PostConstruct
     public void init() {
@@ -53,7 +64,6 @@ public class VectorSearcher {
                     .build());
             scalarFields = describeFields();
         } catch (Exception e) {
-            // 连接失败不阻断启动, 后续检索会因 client 为空而走降级(记日志)
             log.error("[init][Milvus 客户端初始化失败: {}:{}]", host, port, e);
         }
     }
@@ -79,62 +89,47 @@ public class VectorSearcher {
         }
     }
 
-    /**
-     * 向量检索(多条向量合并召回, 同 chunk 取最高分)
-     *
-     * @param vectors 查询向量列表(每个检索变体一个)
-     * @param tenantId 租户编号
-     * @param kbIds 知识库编号(空=不限)
-     * @param topK 每条向量返回条数
-     * @return [chunkId, score] 列表(score 已换算为 1-similarity, 单调递增即相关); 失败返回空列表
-     */
     public List<Map.Entry<Long, Double>> search(List<List<Float>> vectors, Long tenantId, List<Long> kbIds, int topK) {
         return search(vectors, tenantId, kbIds, topK, null);
     }
 
-    /**
-     * 向量检索(支持 documentId 硬过滤, P0-07)
-     *
-     * @param documentIds 目标文档编号(非空时要求 collection 含 document_id 标量字段并在 ANN 前过滤;
-     *                     schema 缺失时降级返回空, 禁止全库 ANN 后过滤冒充 Scoped)
-     */
+    /** 旧调用保留 List 语义；新 Recall 插件应使用 searchWithStatus。 */
     public List<Map.Entry<Long, Double>> search(List<List<Float>> vectors, Long tenantId, List<Long> kbIds, int topK,
                                                 List<Long> documentIds) {
+        return searchWithStatus(vectors, tenantId, kbIds, topK, documentIds).hits();
+    }
+
+    public SearchExecution searchWithStatus(List<List<Float>> vectors, Long tenantId, List<Long> kbIds, int topK,
+                                            List<Long> documentIds) {
         if (client == null) {
-            log.error("[search][Milvus client 未初始化, 返回空]");
-            return List.of();
+            log.error("[search][Milvus client 未初始化]");
+            return SearchExecution.failure("Milvus client is not initialized");
         }
+        if (vectors == null || vectors.isEmpty()) return SearchExecution.success(List.of());
         try {
-            // 确保集合已加载(幂等)
             R<RpcStatus> loadResp = client.loadCollection(LoadCollectionParam.newBuilder()
                     .withCollectionName(collection).build());
             if (loadResp.getStatus() != R.Status.Success.getCode()) {
                 log.error("[search][集合 {} 加载失败: {}]", collection, loadResp.getMessage());
+                return SearchExecution.failure("Milvus collection load failed: " + safeMessage(loadResp.getMessage()));
             }
-            // 标量过滤表达式: 租户必选, 知识库/文档可选
             StringBuilder expr = new StringBuilder("tenant_id == ").append(tenantId);
             if (kbIds != null && !kbIds.isEmpty()) {
                 expr.append(" && kb_id in [");
                 for (int i = 0; i < kbIds.size(); i++) {
-                    if (i > 0) {
-                        expr.append(",");
-                    }
+                    if (i > 0) expr.append(",");
                     expr.append(kbIds.get(i));
                 }
                 expr.append("]");
             }
             if (documentIds != null && !documentIds.isEmpty()) {
                 if (!scalarFields.contains("document_id")) {
-                    // P0-07: Milvus schema 尚无 document_id, SCOPED Vector 降级空(BM25 scope 兜底),
-                    // 禁止全 KB ANN 后过滤冒充 Scoped Vector(会丢失 recall)
-                    log.warn("[search][SCOPED Vector 需要 document_id 过滤但集合 {} 缺该字段, 降级返回空]", collection);
-                    return List.of();
+                    log.warn("[search][SCOPED Vector 需要 document_id 过滤但集合 {} 缺该字段]", collection);
+                    return SearchExecution.failure("Milvus schema lacks document_id for hard-scoped vector retrieval");
                 }
                 expr.append(" && document_id in [");
                 for (int i = 0; i < documentIds.size(); i++) {
-                    if (i > 0) {
-                        expr.append(",");
-                    }
+                    if (i > 0) expr.append(",");
                     expr.append(documentIds.get(i));
                 }
                 expr.append("]");
@@ -151,29 +146,30 @@ public class VectorSearcher {
             R<io.milvus.grpc.SearchResults> resp = client.search(param);
             if (resp.getStatus() != R.Status.Success.getCode()) {
                 log.error("[search][Milvus 检索失败: {}]", resp.getMessage());
-                return List.of();
+                return SearchExecution.failure("Milvus search failed: " + safeMessage(resp.getMessage()));
             }
-            // 结果按每条查询向量分组; 合并时同 chunk 保留最相似的一条
             SearchResultData data = resp.getData().getResults();
             SearchResultsWrapper wrapper = new SearchResultsWrapper(data);
             Map<Long, Double> best = new HashMap<>();
             for (int i = 0; i < vectors.size(); i++) {
                 List<SearchResultsWrapper.IDScore> scores = wrapper.getIDScore(i);
                 for (SearchResultsWrapper.IDScore s : scores) {
-                    double similarity = s.getScore(); // COSINE: 越大越相似
-                    // 转"相关性"单调值; 合并取最相似(即该值最小)
+                    double similarity = s.getScore();
                     double score = 1 - similarity;
                     best.merge(s.getLongID(), score, Math::min);
                 }
             }
-            // 返回按相关性降序(score 小=相似度高), RRF 依赖有序输入
-            return best.entrySet().stream()
+            return SearchExecution.success(best.entrySet().stream()
                     .sorted(Map.Entry.comparingByValue())
-                    .collect(Collectors.toList());
+                    .collect(Collectors.toList()));
         } catch (Exception e) {
             log.error("[vector][检索失败]", e);
-            return List.of();
+            return SearchExecution.failure(e.getClass().getSimpleName() + ": " + safeMessage(e.getMessage()));
         }
     }
 
+    private String safeMessage(String message) {
+        if (message == null) return "";
+        return message.length() <= 300 ? message : message.substring(0, 300);
+    }
 }
