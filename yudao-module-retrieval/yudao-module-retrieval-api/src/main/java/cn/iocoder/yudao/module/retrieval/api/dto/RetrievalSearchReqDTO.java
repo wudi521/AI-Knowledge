@@ -25,6 +25,9 @@ public class RetrievalSearchReqDTO {
     /** 用户编号(权限过滤用) */
     private Long userId;
 
+    /** 当前知识库领域代码。仅用于插件能力选择，不允许在检索层重新解释用户 intent。 */
+    private String domainCode;
+
     /** 上下文轮次(可选, 空 = 单轮) */
     private List<ChatTurnDTO> history;
 
@@ -37,7 +40,7 @@ public class RetrievalSearchReqDTO {
     /**
      * Planner 显式执行模式。
      * EXACT_TEXT_SEARCH: 原文逐字检索；
-     * PLANNED_HYBRID: Query Engine 已完成自然语言规划，Retrieval 只执行 BM25/Vector/RRF/Rerank，禁止再次 QueryAnalysis。
+     * PLANNED_HYBRID: Query Engine 已完成自然语言规划，Retrieval 只执行已注册的 Recall/Fusion/Rerank 能力，禁止再次 QueryAnalysis。
      * 空表示兼容旧链路。
      */
     private String searchMode;
