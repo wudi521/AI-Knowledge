@@ -16,6 +16,7 @@ public class RetrievalRerankPipeline {
 
     public RetrievalRerankPipeline(List<RetrievalRerankPlugin> plugins) {
         this.resolver = new DomainPluginResolver<>(plugins);
+        this.resolver.requireWildcardFallback("retrieval rerank");
     }
 
     public RetrievalRerankResult rerank(RetrievalRerankContext context) {
