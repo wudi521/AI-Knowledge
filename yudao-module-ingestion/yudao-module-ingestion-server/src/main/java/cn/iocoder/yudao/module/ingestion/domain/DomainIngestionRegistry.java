@@ -1,35 +1,25 @@
 package cn.iocoder.yudao.module.ingestion.domain;
 
-import cn.hutool.core.util.StrUtil;
-import jakarta.annotation.Resource;
 import org.springframework.stereotype.Component;
 
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
- * 领域适配器注册表: 收集 Spring 容器全部 DomainIngestionAdapter, 按 domainCode 索引;
- * 未找到领域实现时回退 GENERAL(不阻断入库)。
+ * @deprecated 兼容旧调用点。领域选择已经统一收敛到 {@link DomainChunkingPipeline}。
+ * 新代码不要再维护独立 Map/Registry 规则，避免切片、检索、验证三条链各自发明一套插件机制。
  */
+@Deprecated
 @Component
 public class DomainIngestionRegistry {
 
-    private final Map<String, DomainIngestionAdapter> adapters = new LinkedHashMap<>();
+    private final DomainChunkingPipeline pipeline;
 
     public DomainIngestionRegistry(List<DomainIngestionAdapter> adapterList) {
-        for (DomainIngestionAdapter adapter : adapterList) {
-            if (adapter != null && StrUtil.isNotBlank(adapter.domainCode())) {
-                adapters.put(adapter.domainCode(), adapter);
-            }
-        }
+        this.pipeline = new DomainChunkingPipeline(adapterList);
     }
 
-    /** 按领域代码取适配器; 空/未知领域回退 GENERAL */
+    /** 按领域代码选择插件；未知领域由 GENERAL(*) 插件兜底。 */
     public DomainIngestionAdapter get(String domainCode) {
-        if (StrUtil.isBlank(domainCode)) {
-            return adapters.getOrDefault("GENERAL", adapters.values().iterator().next());
-        }
-        return adapters.getOrDefault(domainCode, adapters.getOrDefault("GENERAL", adapters.values().iterator().next()));
+        return pipeline.pluginFor(domainCode);
     }
 }
