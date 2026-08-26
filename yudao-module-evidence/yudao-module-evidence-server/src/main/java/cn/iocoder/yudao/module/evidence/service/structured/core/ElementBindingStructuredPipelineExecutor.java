@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.evidence.service.structured.core;
 
 import cn.hutool.core.util.StrUtil;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 
@@ -15,6 +16,9 @@ import java.util.Map;
  * <p>一方面为 multi-value filter/projection 提供 element binding；另一方面在统一执行边界发布
  * resultShape / scalarValue / dataGrain，使 Planner、派生运算和 Evaluator 不需要猜结果到底是
  * 标量、分组还是实体行，也不需要从业务文案猜“物理记录/逻辑实体”粒度。</p>
+ *
+ * <p>正式运行还会先尝试整计划 Pushdown。只有明确 SUCCEEDED 才直接采用权威后端结果；
+ * UNSUPPORTED 回退原 JVM Pipeline；FAILED 必须 fail-closed。</p>
  */
 @Primary
 @Component
@@ -22,7 +26,21 @@ public class ElementBindingStructuredPipelineExecutor extends StructuredPipeline
 
     private final DomainMetricRegistry metricRegistry;
     private final StructuredValueEvaluator values;
+    private final StructuredPushdownCoordinator pushdownCoordinator;
 
+    @Autowired
+    public ElementBindingStructuredPipelineExecutor(DomainFieldRegistry fieldRegistry,
+                                                    DomainMetricRegistry metricRegistry,
+                                                    List<DomainStructuredDataAdapter> adapters,
+                                                    StructuredValueEvaluator values,
+                                                    StructuredPushdownCoordinator pushdownCoordinator) {
+        super(fieldRegistry, metricRegistry, adapters, values);
+        this.metricRegistry = metricRegistry;
+        this.values = values;
+        this.pushdownCoordinator = pushdownCoordinator;
+    }
+
+    /** 迁移期纯 Java 单测兼容：没有 Coordinator 时保持原 JVM 执行语义。 */
     public ElementBindingStructuredPipelineExecutor(DomainFieldRegistry fieldRegistry,
                                                     DomainMetricRegistry metricRegistry,
                                                     List<DomainStructuredDataAdapter> adapters,
@@ -30,14 +48,30 @@ public class ElementBindingStructuredPipelineExecutor extends StructuredPipeline
         super(fieldRegistry, metricRegistry, adapters, values);
         this.metricRegistry = metricRegistry;
         this.values = values;
+        this.pushdownCoordinator = null;
     }
 
     @Override
     public StructuredPipelineResult execute(StructuredPipelinePlan plan) {
-        StructuredPipelineResult result = requiresElementBinding(plan)
-                ? executeElementBound(plan)
-                : super.execute(plan);
+        StructuredPipelineResult result = tryPushdown(plan);
+        if (result == null) {
+            result = requiresElementBinding(plan)
+                    ? executeElementBound(plan)
+                    : super.execute(plan);
+        }
         return enrichResultContract(plan, result);
+    }
+
+    private StructuredPipelineResult tryPushdown(StructuredPipelinePlan plan) {
+        if (pushdownCoordinator == null) return null;
+        StructuredPushdownResult pushed = pushdownCoordinator.execute(plan);
+        if (pushed == null || pushed.status() == StructuredPushdownResult.Status.UNSUPPORTED) return null;
+        if (pushed.status() == StructuredPushdownResult.Status.FAILED) {
+            return StructuredPipelineResult.failure(
+                    StrUtil.blankToDefault(pushed.reason(), "structured pushdown failed"),
+                    Map.of("pushdownFailed", true));
+        }
+        return pushed.result();
     }
 
     private StructuredPipelineResult executeElementBound(StructuredPipelinePlan plan) {
