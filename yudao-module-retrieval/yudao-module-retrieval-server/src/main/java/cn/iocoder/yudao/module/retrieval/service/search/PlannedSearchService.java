@@ -205,7 +205,7 @@ public class PlannedSearchService {
         Map<Long, Double> fusionScores = fused.stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
         RetrievalRerankResult rerank = rerankPipeline.rerank(
-                new RetrievalRerankContext(req.getQuery(), candidateContents, domainCode));
+                new RetrievalRerankContext(req.getQuery(), candidateContents, domainCode, scope.documentIds()));
         degraded |= rerank.degraded();
         List<Map.Entry<Integer, Float>> reranked = rerank.rankings();
 
@@ -243,7 +243,7 @@ public class PlannedSearchService {
         resp.setResults(results);
         stages.add(stage("RERANK", ++seq, rerank.elapsedMs(),
                 "plugin=" + rerank.pluginId() + "; domain=" + domainCode + "; query=" + req.getQuery()
-                        + "; candidates=" + candidateIds.size(),
+                        + "; candidates=" + candidateIds.size() + "; scopedDocuments=" + scope.documentIds(),
                 "topResults=" + summarize(results) + "; degraded=" + rerank.degraded() + suffix(rerank.message())));
         analysis.setDegraded(degraded);
         // 降级但仍拿到可靠候选可继续回答；降级且最终为空时，不能把它冒充正常零命中。
