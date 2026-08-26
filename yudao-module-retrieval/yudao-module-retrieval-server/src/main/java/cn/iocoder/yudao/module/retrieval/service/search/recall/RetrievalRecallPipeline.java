@@ -22,6 +22,7 @@ public class RetrievalRecallPipeline {
 
     public RetrievalRecallPipeline(List<RetrievalRecallPlugin> plugins) {
         this.resolver = new DomainPluginResolver<>(plugins);
+        this.resolver.requireWildcardFallback("retrieval recall");
     }
 
     public List<RetrievalRecallResult> recall(RetrievalRecallContext context) {
