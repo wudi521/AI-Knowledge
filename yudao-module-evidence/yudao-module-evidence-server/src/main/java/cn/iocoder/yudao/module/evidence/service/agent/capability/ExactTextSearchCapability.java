@@ -59,7 +59,8 @@ public class ExactTextSearchCapability implements KnowledgeCapability {
                 "conversation scope was requested but no verified context entity set exists");
         int topK = intValue(arguments.get("topK"), 20, 1, 50);
         PlannedEvidenceRetriever.Result result = retriever.exactText(text, List.of(context.kbId()),
-                documentIds.isEmpty() ? null : documentIds, topK, context.tenantId(), context.userId(), context.traceId());
+                documentIds.isEmpty() ? null : documentIds, topK, context.tenantId(), context.userId(),
+                context.domainCode(), context.traceId());
         if (result.failed()) {
             return CapabilityResult.failure(AgentStopReason.NO_RELIABLE_EVIDENCE,
                     StrUtil.blankToDefault(result.errorMessage(), "exact-text retrieval source failed"));
