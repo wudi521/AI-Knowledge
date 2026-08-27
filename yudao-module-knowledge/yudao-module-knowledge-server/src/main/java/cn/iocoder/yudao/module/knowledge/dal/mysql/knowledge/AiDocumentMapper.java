@@ -125,7 +125,10 @@ public interface AiDocumentMapper extends BaseMapperX<AiDocumentDO> {
 
     /**
      * 权威 PATENT LOGICAL_ENTITY 计数。逻辑身份优先申请号，其次公布号，最后回退物理 document id。
-     * 字段来源固定为服务端白名单生成列/JSON domainCode，调用方不能传任意 SQL 表达式。
+     *
+     * <p>注意：源集合条件必须与 selectStructuredPatentDocumentsPage 完全一致。历史专利文档可能没有
+     * domainCode 或 domain_metadata 无效；行级 fallback 会把这些文档纳入当前 PATENT 知识库范围，
+     * 因此 COUNT pushdown 也必须纳入，不能因执行路径不同产生不同答案。</p>
      */
     @Select({
             "<script>",
@@ -137,10 +140,11 @@ public interface AiDocumentMapper extends BaseMapperX<AiDocumentDO> {
             "  ELSE CONCAT('DOC:', d.id) END)",
             "FROM ai_document d",
             "WHERE d.deleted = 0 AND d.kb_id = #{kbId}",
-            "AND (d.patent_application_no_norm IS NOT NULL",
-            "     OR d.patent_publication_no_norm IS NOT NULL",
-            "     OR (JSON_VALID(d.domain_metadata) = 1",
-            "         AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(d.domain_metadata, '$.domainCode'))) = 'PATENT'))",
+            "AND (d.domain_metadata IS NULL OR TRIM(d.domain_metadata) = ''",
+            "     OR JSON_VALID(d.domain_metadata) = 0",
+            "     OR JSON_UNQUOTE(JSON_EXTRACT(d.domain_metadata, '$.domainCode')) IS NULL",
+            "     OR JSON_UNQUOTE(JSON_EXTRACT(d.domain_metadata, '$.domainCode')) = ''",
+            "     OR UPPER(JSON_UNQUOTE(JSON_EXTRACT(d.domain_metadata, '$.domainCode'))) = 'PATENT')",
             "<if test='resolvedEntityIds != null and !resolvedEntityIds.isEmpty()'>",
             "AND d.id IN",
             "<foreach collection='resolvedEntityIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
