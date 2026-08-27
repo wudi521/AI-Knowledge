@@ -35,8 +35,8 @@ import java.util.Set;
 @Slf4j
 @Component
 public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
-    /** v4 adds clause-local aggregate binding and hard replan correction semantics. */
-    private static final String PROMPT_KEY = "agent-execution-plan-v4";
+    /** v5 adds alternative-value filter semantics and downstream detail proof obligations. */
+    private static final String PROMPT_KEY = "agent-execution-plan-v5";
     private static final String DEFAULT_PROMPT = """
             你是企业知识平台的 Query Planner。你的唯一目标是围绕 immutable originalGoal 生成可执行计划，
             不是给问题分类，也不是直接编造答案。系统会给你当前真实 capabilities、domainFields、domainMetrics、
@@ -72,6 +72,9 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
                当下游 filter.values 需要一组值时必须投影成 LIST，禁止把整个 data/Output/summary/deterministicAnswer 塞进 values。
             7. 多跳问题应在一次计划中继续连接 n1→n2→n3→...，每一跳只消费上游明确投影出的字段；
                不要因为用户连续问了多个子问题就把它们压成展示文本，也不要为具体业务问题发明特殊节点类型。
+               每个节点的 purpose 必须只描述该节点实际能够证明的事实；GROUP/AGGREGATE 只返回分组键和聚合值时，
+               purpose 不得写成“并列出详情/姓名/属性”。如果 originalGoal 在找到极值/排名对象后还要求该对象的字段详情，
+               必须在同一 DAG 中增加依赖极值节点的后续投影节点，用上游 groupKey/字段值做确定性过滤后再 select 所需详情。
             8. candidateEntityIds 与 verifiedEntityIds 不同：语义检索、全文候选只能使用 candidateEntityIds；
                只有结构化/关系等确定性 Tool 明确返回的 verifiedEntityIds 才是可信实体。禁止把 candidate 当 verified。
                只有下游 capability 的 argumentSchema 明确接受实体 ID 集合时才允许传递实体集合；禁止把 documentId/entityId 猜成业务字段值。
@@ -88,9 +91,13 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
             12. 结构化事实严格依据 domainFields/domainMetrics；禁止编造字段、指标、transform、operator。
                 structured_query 字段过滤必须来自 originalGoal 明确字段约束或上游确定性结果；
                 禁止把主题、职业背景、偏好、用途、推荐条件、语义相关性自行改写成 TITLE CONTAINS、字段 EQ 等硬过滤。
+                对同一个单值字段，多个候选值表示“任一值都可”时必须使用 IN 或 OR；禁止生成 field=A AND field=B（A≠B）这种自相矛盾条件。
+                AND 只用于同一实体确实必须同时满足的约束；如果两个上游极值节点各返回一个 groupKey，详情节点应使用 OR 子条件分别引用它们，
+                或在能力支持的情况下形成一个 IN 值集合，绝不能把两个键写成同字段 AND。
                 structured_query.orderBy 每个排序项必须明确且仅明确一个排序来源：field/code/value、metric、或 aggregateValue=true；
                 只有 direction/sort 而没有排序来源是非法计划。对 GROUP BY 聚合值排序应显式使用 aggregateValue=true。
                 having 只能用于 GROUP BY 后的 aggregateValue，并必须提供合法 operator 与数值 values。
+                对 multiValue=true 字段做 PERSON_SURNAME 等元素级 transform/去重/枚举时必须 explode=true，不能把整段多值字符串当成一个元素。
             13. 精确标识、明确字段过滤、投影、聚合、排序、分组优先走 structured_query；逐字内容包含走 exact-text；
                 相关性、相似性、推荐、可参考性、主题探索以及需要理解正文含义的问题优先走 knowledge_retrieval。
                 semantic retrieval 的 Evidence 已包含回答所需正文证据时直接交给 Goal Evaluator，不要机械追加集合运算或详情查询。
@@ -219,6 +226,7 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
         sb.append("maxPlanNodes=").append(Math.max(1, maxPlanNodes)).append('\n');
         sb.append("remainingElapsedBudgetMs=").append(remainingElapsedBudgetMs(state)).append('\n');
         sb.append("replanPolicy=goal_evaluator/GOAL_NOT_SATISFIED and plan_validator/PLAN_VALIDATION observations are hard correction constraints; do not repeat an equivalent failed/insufficient plan").append('\n');
+        sb.append("setFilterPolicy=alternative values for one single-valued field use IN/OR, never contradictory AND; aggregate winners needing details require downstream projection nodes").append('\n');
         sb.append("dataflowContract=")
                 .append("$ref + selector + optional path/distinct/required/expect/allowPartial; structured rows are metadata.dataflowRows")
                 .append('\n');
