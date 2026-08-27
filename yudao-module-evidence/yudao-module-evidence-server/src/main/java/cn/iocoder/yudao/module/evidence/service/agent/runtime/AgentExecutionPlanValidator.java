@@ -57,6 +57,14 @@ public class AgentExecutionPlanValidator {
             if (referenceError != null) {
                 return Validation.invalid(referenceError + " for node " + node.id());
             }
+
+            // entityIds 是平台内部实体主键，不是用户业务字段。Planner 绝不能凭空生成字面 ID；
+            // 它只能消费上游 Tool 明确输出的 candidateEntityIds/verifiedEntityIds，再由下游确定性 Tool 重新验证。
+            String entityScopeError = validateEntityIdScopeReference(node.arguments().get("entityIds"));
+            if (entityScopeError != null) {
+                return Validation.invalid(entityScopeError + " for node " + node.id());
+            }
+
             for (String reference : references) {
                 if (!byId.containsKey(reference)) {
                     return Validation.invalid("unknown argument reference " + reference + " for node " + node.id());
@@ -101,6 +109,32 @@ public class AgentExecutionPlanValidator {
             }
         }
         return Validation.ok();
+    }
+
+    /**
+     * Internal entity IDs must preserve machine provenance. A single typed reference keeps the boundary explicit;
+     * multi-source sets should first be composed by entity_set_operation, then referenced here.
+     */
+    private String validateEntityIdScopeReference(Object raw) {
+        if (raw == null) return null;
+        if (!(raw instanceof Map<?, ?> map) || !map.containsKey("$ref")) {
+            return "entityIds must come from an explicit upstream $ref; literal internal entity ids are forbidden";
+        }
+        String selector = map.get("selector") == null ? "" : String.valueOf(map.get("selector")).trim();
+        if (!"candidateEntityIds".equals(selector) && !"verifiedEntityIds".equals(selector)) {
+            return "entityIds reference selector must be candidateEntityIds or verifiedEntityIds";
+        }
+        if (!Boolean.TRUE.equals(map.get("required"))) {
+            return "entityIds reference must set required=true";
+        }
+        String expect = map.get("expect") == null ? "" : String.valueOf(map.get("expect")).trim().toUpperCase();
+        if (!"LIST".equals(expect)) {
+            return "entityIds reference must set expect=LIST";
+        }
+        if (map.get("path") != null) {
+            return "entityIds reference must not use path projection";
+        }
+        return null;
     }
 
     /**
