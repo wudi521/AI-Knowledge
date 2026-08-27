@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.evidence.service.structured.core;
 
 import cn.hutool.core.util.StrUtil;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -17,6 +18,10 @@ import java.util.Set;
  *
  * <p>它只执行 Domain Schema 已声明的数据能力：字段读取/变换、过滤、去重、分组、聚合、排序、limit。
  * 用户语义不在这里枚举；领域数据访问仍由 DomainStructuredDataAdapter 提供。</p>
+ *
+ * <p>生产执行优先经过领域无关的 {@link StructuredPushdownCoordinator}。只有权威下推明确返回
+ * UNSUPPORTED 时才进入本类的完整 JVM 语义；FAILED 必须 fail-closed，不能在权威执行失败后
+ * 静默换一条语义可能不同的路径。</p>
  */
 @Component
 public class StructuredPipelineExecutor {
@@ -29,20 +34,44 @@ public class StructuredPipelineExecutor {
     private final DomainMetricRegistry metricRegistry;
     private final List<DomainStructuredDataAdapter> adapters;
     private final StructuredValueEvaluator values;
+    private final StructuredPushdownCoordinator pushdownCoordinator;
 
+    @Autowired
     public StructuredPipelineExecutor(DomainFieldRegistry fieldRegistry,
                                       DomainMetricRegistry metricRegistry,
                                       List<DomainStructuredDataAdapter> adapters,
-                                      StructuredValueEvaluator values) {
+                                      StructuredValueEvaluator values,
+                                      StructuredPushdownCoordinator pushdownCoordinator) {
         this.fieldRegistry = fieldRegistry;
         this.metricRegistry = metricRegistry;
         this.adapters = adapters == null ? List.of() : List.copyOf(adapters);
         this.values = values;
+        this.pushdownCoordinator = pushdownCoordinator;
+    }
+
+    /** 兼容纯 Java 单元测试；无 coordinator 时等价于明确 UNSUPPORTED，走 canonical fallback。 */
+    public StructuredPipelineExecutor(DomainFieldRegistry fieldRegistry,
+                                      DomainMetricRegistry metricRegistry,
+                                      List<DomainStructuredDataAdapter> adapters,
+                                      StructuredValueEvaluator values) {
+        this(fieldRegistry, metricRegistry, adapters, values, null);
     }
 
     public StructuredPipelineResult execute(StructuredPipelinePlan plan) {
         String validation = validate(plan);
         if (validation != null) return StructuredPipelineResult.failure(validation);
+
+        StructuredPushdownResult pushdown = pushdownCoordinator == null
+                ? StructuredPushdownResult.unsupported("pushdown coordinator unavailable")
+                : pushdownCoordinator.execute(plan);
+        if (pushdown == null) return pushdownFailure("pushdown coordinator returned null", null);
+        if (pushdown.status() == StructuredPushdownResult.Status.SUCCEEDED) {
+            return validateSucceededPushdown(pushdown.result());
+        }
+        if (pushdown.status() == StructuredPushdownResult.Status.FAILED) {
+            return pushdownFailure(pushdown.reason(), null);
+        }
+        // 只有明确 UNSUPPORTED 才允许继续下面的完整 JVM canonical semantics。
 
         Set<String> requiredFields = referencedFields(plan);
         String sourceMetric = sourceMetric(plan);
@@ -95,6 +124,46 @@ public class StructuredPipelineExecutor {
             return executeGrouped(plan, filtered, sourceEntityCount);
         }
         return executeFlat(plan, filtered, sourceEntityCount);
+    }
+
+    private StructuredPipelineResult validateSucceededPushdown(StructuredPipelineResult result) {
+        if (result == null) return pushdownFailure("pushdown succeeded without result", null);
+        if (!result.success()) {
+            return pushdownFailure("pushdown returned unsuccessful pipeline result: " + safeReason(result.message()),
+                    result.metadata());
+        }
+        if (!result.completeDataset()) {
+            return pushdownFailure("pushdown result cannot prove complete dataset coverage", result.metadata());
+        }
+        if (result.missingValueCount() > 0) {
+            return pushdownFailure("pushdown result contains missing required values", result.metadata());
+        }
+        if (result.metadata() != null && Boolean.TRUE.equals(result.metadata().get("sourceTruncated"))) {
+            return pushdownFailure("pushdown result reports a truncated source", result.metadata());
+        }
+
+        Map<String, Object> proof = new LinkedHashMap<>();
+        if (result.metadata() != null) proof.putAll(result.metadata());
+        proof.put("pushdownExecuted", true);
+        proof.put("completeDataset", true);
+        proof.put("sourceTruncated", false);
+        proof.put("pushdownProofValidated", true);
+        return new StructuredPipelineResult(true, result.message(), result.rows(), result.scalarValue(),
+                true, result.authoritativeEmpty(), result.sourceEntityCount(), 0, proof);
+    }
+
+    private StructuredPipelineResult pushdownFailure(String reason, Map<String, Object> sourceMetadata) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        if (sourceMetadata != null) metadata.putAll(sourceMetadata);
+        metadata.put("pushdownExecuted", true);
+        metadata.put("pushdownFailed", true);
+        metadata.put("completeDataset", false);
+        metadata.put("outputComplete", false);
+        return StructuredPipelineResult.failure("structured pushdown failed: " + safeReason(reason), metadata);
+    }
+
+    private String safeReason(String reason) {
+        return StrUtil.blankToDefault(reason, "unknown reason");
     }
 
     private StructuredPipelineResult executeFlat(StructuredPipelinePlan plan,
