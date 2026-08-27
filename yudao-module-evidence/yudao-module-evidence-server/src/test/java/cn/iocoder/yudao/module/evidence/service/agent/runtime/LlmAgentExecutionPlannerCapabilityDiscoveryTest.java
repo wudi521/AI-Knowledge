@@ -37,6 +37,7 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
                 "{\"action\":\"STOP\",\"message\":\"done\"}"));
 
         Map<String, String> machineSchema = new LinkedHashMap<>();
+        machineSchema.put("entityIds", "typed upstream candidate/verified entity scope");
         machineSchema.put("select", "select expressions");
         machineSchema.put("filter", "predicate tree");
         machineSchema.put("groupBy", "group expressions");
@@ -82,7 +83,7 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
 
         assertThat(input).contains("QUERY_IR_V1", "GROUP_BY", "AGGREGATE", "AVG", "ORDER_BY");
         assertThat(input).contains("dataflowContract=", "metadata.dataflowRows", "allowPartial",
-                "remainingElapsedBudgetMs=", "replanPolicy=", "setFilterPolicy=");
+                "remainingElapsedBudgetMs=", "replanPolicy=", "setFilterPolicy=", "entityResolutionPolicy=");
         assertThat(input).contains("originalGoal=哪个专利发明人最多？哪个最少？罗列专利名字和发明人");
         assertThat(input).doesNotContain("ORDER_TOP_N", "PATENT_COUNT", "legacy task", "legacy operation");
         assertThat(system).contains("最少必要节点", "remainingElapsedBudgetMs",
@@ -96,9 +97,14 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
                 "orderBy 每个排序项必须明确且仅明确一个排序来源", "aggregateValue=true",
                 "硬纠错约束", "不得仅改 purpose/JSON 写法后重复语义等价的旧计划",
                 "purpose 必须只描述该节点实际能够证明的事实", "后续投影节点",
-                "必须使用 IN 或 OR", "禁止生成 field=A AND field=B", "PERSON_SURNAME", "explode=true");
-        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v5");
-        assertThat(registry.listDefinitions(new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-ir"))
-                .get(0).argumentSchema()).doesNotContainKeys("task", "operation", "metric");
+                "必须使用 IN 或 OR", "禁止生成 field=A AND field=B", "PERSON_SURNAME", "explode=true",
+                "structured_query 若在 argumentSchema 暴露 entityIds",
+                "selector\":\"candidateEntityIds", "candidate 自动升级",
+                "近似名称/错字/口语简称/不确定实体称呼", "n1=knowledge_retrieval", "n2=structured_query");
+        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v6");
+        CapabilityDefinition visible = registry.listDefinitions(
+                new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-ir")).get(0);
+        assertThat(visible.argumentSchema()).containsKey("entityIds");
+        assertThat(visible.argumentSchema()).doesNotContainKeys("task", "operation", "metric");
     }
 }
