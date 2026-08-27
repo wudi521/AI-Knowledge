@@ -70,7 +70,8 @@ public interface PatentStructuredOrderMapper {
 
     /**
      * 在数据库对完整逻辑实体集合计算 CHAR_LENGTH(title)，只把最终 Top-N 代表 documentId 返回给 Evidence。
-     * 相同长度按最小 documentId 稳定排序，与 keyset fallback 的稳定源顺序保持一致。
+     * 代表行必须本身有非空 TITLE，不能简单取逻辑实体最小 documentId；否则重复物理记录中“旧行缺标题、
+     * 新行有标题”会出现排序证明通过但详情物化失败。相同长度再按代表 documentId 稳定排序。
      */
     @Select({
             "<script>",
@@ -82,7 +83,9 @@ public interface PatentStructuredOrderMapper {
             "           WHEN d.patent_publication_no_norm IS NOT NULL AND d.patent_publication_no_norm != ''",
             "             THEN CONCAT('PUB:', d.patent_publication_no_norm)",
             "           ELSE CONCAT('DOC:', d.id) END AS logicalKey,",
-            "         MIN(d.id) AS representativeId,",
+            "         MIN(CASE WHEN JSON_VALID(d.domain_metadata) = 1",
+            "                  AND NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(d.domain_metadata, '$.title'))), '') IS NOT NULL",
+            "                  THEN d.id ELSE NULL END) AS representativeId,",
             "         MAX(CASE WHEN JSON_VALID(d.domain_metadata) = 1",
             "              THEN NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(d.domain_metadata, '$.title'))), '')",
             "              ELSE NULL END) AS titleValue",
@@ -110,7 +113,7 @@ public interface PatentStructuredOrderMapper {
             "             THEN CONCAT('PUB:', d.patent_publication_no_norm)",
             "           ELSE CONCAT('DOC:', d.id) END",
             ") g",
-            "WHERE g.titleValue IS NOT NULL",
+            "WHERE g.titleValue IS NOT NULL AND g.representativeId IS NOT NULL",
             "<choose>",
             "  <when test='direction == \"ASC\"'>ORDER BY CHAR_LENGTH(g.titleValue) ASC, g.representativeId ASC</when>",
             "  <otherwise>ORDER BY CHAR_LENGTH(g.titleValue) DESC, g.representativeId ASC</otherwise>",
