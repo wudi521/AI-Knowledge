@@ -85,7 +85,7 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
         assertThat(input).contains("QUERY_IR_V1", "GROUP_BY", "AGGREGATE", "AVG", "ORDER_BY");
         assertThat(input).contains("dataflowContract=", "metadata.dataflowRows", "allowPartial",
                 "remainingElapsedBudgetMs=", "replanPolicy=", "planLocalRefPolicy=",
-                "setFilterPolicy=", "entityResolutionPolicy=");
+                "setFilterPolicy=", "entityResolutionPolicy=", "candidateTopN=1");
         assertThat(input).contains("originalGoal=哪个专利发明人最多？哪个最少？罗列专利名字和发明人");
         assertThat(input).doesNotContain("ORDER_TOP_N", "PATENT_COUNT", "legacy task", "legacy operation");
         assertThat(system).contains("最少必要节点", "remainingElapsedBudgetMs",
@@ -107,8 +107,9 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
                 "绝不能产生 n1->$ref(n1) 自引用",
                 "candidate->verified 的机器信任边界",
                 "只能包含 entityIds + select/projections",
+                "candidateTopN", "topK=3~5 + candidateTopN=1",
                 "不应再加 TITLE CONTAINS “体替代印花”");
-        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v7");
+        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v8");
         CapabilityDefinition visible = registry.listDefinitions(
                 new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-ir")).get(0);
         assertThat(visible.argumentSchema()).containsKey("entityIds");
