@@ -61,6 +61,43 @@ class PatentStructuredDataAdapterPaginationTest {
     }
 
     @Test
+    void sourceBudgetMustFailClosedInsteadOfReturningPartialDataset() {
+        KnowledgeApi legacyApi = mock(KnowledgeApi.class);
+        KnowledgeStructuredPageApi pageApi = mock(KnowledgeStructuredPageApi.class);
+        AtomicInteger calls = new AtomicInteger();
+        int total = 2505;
+        int sourceBudget = 1500;
+
+        when(pageApi.page(any(StructuredQueryReqDTO.class))).thenAnswer(invocation -> {
+            StructuredQueryReqDTO request = invocation.getArgument(0);
+            calls.incrementAndGet();
+            long after = request.getAfterDocumentId() == null ? 0L : request.getAfterDocumentId();
+            int pageSize = request.getRowCap() == null ? 1000 : request.getRowCap();
+            int remaining = Math.max(0, total - (int) after);
+            int count = Math.min(pageSize, remaining);
+            List<StructuredQueryRowDTO> rows = new ArrayList<>(count);
+            for (int i = 1; i <= count; i++) rows.add(row(after + i));
+
+            long last = after + count;
+            StructuredQueryRespDTO response = new StructuredQueryRespDTO();
+            response.setRows(rows);
+            response.setTruncated(last < total);
+            response.setNextDocumentId(last < total ? last : null);
+            return CommonResult.success(response);
+        });
+
+        PatentStructuredDataAdapter adapter = new PatentStructuredDataAdapter(legacyApi, pageApi, sourceBudget);
+        StructuredQueryResult result = adapter.execute(plan());
+
+        assertThat(result.isUnsupported()).isTrue();
+        assertThat(result.getUnsupportedReason())
+                .contains("scan budget exceeded")
+                .contains("authoritative pushdown required for complete answer");
+        assertThat(result.getRows()).isNullOrEmpty();
+        assertThat(calls.get()).isEqualTo(2);
+    }
+
+    @Test
     void nonAdvancingCursorMustFailClosed() {
         KnowledgeApi legacyApi = mock(KnowledgeApi.class);
         KnowledgeStructuredPageApi pageApi = mock(KnowledgeStructuredPageApi.class);
