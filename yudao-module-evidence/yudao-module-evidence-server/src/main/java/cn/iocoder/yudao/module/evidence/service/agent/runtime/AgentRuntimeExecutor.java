@@ -129,7 +129,8 @@ public class AgentRuntimeExecutor {
         if (dependencyFailure != null) {
             return materialize(plan, node, context, start, dependencyFailure);
         }
-        if (System.currentTimeMillis() - runtimeStart >= budget.maxElapsedMs()) {
+        long remainingMs = remainingRuntimeMs(runtimeStart, budget);
+        if (remainingMs <= 0L) {
             return materialize(plan, node, context, start,
                     CapabilityResult.failure(CapabilityFailureType.TIMEOUT,
                             AgentStopReason.TIME_BUDGET_EXCEEDED,
@@ -151,9 +152,21 @@ public class AgentRuntimeExecutor {
                     ? CapabilityResult.recoverableFailure(prepared.message(), Map.of("errorKind", "PREPARE_CONTRACT"))
                     : CapabilityResult.failure(prepared.stopReason(), prepared.message());
         } else {
-            result = capabilityInvoker.invoke(prepared, context);
+            remainingMs = remainingRuntimeMs(runtimeStart, budget);
+            if (remainingMs <= 0L) {
+                result = CapabilityResult.failure(CapabilityFailureType.TIMEOUT,
+                        AgentStopReason.TIME_BUDGET_EXCEEDED,
+                        "runtime time budget exhausted before capability invocation");
+            } else {
+                result = capabilityInvoker.invoke(prepared, context, remainingMs);
+            }
         }
         return materialize(plan, node, context, start, result);
+    }
+
+    private long remainingRuntimeMs(long runtimeStart, AgentExecutionBudget budget) {
+        long elapsed = Math.max(0L, System.currentTimeMillis() - runtimeStart);
+        return Math.max(0L, budget.maxElapsedMs() - elapsed);
     }
 
     private CapabilityResult dependencyFailure(PlanNode node, Map<String, CapabilityResult> completedResults) {
