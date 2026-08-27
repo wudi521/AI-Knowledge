@@ -67,6 +67,18 @@ public class AgentExecutionPlanValidator {
                 }
             }
 
+            // 当前 Agent DAG 的 dependsOn 定义为“数据依赖”，不是单纯的执行顺序提示。
+            // 如果声明依赖却没有通过 $ref 消费上游结果，下游查询范围不会自动继承上游，
+            // 容易出现“目的写的是这两个对象，实际却对全库执行”的伪 DAG。此类计划必须在执行前拒绝。
+            if (!node.dependsOn().isEmpty()) {
+                Set<String> unconsumedDependencies = new HashSet<>(node.dependsOn());
+                unconsumedDependencies.removeAll(references);
+                if (!unconsumedDependencies.isEmpty()) {
+                    return Validation.invalid("declared dependency must be consumed by explicit argument $ref: "
+                            + node.id() + " -> " + unconsumedDependencies);
+                }
+            }
+
             // 只有完全静态的参数才能在执行前做完整 Tool Contract 校验。
             if (capabilityInvoker != null && references.isEmpty()) {
                 CapabilityInvoker.PreparedCall prepared = capabilityInvoker.prepare(
