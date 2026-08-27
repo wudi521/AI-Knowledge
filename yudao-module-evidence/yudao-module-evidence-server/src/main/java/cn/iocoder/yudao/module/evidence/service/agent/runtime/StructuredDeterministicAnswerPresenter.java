@@ -15,6 +15,7 @@ import java.util.Map;
  * exploded 多行按实体和字段去重合并；单行 GROUP 结果使用节点 purpose 作为结论标题。</p>
  */
 final class StructuredDeterministicAnswerPresenter {
+    private static final String ROW_RESULT_HEADING = "查询结果";
 
     private StructuredDeterministicAnswerPresenter() {
     }
@@ -50,14 +51,14 @@ final class StructuredDeterministicAnswerPresenter {
         if (rowsMarker >= 0) {
             String body = text.substring(rowsMarker + "个结果：".length()).trim();
             List<EntityRow> rows = entityRows(body);
-            if (!rows.isEmpty()) return renderEntityRows(purpose, rows);
+            if (!rows.isEmpty()) return renderEntityRows(ROW_RESULT_HEADING, rows);
         }
 
         if (text.startsWith("当前范围共 ") && text.contains("个对象")) {
             int newline = text.indexOf('\n');
             if (newline >= 0) {
                 List<EntityRow> rows = entityRows(text.substring(newline + 1));
-                if (!rows.isEmpty()) return renderEntityRows(purpose, rows);
+                if (!rows.isEmpty()) return renderEntityRows(ROW_RESULT_HEADING, rows);
             }
         }
 
@@ -81,7 +82,10 @@ final class StructuredDeterministicAnswerPresenter {
             sb.append(index++).append(". ").append(entity.getKey());
             List<String> fields = new ArrayList<>();
             for (Map.Entry<String, LinkedHashSet<String>> field : entity.getValue().entrySet()) {
-                fields.add(field.getKey() + "=" + String.join("、", field.getValue()));
+                // entityName 本身已经展示过；如果某个投影字段与它完全相同，不再机械重复一遍。
+                LinkedHashSet<String> values = new LinkedHashSet<>(field.getValue());
+                values.remove(entity.getKey());
+                if (!values.isEmpty()) fields.add(field.getKey() + "=" + String.join("、", values));
             }
             if (!fields.isEmpty()) sb.append("：").append(String.join("；", fields));
             sb.append('\n');
