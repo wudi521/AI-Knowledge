@@ -330,8 +330,10 @@ public class AgenticKnowledgeRuntimeEngine {
         };
         String frontier = evaluation.supportingReferenceIds().isEmpty()
                 ? "" : "; proofFrontier=" + evaluation.supportingReferenceIds();
+        String answerFrontier = evaluation.answerReferenceIds().isEmpty()
+                ? "" : "; answerFrontier=" + evaluation.answerReferenceIds();
         traceSteps.add(trace(traceSteps, "RESULT_EVALUATION", "EVALUATE", null, state.getOriginalGoal(), null,
-                status, elapsed, "verdict=" + evaluation.verdict() + frontier + "; "
+                status, elapsed, "verdict=" + evaluation.verdict() + frontier + answerFrontier + "; "
                         + StrUtil.maxLength(evaluation.reason(), 400), traceReason));
         return new GoalCheck(evaluation, null);
     }
@@ -347,46 +349,49 @@ public class AgenticKnowledgeRuntimeEngine {
                           List<ReferenceRecord> references,
                           List<ProvenanceRecord> provenance) {
         List<ReferenceRecord> proofReferences = proofReferences(evaluation, references);
-        List<String> proofAnswers = proofReferences.isEmpty()
-                ? distinct(deterministicAnswers) : deterministicAnswers(proofReferences);
-        List<Evidence> proofEvidence = proofReferences.isEmpty()
-                ? List.copyOf(gatheredEvidence) : evidences(proofReferences);
+        List<ReferenceRecord> answerReferences = answerReferences(evaluation, references, proofReferences);
+        List<String> answerFacts = answerReferences.isEmpty()
+                ? distinct(deterministicAnswers) : deterministicAnswers(answerReferences);
+        List<Evidence> answerEvidence = answerReferences.isEmpty()
+                ? List.copyOf(gatheredEvidence) : evidences(answerReferences);
         String proofSummary = "proofFrontier=" + (evaluation == null ? List.of() : evaluation.supportingReferenceIds())
-                + "; proofReferences=" + proofReferences.size();
+                + "; answerFrontier=" + (evaluation == null ? List.of() : evaluation.answerReferenceIds())
+                + "; proofReferences=" + proofReferences.size()
+                + "; answerReferences=" + answerReferences.size();
 
-        // 已被 Goal Evaluator 选入最终证明集的确定性 Tool 结果可以直接回答时，禁止因为历史上曾有语义 Evidence
-        // 就再次进入昂贵的 Generate + Claim Verify。历史失败/候选证据仍保留在 trace/reference 中，但退出答案作用域。
-        if (proofEvidence.isEmpty() && !proofAnswers.isEmpty()) {
+        // 完整 proof 可以包含只负责实体消歧/范围桥接的 supporting Reference；用户答案内容只消费 answerReferenceIds。
+        // 因而只要 answerReferenceIds 全是确定性 Tool，就直接走快路径，即使 proof frontier 中还包含 semantic Evidence。
+        if (answerEvidence.isEmpty() && !answerFacts.isEmpty()) {
             state.setEvidenceCoverage(EvidenceCoverage.FULL);
             state.stop(AgentStopReason.ENOUGH_EVIDENCE);
             traceSteps.add(trace(traceSteps, "ANSWER_VALIDATION", "ANSWER", null, state.getOriginalGoal(), null,
                     "SUCCEEDED", 0L, proofSummary + "; deterministicFastPath=true; answerPipelineSkipped=true",
                     AgentStopReason.ENOUGH_EVIDENCE));
-            return new Result(State.ANSWER, String.join("\n", proofAnswers), null, AgentStopReason.ENOUGH_EVIDENCE,
+            return new Result(State.ANSWER, String.join("\n", answerFacts), null, AgentStopReason.ENOUGH_EVIDENCE,
                     List.of(), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), null,
                     List.copyOf(traceSteps), List.copyOf(trustedEntityIds), List.copyOf(activities),
                     List.copyOf(references), List.copyOf(provenance));
         }
-        if (proofEvidence.isEmpty() || answerPipeline == null) {
+        if (answerEvidence.isEmpty() || answerPipeline == null) {
             return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
-                    "独立 Goal Evaluator 虽通过，但最终证明集中没有可进入回答验证的事实输出。",
-                    proofEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
+                    "独立 Goal Evaluator 虽通过，但 answerReferenceIds 中没有可进入回答验证的事实输出。",
+                    answerEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
         }
 
         long start = System.currentTimeMillis();
         GenerationResult generation = answerPipeline.generateWithClaims(state.getOriginalGoal(),
-                List.copyOf(proofEvidence), history);
+                List.copyOf(answerEvidence), history);
         long elapsed = System.currentTimeMillis() - start;
         if (generation == null || StrUtil.isBlank(generation.getAnswer()) || generation.isClaimFail()) {
             traceSteps.add(trace(traceSteps, "ANSWER_VALIDATION", "ANSWER", null, state.getOriginalGoal(), null,
                     "FAILED", elapsed, proofSummary + "; answer failed claim/evidence validation",
                     AgentStopReason.NO_RELIABLE_EVIDENCE));
             return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
-                    "最终回答未通过证据/Claim 验证。", proofEvidence, traceSteps,
+                    "最终回答未通过证据/Claim 验证。", answerEvidence, traceSteps,
                     trustedEntityIds, activities, references, provenance);
         }
-        String finalAnswer = proofAnswers.isEmpty() ? generation.getAnswer()
-                : String.join("\n", proofAnswers) + "\n" + generation.getAnswer();
+        String finalAnswer = answerFacts.isEmpty() ? generation.getAnswer()
+                : String.join("\n", answerFacts) + "\n" + generation.getAnswer();
         state.setEvidenceCoverage(EvidenceCoverage.FULL);
         state.stop(AgentStopReason.ENOUGH_EVIDENCE);
         String timing = "; generateMs=" + generation.getGenerateMs()
@@ -398,18 +403,34 @@ public class AgenticKnowledgeRuntimeEngine {
                 "SUCCEEDED", elapsed, proofSummary + timing,
                 AgentStopReason.ENOUGH_EVIDENCE));
         return new Result(State.ANSWER, finalAnswer, null, AgentStopReason.ENOUGH_EVIDENCE,
-                List.copyOf(proofEvidence), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), generation,
+                List.copyOf(answerEvidence), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), generation,
                 List.copyOf(traceSteps), List.copyOf(trustedEntityIds), List.copyOf(activities),
                 List.copyOf(references), List.copyOf(provenance));
     }
 
     private List<ReferenceRecord> proofReferences(AgentGoalEvaluator.Evaluation evaluation,
                                                   List<ReferenceRecord> references) {
-        if (references == null || references.isEmpty()) return List.of();
         List<String> selectedIds = evaluation == null ? List.of() : evaluation.supportingReferenceIds();
-        // trustPlanner/迁移期 evaluator 没有 proof frontier 时保持旧兼容；生产 LLM evaluator v1.4 强制返回非空集合。
-        if (selectedIds == null || selectedIds.isEmpty()) return List.copyOf(references);
+        // trustPlanner/迁移期 evaluator 没有 proof frontier 时保持旧兼容；生产 LLM evaluator v1.5 强制返回非空集合。
+        return selectedReferences(selectedIds, references, true);
+    }
 
+    private List<ReferenceRecord> answerReferences(AgentGoalEvaluator.Evaluation evaluation,
+                                                   List<ReferenceRecord> references,
+                                                   List<ReferenceRecord> proofReferences) {
+        List<String> selectedIds = evaluation == null ? List.of() : evaluation.answerReferenceIds();
+        // 兼容旧 evaluator：没有 answer frontier 时，沿用完整 proof frontier。
+        if (selectedIds == null || selectedIds.isEmpty()) return proofReferences == null ? List.of() : proofReferences;
+        return selectedReferences(selectedIds, references, false);
+    }
+
+    private List<ReferenceRecord> selectedReferences(List<String> selectedIds,
+                                                     List<ReferenceRecord> references,
+                                                     boolean fallbackAll) {
+        if (references == null || references.isEmpty()) return List.of();
+        if (selectedIds == null || selectedIds.isEmpty()) {
+            return fallbackAll ? List.copyOf(references) : List.of();
+        }
         Map<String, ReferenceRecord> byId = new LinkedHashMap<>();
         for (ReferenceRecord reference : references) {
             if (reference != null && StrUtil.isNotBlank(reference.referenceId())) {
@@ -424,10 +445,10 @@ public class AgenticKnowledgeRuntimeEngine {
         return List.copyOf(out);
     }
 
-    private List<String> deterministicAnswers(List<ReferenceRecord> proofReferences) {
+    private List<String> deterministicAnswers(List<ReferenceRecord> selectedReferences) {
         LinkedHashSet<String> out = new LinkedHashSet<>();
-        if (proofReferences != null) {
-            for (ReferenceRecord reference : proofReferences) {
+        if (selectedReferences != null) {
+            for (ReferenceRecord reference : selectedReferences) {
                 if (reference != null && StrUtil.isNotBlank(reference.deterministicAnswer())) {
                     out.add(reference.deterministicAnswer());
                 }
@@ -436,10 +457,10 @@ public class AgenticKnowledgeRuntimeEngine {
         return List.copyOf(out);
     }
 
-    private List<Evidence> evidences(List<ReferenceRecord> proofReferences) {
+    private List<Evidence> evidences(List<ReferenceRecord> selectedReferences) {
         List<Evidence> out = new ArrayList<>();
-        if (proofReferences == null) return List.of();
-        for (ReferenceRecord reference : proofReferences) {
+        if (selectedReferences == null) return List.of();
+        for (ReferenceRecord reference : selectedReferences) {
             if (reference == null || reference.evidences() == null) continue;
             for (Evidence evidence : reference.evidences()) {
                 if (evidence != null && !out.contains(evidence)) out.add(evidence);
