@@ -29,7 +29,7 @@ import static org.mockito.Mockito.when;
 class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
 
     @Test
-    void plannerReceivesQueryIrLanguageFromRuntimePluginInsteadOfSemanticCombinationMatrix() {
+    void plannerReceivesQueryIrLanguageAndTypedDataflowContractFromRuntime() {
         ModelApi modelApi = mock(ModelApi.class);
         PromptSupport promptSupport = mock(PromptSupport.class);
         when(promptSupport.get(anyString(), anyString())).thenAnswer(invocation -> invocation.getArgument(1));
@@ -76,10 +76,16 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
 
         ArgumentCaptor<ModelChatReqDTO> captor = ArgumentCaptor.forClass(ModelChatReqDTO.class);
         verify(modelApi).chat(captor.capture());
-        String input = captor.getValue().getUser();
+        ModelChatReqDTO request = captor.getValue();
+        String input = request.getUser();
+        String system = request.getSystem();
 
         assertThat(input).contains("QUERY_IR_V1", "GROUP_BY", "AGGREGATE", "AVG", "ORDER_BY");
+        assertThat(input).contains("dataflowContract=", "metadata.dataflowRows");
         assertThat(input).doesNotContain("ORDER_TOP_N", "PATENT_COUNT", "legacy task", "legacy operation");
+        assertThat(system).contains("dataflowRows[*].groupKey", "dataflowRows[*].fields.<FIELD_CODE>",
+                "禁止把整个 data/Output/summary/deterministicAnswer 塞进 values");
+        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v2");
         assertThat(registry.listDefinitions(new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-ir"))
                 .get(0).argumentSchema()).doesNotContainKeys("task", "operation", "metric");
     }
