@@ -8,6 +8,9 @@ public record AgentExecutionBudget(int maxSteps, int maxLlmCalls, long maxElapse
     }
 
     public static AgentExecutionBudget defaults() {
-        return new AgentExecutionBudget(6, 6, 15_000L);
+        // Planner + Tool Runtime + Goal Evaluator share this wall-clock budget.
+        // 15s is below the observed cost of one normal planner call plus one semantic retrieval,
+        // leaving no room for goal evaluation even when the execution plan is minimal.
+        return new AgentExecutionBudget(6, 6, 30_000L);
     }
 }
