@@ -74,6 +74,10 @@ public class AgentExecutionPlanValidator {
                 if (!prepared.accepted()) {
                     return Validation.invalid("invalid capability call for node " + node.id() + ": " + prepared.message());
                 }
+                String nestedContractError = validateDeclaredNestedContracts(prepared, node.arguments());
+                if (nestedContractError != null) {
+                    return Validation.invalid("invalid capability call for node " + node.id() + ": " + nestedContractError);
+                }
             }
         }
 
@@ -85,6 +89,92 @@ public class AgentExecutionPlanValidator {
             }
         }
         return Validation.ok();
+    }
+
+    /**
+     * argumentSchema 是 capability 对 Planner 暴露的机器契约。这里仅对已经声明的标准 Query-IR
+     * 嵌套参数补做静态细节校验，不解释 originalGoal，也不绑定任何领域字段或业务 intent。
+     */
+    private String validateDeclaredNestedContracts(CapabilityInvoker.PreparedCall prepared,
+                                                   Map<String, Object> arguments) {
+        if (prepared == null || prepared.capability() == null || arguments == null || arguments.isEmpty()) return null;
+        Map<String, String> schema = prepared.capability().definition().argumentSchema();
+        if (schema == null || schema.isEmpty()) return null;
+
+        if (schema.containsKey("orderBy")) {
+            String error = validateOrderBy(arguments.get("orderBy"));
+            if (error != null) return error;
+        }
+        if (schema.containsKey("having")) {
+            String error = validateHaving(arguments.get("having"));
+            if (error != null) return error;
+        }
+        return null;
+    }
+
+    private String validateOrderBy(Object raw) {
+        if (raw == null) return null;
+        List<?> items = raw instanceof List<?> list ? list : List.of(raw);
+        if (items.isEmpty()) return "orderBy must not be empty when provided";
+        for (Object item : items) {
+            if (!(item instanceof Map<?, ?> map)) return "orderBy item must be an object";
+
+            int sources = 0;
+            if (Boolean.TRUE.equals(map.get("aggregateValue"))) sources++;
+            if (nonBlank(map.get("metric"))) sources++;
+            if (map.get("value") != null) sources++;
+            else if (nonBlank(map.get("field")) || nonBlank(map.get("code"))) sources++;
+
+            if (sources == 0) return "order-by source is missing";
+            if (sources > 1) return "orderBy item must declare exactly one source";
+
+            Object direction = map.containsKey("direction") ? map.get("direction") : map.get("sort");
+            if (direction != null) {
+                String value = String.valueOf(direction).trim().toUpperCase();
+                if (!"ASC".equals(value) && !"DESC".equals(value)) {
+                    return "orderBy direction must be ASC or DESC";
+                }
+            }
+        }
+        return null;
+    }
+
+    private String validateHaving(Object raw) {
+        if (raw == null) return null;
+        if (!(raw instanceof Map<?, ?> map)) return "having must be an object";
+        String operator = map.get("operator") == null ? "" : String.valueOf(map.get("operator")).trim().toUpperCase();
+        Set<String> supported = Set.of("EQ", "NE", "GT", "GTE", "LT", "LTE", "BETWEEN", "IN");
+        if (!supported.contains(operator)) return "having.operator is required or invalid";
+
+        Object rawValues = map.containsKey("values") ? map.get("values") : map.get("value");
+        List<?> values;
+        if (rawValues instanceof List<?> list) values = list;
+        else if (rawValues == null) values = List.of();
+        else values = List.of(rawValues);
+
+        if (values.isEmpty()) return "having values are required";
+        if ("BETWEEN".equals(operator) && values.size() != 2) return "having BETWEEN requires exactly two values";
+        if (!"IN".equals(operator) && !"BETWEEN".equals(operator) && values.size() != 1) {
+            return "having " + operator + " requires exactly one value";
+        }
+        for (Object value : values) {
+            if (!finiteNumber(value)) return "having values must be finite numbers";
+        }
+        return null;
+    }
+
+    private boolean nonBlank(Object value) {
+        return value != null && StrUtil.isNotBlank(String.valueOf(value));
+    }
+
+    private boolean finiteNumber(Object value) {
+        if (value instanceof Number number) return Double.isFinite(number.doubleValue());
+        if (value == null) return false;
+        try {
+            return Double.isFinite(Double.parseDouble(String.valueOf(value)));
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     private String collectAndValidateReferences(Object value, Set<String> references) {
