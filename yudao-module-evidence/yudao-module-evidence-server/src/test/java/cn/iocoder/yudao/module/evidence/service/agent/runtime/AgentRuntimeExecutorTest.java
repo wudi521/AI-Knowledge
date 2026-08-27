@@ -99,6 +99,15 @@ class AgentRuntimeExecutorTest {
         AgentExecutionPlanValidator.Validation validation = validator.validate(hiddenReference, budget);
         assertFalse(validation.valid());
         assertTrue(validation.message().contains("dependsOn"));
+
+        AgentExecutionPlan danglingDependency = new AgentExecutionPlan("dangling-dependency", "x", 0, List.of(
+                new PlanNode("a", "echo", Map.of(), "上游事实", Set.of()),
+                new PlanNode("b", "echo", Map.of("query", "声称只处理上游对象"),
+                        "下游范围必须来自上游", Set.of("a"))
+        ));
+        AgentExecutionPlanValidator.Validation dangling = validator.validate(danglingDependency, budget);
+        assertFalse(dangling.valid());
+        assertTrue(dangling.message().contains("explicit argument $ref"));
     }
 
     @Test
