@@ -41,6 +41,8 @@ import java.util.stream.Collectors;
  */
 @Component
 public class StructuredPipelineCapabilityDelegate {
+    private static final int MAX_ENTITY_SCOPE_IDS = 50;
+
     private final DomainFieldRegistry fieldRegistry;
     private final DomainMetricRegistry metricRegistry;
     private final DomainEntityRegistry entityRegistry;
@@ -62,28 +64,51 @@ public class StructuredPipelineCapabilityDelegate {
      */
     public String canonicalPlanKey(String domainCode, Map<String, Object> arguments) {
         if (StrUtil.isBlank(domainCode)) return null;
-        CompileResult compiled = compile(domainCode, arguments == null ? Map.of() : arguments);
-        return compiled.success() ? summarizePlan(compiled.plan()) : null;
+        Map<String, Object> safe = arguments == null ? Map.of() : arguments;
+        CompileResult compiled = compile(domainCode, safe);
+        if (!compiled.success()) return null;
+        try {
+            List<Long> scopedIds = entityIds(safe.get("entityIds"), MAX_ENTITY_SCOPE_IDS, false);
+            return summarizePlan(compiled.plan()) + "; entityIds=" + scopedIds;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
         if (context == null || context.kbId() == null || StrUtil.isBlank(context.domainCode())) {
             return CapabilityResult.failure(AgentStopReason.PERMISSION_DENIED, "structured scope is incomplete");
         }
-        CompileResult compiled = compile(context.domainCode(), arguments == null ? Map.of() : arguments);
+        Map<String, Object> safeArguments = arguments == null ? Map.of() : arguments;
+        CompileResult compiled = compile(context.domainCode(), safeArguments);
         if (!compiled.success()) {
             return CapabilityResult.recoverableFailure(compiled.message(), Map.of(
                     "errorKind", "PLAN_CONTRACT",
                     "domainCode", context.domainCode()));
         }
+        List<Long> scopedIds;
+        try {
+            scopedIds = entityIds(safeArguments.get("entityIds"), MAX_ENTITY_SCOPE_IDS,
+                    safeArguments.containsKey("entityIds"));
+        } catch (IllegalArgumentException e) {
+            return CapabilityResult.recoverableFailure(e.getMessage(), Map.of(
+                    "errorKind", "PLAN_CONTRACT", "domainCode", context.domainCode()));
+        }
+
         StructuredPipelinePlan plan = compiled.plan();
-        plan.setScope(QueryScope.currentKb(context.kbId()));
+        plan.setScope(scopedIds.isEmpty()
+                ? QueryScope.currentKb(context.kbId())
+                : QueryScope.documentSet(context.kbId(), scopedIds));
         StructuredPipelineResult result = executor.execute(plan);
         if (!result.success()) {
             String message = StrUtil.blankToDefault(result.message(), "structured pipeline failed");
             Map<String, Object> diagnostics = new LinkedHashMap<>();
             if (result.metadata() != null) diagnostics.putAll(result.metadata());
             diagnostics.put("normalizedPlan", summarizePlan(plan));
+            if (!scopedIds.isEmpty()) {
+                diagnostics.put("entityScopeApplied", true);
+                diagnostics.put("inputEntityScopeCount", scopedIds.size());
+            }
             if (isContractError(message)) {
                 diagnostics.put("errorKind", "PIPELINE_CONTRACT");
                 return CapabilityResult.recoverableFailure(message, diagnostics);
@@ -105,6 +130,12 @@ public class StructuredPipelineCapabilityDelegate {
                 ? result.rows().stream().map(StructuredPipelineResult.Row::entityId)
                     .filter(Objects::nonNull).distinct().toList()
                 : List.of();
+        if (!scopedIds.isEmpty() && verifiedIds.stream().anyMatch(id -> !scopedIds.contains(id))) {
+            return CapabilityResult.failure(CapabilityFailureType.DATA_INCOMPLETE,
+                    AgentStopReason.NO_RELIABLE_EVIDENCE,
+                    "structured entity subset scope was violated by downstream data",
+                    Map.of("entityScopeApplied", true, "inputEntityScopeCount", scopedIds.size()));
+        }
         String rowSummary = summarizeRows(result.rows(), 12);
         Output output = new Output(shape, verifiedIds, result.sourceEntityCount(), result.scalarValue(), answer,
                 rowSummary, result.authoritativeEmpty(), summarizePlan(plan));
@@ -121,11 +152,17 @@ public class StructuredPipelineCapabilityDelegate {
         metadata.put("task", "SCALAR".equals(shape) || "GROUP".equals(shape) ? "AGGREGATE" : "PROJECT");
         metadata.put("shape", shape);
         metadata.put("normalizedPlan", summarizePlan(plan));
+        if (!scopedIds.isEmpty()) {
+            metadata.put("entityScopeApplied", true);
+            metadata.put("inputEntityScopeCount", scopedIds.size());
+            metadata.put("inputEntityIds", scopedIds);
+        }
         return CapabilityResult.success(output, metadata);
     }
 
     public Map<String, String> argumentSchema() {
         Map<String, String> schema = new LinkedHashMap<>();
+        schema.put("entityIds", "可选。仅用于下游消费上游 Tool 的 candidateEntityIds/verifiedEntityIds，把结构化读取限制到当前知识库内这组实体；1~50 个正整数。Planner 必须通过显式 $ref 提供，禁止编造内部实体 ID。该范围本身不提升 candidate 的可信级别，只有 structured_query 实际返回的行才成为 verifiedEntityIds。");
         schema.put("select", "可选。返回字段/值表达式数组。元素可为字段 code/别名，或 {field,explode,transforms[]}。例如 [{field:'TITLE'},{field:'FILING_DATE'}]");
         schema.put("filter", "可选。类型化过滤树：条件 {field,operator,values,explode,transforms}；组合 {logic:'AND|OR',children:[...]}。");
         schema.put("groupBy", "可选。分组值表达式或数组；字段必须 groupable=true。多值字段可 explode=true；日期可 YEAR/YEAR_MONTH。");
@@ -580,6 +617,27 @@ public class StructuredPipelineCapabilityDelegate {
         }
         String value = text(raw);
         return StrUtil.isBlank(value) ? List.of() : List.of(value);
+    }
+
+    private List<Long> entityIds(Object raw, int limit, boolean requiredWhenProvided) {
+        if (raw == null) return List.of();
+        if (!(raw instanceof Iterable<?> iterable)) {
+            throw new IllegalArgumentException("entityIds must be an array of positive integer entity ids");
+        }
+        LinkedHashSet<Long> out = new LinkedHashSet<>();
+        for (Object item : iterable) {
+            if (!(item instanceof Byte || item instanceof Short || item instanceof Integer || item instanceof Long)) {
+                throw new IllegalArgumentException("entityIds must contain only positive integer entity ids");
+            }
+            long value = ((Number) item).longValue();
+            if (value <= 0L) throw new IllegalArgumentException("entityIds must contain only positive integer entity ids");
+            out.add(value);
+            if (out.size() > limit) throw new IllegalArgumentException("entityIds exceeds maximum size: " + limit);
+        }
+        if (requiredWhenProvided && out.isEmpty()) {
+            throw new IllegalArgumentException("entityIds must not be empty when provided");
+        }
+        return List.copyOf(out);
     }
 
     private List<Double> numbers(Object raw, int limit) {
