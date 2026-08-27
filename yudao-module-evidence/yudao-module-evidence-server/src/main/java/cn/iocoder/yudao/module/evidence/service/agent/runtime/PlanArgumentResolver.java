@@ -25,8 +25,10 @@ import java.util.regex.Pattern;
  *  "distinct":true,"required":true,"expect":"LIST"}.</p>
  *
  * <p>References into metadata.dataflowRows fail closed when the producer reports an incomplete output.
- * A plan may opt into partial consumption only with an explicit {@code allowPartial:true}; this keeps
- * accidental default/result limits from silently becoming an incomplete downstream scope.</p>
+ * A plan may opt into partial consumption only with an explicit {@code allowPartial:true}. The one exception
+ * is a producer that proves {@code rankedSelectionComplete=true}: it evaluated a complete source and returned
+ * the complete explicit ordered Top-N selection, which is safe to pass downstream even though the full
+ * unselected row set is larger.</p>
  *
  * <p>The resolver intentionally supports only maps, lists/arrays and Java record components.
  * It is not an expression language and never invokes arbitrary bean getters or methods.</p>
@@ -154,7 +156,9 @@ public class PlanArgumentResolver {
             return;
         }
         Map<String, Object> metadata = result.metadata() == null ? Map.of() : result.metadata();
-        if (!Boolean.TRUE.equals(metadata.get("outputComplete"))) {
+        boolean completeOutput = Boolean.TRUE.equals(metadata.get("outputComplete"));
+        boolean completeRankedSelection = Boolean.TRUE.equals(metadata.get("rankedSelectionComplete"));
+        if (!completeOutput && !completeRankedSelection) {
             throw new IllegalArgumentException("referenced dataflow output is incomplete: " + nodeId + "." + path
                     + "; set allowPartial=true only when partial consumption is intentional");
         }
