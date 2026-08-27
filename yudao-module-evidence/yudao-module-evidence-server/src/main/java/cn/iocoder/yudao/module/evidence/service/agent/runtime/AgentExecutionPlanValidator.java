@@ -2,6 +2,8 @@ package cn.iocoder.yudao.module.evidence.service.agent.runtime;
 
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentExecutionBudget;
+import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvocationContext;
+import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvoker;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -9,10 +11,24 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** Plan Schema + DAG validation. No business intent is interpreted here. */
+/** Plan Schema + DAG + static capability contract validation. No business intent is interpreted here. */
 public class AgentExecutionPlanValidator {
 
     public Validation validate(AgentExecutionPlan plan, AgentExecutionBudget budget) {
+        return validate(plan, budget, null, null);
+    }
+
+    /**
+     * 在 Runtime 真正执行前完成能确定的机器校验。
+     *
+     * <p>含 $ref 的动态参数必须等上游完成后再由 CapabilityInvoker.prepare 校验；
+     * 不含引用的静态节点则在 PLAN_VALIDATION 阶段直接校验 capability 参数契约，避免
+     * aggregate/list/object 这类形状错误消耗一次节点执行和后续 replan 预算。</p>
+     */
+    public Validation validate(AgentExecutionPlan plan,
+                               AgentExecutionBudget budget,
+                               CapabilityInvoker capabilityInvoker,
+                               CapabilityInvocationContext context) {
         if (plan == null) return Validation.invalid("execution plan is null");
         if (StrUtil.isBlank(plan.originalGoal())) return Validation.invalid("originalGoal must not be blank");
         if (plan.replanAttempt() < 0) return Validation.invalid("replanAttempt must be >= 0");
@@ -37,7 +53,10 @@ public class AgentExecutionPlanValidator {
                 }
             }
             Set<String> references = new HashSet<>();
-            collectReferences(node.arguments(), references);
+            String referenceError = collectAndValidateReferences(node.arguments(), references);
+            if (referenceError != null) {
+                return Validation.invalid(referenceError + " for node " + node.id());
+            }
             for (String reference : references) {
                 if (!byId.containsKey(reference)) {
                     return Validation.invalid("unknown argument reference " + reference + " for node " + node.id());
@@ -45,6 +64,15 @@ public class AgentExecutionPlanValidator {
                 if (!node.dependsOn().contains(reference)) {
                     return Validation.invalid("argument reference must be declared in dependsOn: "
                             + node.id() + " -> " + reference);
+                }
+            }
+
+            // 只有完全静态的参数才能在执行前做完整 Tool Contract 校验。
+            if (capabilityInvoker != null && references.isEmpty()) {
+                CapabilityInvoker.PreparedCall prepared = capabilityInvoker.prepare(
+                        node.capability(), node.arguments(), context);
+                if (!prepared.accepted()) {
+                    return Validation.invalid("invalid capability call for node " + node.id() + ": " + prepared.message());
                 }
             }
         }
@@ -59,16 +87,28 @@ public class AgentExecutionPlanValidator {
         return Validation.ok();
     }
 
-    private void collectReferences(Object value, Set<String> references) {
+    private String collectAndValidateReferences(Object value, Set<String> references) {
         if (value instanceof Map<?, ?> map) {
             Object ref = map.get("$ref");
-            if (ref != null) references.add(String.valueOf(ref));
-            for (Object nested : map.values()) collectReferences(nested, references);
-            return;
+            if (ref != null) {
+                String error = PlanArgumentResolver.validateReference(map);
+                if (error != null) return error;
+                references.add(String.valueOf(ref));
+                return null;
+            }
+            for (Object nested : map.values()) {
+                String error = collectAndValidateReferences(nested, references);
+                if (error != null) return error;
+            }
+            return null;
         }
         if (value instanceof List<?> list) {
-            for (Object nested : list) collectReferences(nested, references);
+            for (Object nested : list) {
+                String error = collectAndValidateReferences(nested, references);
+                if (error != null) return error;
+            }
         }
+        return null;
     }
 
     private boolean hasCycle(String id, Map<String, PlanNode> byId,
