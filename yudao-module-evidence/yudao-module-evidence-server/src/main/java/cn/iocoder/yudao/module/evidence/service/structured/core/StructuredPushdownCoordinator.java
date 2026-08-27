@@ -2,6 +2,8 @@ package cn.iocoder.yudao.module.evidence.service.structured.core;
 
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /** 领域无关的整计划下推选择器；不包含任何 PATENT/CONTRACT 分支。 */
@@ -12,6 +14,25 @@ public class StructuredPushdownCoordinator {
 
     public StructuredPushdownCoordinator(List<StructuredPushdownAdapter> adapters) {
         this.adapters = adapters == null ? List.of() : List.copyOf(adapters);
+    }
+
+    /**
+     * 返回后端已经注册并声明的 typed 下推能力目录。
+     * 目录用于规划和可观测性，不替代执行时 supports(plan) 的精确安全判断。
+     */
+    public List<StructuredPushdownCapability> capabilities(String domainCode) {
+        List<StructuredPushdownCapability> out = new ArrayList<>();
+        for (StructuredPushdownAdapter adapter : adapters) {
+            if (adapter == null) continue;
+            if (domainCode != null && !domainCode.equalsIgnoreCase(adapter.domainCode())) continue;
+            List<StructuredPushdownCapability> capabilities = adapter.capabilities();
+            if (capabilities != null) out.addAll(capabilities);
+        }
+        out.sort(Comparator.comparing(StructuredPushdownCapability::domainCode, Comparator.nullsLast(String::compareTo))
+                .thenComparing(StructuredPushdownCapability::operation, Comparator.nullsLast(String::compareTo))
+                .thenComparing(StructuredPushdownCapability::fieldCode, Comparator.nullsLast(String::compareTo))
+                .thenComparing(StructuredPushdownCapability::metricCode, Comparator.nullsLast(String::compareTo)));
+        return List.copyOf(out);
     }
 
     public StructuredPushdownResult execute(StructuredPipelinePlan plan) {
