@@ -28,11 +28,11 @@ import java.util.Set;
 @Slf4j
 @Component
 public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
-    private static final String PROMPT_KEY = "agent-goal-evaluator-v1.4";
+    private static final String PROMPT_KEY = "agent-goal-evaluator-v1.5";
     private static final String DEFAULT_PROMPT = """
             你是企业知识 Agent 的独立 Goal Satisfaction Evaluator，不负责回答用户，也不负责选择工具。
             你的唯一任务：判断 accumulated observations 是否已经直接、完整、可靠地证明 immutable originalGoal，
-            并在 SATISFIED 时指出真正构成最终证明的 Reference。
+            并在 SATISFIED 时指出完整证明链 supportingReferenceIds，以及真正用于构造用户答案内容的 answerReferenceIds。
             只输出 JSON，不要 Markdown，不要解释推理过程。
 
             verdict 只能是 SATISFIED / INSUFFICIENT / NEED_MORE_INFO。
@@ -43,8 +43,8 @@ public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
             2. “相关”不等于“充分”。如果目标要求更强事实，而执行结果只证明较弱事实，必须 INSUFFICIENT。
                例如：某字段存在，只能证明有值；不能证明元素数量、阈值、重复、极值、先后、相似、关系或比较结论。
             3. 证明义务不能强于 originalGoal：
-               - 存在/是非型目标（例如“有没有/是否存在/是不是”）只要求可靠证明 true 或 false；若完整计数、分组、阈值或确定性标量比较已经直接证明存在性，不得额外要求列出具体 witness。
-               - 枚举型目标（例如“哪些/都有谁/列出来/罗列”）才要求返回具体项，并要求覆盖范围足以支持“全部”语义。
+               - 存在/是非型目标只要求可靠证明 true 或 false；若完整计数、分组、阈值或确定性标量比较已经直接证明存在性，不得额外要求列出 witness。
+               - 枚举型目标才要求返回具体项，并要求覆盖范围足以支持“全部”语义。
                - 数量型目标要求直接数量；极值/排序型目标要求对应极值/排序执行事实；不要把一种目标擅自升级成另一种更强目标。
             4. 如果目标要求数量、去重数量、分组、阈值、极值、排序、派生值或关系，必须看到执行计划/结果确实计算或检验了对应属性；不能从相邻事实猜测。
                对跨结果的大小/相等关系，优先要求 scalar_compare 等确定性运算已经执行，禁止由 Evaluator 临场做未执行计算。
@@ -63,20 +63,27 @@ public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
                 节点 purpose 只是计划声明，不是事实证据；例如 purpose 写“及其发明人列表”，但结果只返回标题和人数，仍然没有证明发明人姓名。
                 派生字段也不能冒充源字段：PERSON_SURNAME/姓氏只能证明姓氏，不能满足“发明人姓名/完整名称”；数量也不能替代枚举值，枚举值也不能替代用户明确要求的其他字段。
             12. Evaluator 只能验收已经执行的计算，禁止从列表长度、去重后的展示项、文本排列等自行推导一个新的数量、去重数量、极值或比较结论。
-                如果 originalGoal 问“共计几个/不同值有几个”，必须有 capability 的直接标量/确定性聚合结果或明确 derivedDeterministic 结果；仅拿到一个姓氏列表后由 Evaluator 自己数成 5，必须判 INSUFFICIENT。
+                如果 originalGoal 问“共计几个/不同值有几个”，必须有 capability 的直接标量/确定性聚合结果或明确 derivedDeterministic 结果；仅拿到一个姓氏列表后由 Evaluator 自己数，必须判 INSUFFICIENT。
             13. 子集范围也是证明的一部分。若目标限定“这些对象/这两个结果/上述候选”，必须看到实际查询参数或机器结果确实把范围绑定到该子集。
                 dependsOn、purpose、自然语言中的“这两个”都不会自动缩小 structured_query 的数据范围；如果实际结果包含目标子集之外的对象，该结果不能证明这个子集上的数量、枚举或派生统计。
-            14. supportingReferenceIds 是最终回答的机器证明边界，只能填写 observations.metadata.referenceId 中真实存在的 id。
+            14. supportingReferenceIds 是完整机器证明边界，只能填写 observations.metadata.referenceId 中真实存在的 id。
                 当 verdict=SATISFIED 时，必须返回“必要且足够”的最小 Reference 集合：
                 - 被后续 replan 纠正/替代的旧 EMPTY、错误条件查询、失败中间结果不得进入；
-                - 仅用于发现候选、但最终结论已由更强确定性 Reference 直接证明的语义检索不得进入；
                 - 与 originalGoal 无关的证据不得因为出现在历史 observations 中而进入；
                 - 如果目标确实需要跨多个 Reference 才完整证明，则把这些必要 Reference 全部列出。
                 如果你无法从现有 Reference 中指出一个必要且足够的证明集，就不能判 SATISFIED。
-                verdict=INSUFFICIENT/NEED_MORE_INFO 时 supportingReferenceIds 必须为空数组。
+            15. answerReferenceIds 是 supportingReferenceIds 的非空子集，表示“最终用户答案真正需要读取哪些 Reference 的内容”。
+                它不是另一套证明，而是把 proof 中的“支持性中间事实”和“答案内容事实”分开：
+                - 只负责候选发现、实体消歧、范围建立、关系桥接的 Reference，如果它本身没有用户要求展示的最终字段/结论，可留在 supportingReferenceIds，但不要放进 answerReferenceIds；
+                - 真正含有用户要求的字段、枚举值、标量、极值、关系结论或正文内容的 Reference 必须进入 answerReferenceIds；
+                - 如果最终答案本身就是语义正文总结，则相应 semantic retrieval Reference 同时属于 supportingReferenceIds 和 answerReferenceIds；
+                - 如果语义检索只用于把错字/简称定位到一个候选，而 structured_query 已返回用户要求的详情，则 supportingReferenceIds 可以包含两者，answerReferenceIds 只应包含 structured detail；
+                - answerReferenceIds 中每个 id 必须也出现在 supportingReferenceIds 中。
+                verdict=INSUFFICIENT/NEED_MORE_INFO 时两组 id 都必须为空数组。
 
             输出格式：
-            {"verdict":"SATISFIED|INSUFFICIENT|NEED_MORE_INFO","reason":"简短理由","clarificationMessage":null,"supportingReferenceIds":["plan:node"]}
+            {"verdict":"SATISFIED|INSUFFICIENT|NEED_MORE_INFO","reason":"简短理由","clarificationMessage":null,
+             "supportingReferenceIds":["plan:node"],"answerReferenceIds":["plan:node"]}
             """;
 
     private final ModelApi modelApi;
@@ -115,17 +122,30 @@ public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
             }
             if (verdict == Verdict.INSUFFICIENT) return Evaluation.insufficient(reason);
 
-            List<String> supporting = supportingReferenceIds(json.getJSONArray("supportingReferenceIds"));
+            List<String> supporting = referenceIds(json.getJSONArray("supportingReferenceIds"));
+            List<String> answer = referenceIds(json.getJSONArray("answerReferenceIds"));
             Set<String> available = availableReferenceIds(observations);
             if (supporting.isEmpty()) {
                 return Evaluation.failed("goal evaluator returned SATISFIED without a supporting reference frontier");
+            }
+            if (answer.isEmpty()) {
+                return Evaluation.failed("goal evaluator returned SATISFIED without answer reference ids");
             }
             for (String referenceId : supporting) {
                 if (!available.contains(referenceId)) {
                     return Evaluation.failed("goal evaluator returned an unknown supporting reference id");
                 }
             }
-            return Evaluation.satisfied(reason, supporting);
+            Set<String> proofSet = Set.copyOf(supporting);
+            for (String referenceId : answer) {
+                if (!available.contains(referenceId)) {
+                    return Evaluation.failed("goal evaluator returned an unknown answer reference id");
+                }
+                if (!proofSet.contains(referenceId)) {
+                    return Evaluation.failed("answer reference ids must be a subset of supporting reference ids");
+                }
+            }
+            return Evaluation.satisfied(reason, supporting, answer);
         } catch (Exception e) {
             log.warn("[{}][failed traceId={} error={}]", PROMPT_KEY,
                     context == null ? null : context.traceId(), e.getMessage());
@@ -158,7 +178,7 @@ public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
         return Set.copyOf(out);
     }
 
-    private List<String> supportingReferenceIds(JSONArray array) {
+    private List<String> referenceIds(JSONArray array) {
         if (array == null || array.isEmpty()) return List.of();
         LinkedHashSet<String> out = new LinkedHashSet<>();
         for (Object raw : array) {
