@@ -118,12 +118,13 @@ class StructuredExtremaDetailDataflowIntegrationTest {
                     .filter(reference -> "details".equals(reference.nodeId()))
                     .findFirst().orElseThrow();
             assertThat(detailReference.deterministicAnswer())
-                    .contains("罗列极值专利的专利名字和发明人：")
+                    .contains("查询结果：")
                     .contains("一种代替印花的运动服")
                     .contains("发明人=孙新玲")
                     .contains("一种体外经颅式治疗仪")
                     .contains("发明人=郝海涛、吴恒莉、贾少微、何昕")
-                    .doesNotContain("筛选条件");
+                    .doesNotContain("筛选条件")
+                    .doesNotContain("罗列极值专利的专利名字和发明人：");
 
             Object surnameCount = result.nodeResults().get("surname-count").data();
             assertThat(String.valueOf(surnameCount)).contains("scalarValue=5");
