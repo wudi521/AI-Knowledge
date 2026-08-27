@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.evidence.service.agent;
 
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
@@ -13,8 +14,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * 独立 Goal Satisfaction Gate。
@@ -25,10 +28,11 @@ import java.util.Locale;
 @Slf4j
 @Component
 public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
-    private static final String PROMPT_KEY = "agent-goal-evaluator-v1.3";
+    private static final String PROMPT_KEY = "agent-goal-evaluator-v1.4";
     private static final String DEFAULT_PROMPT = """
             你是企业知识 Agent 的独立 Goal Satisfaction Evaluator，不负责回答用户，也不负责选择工具。
-            你的唯一任务：判断 accumulated observations 是否已经直接、完整、可靠地证明 immutable originalGoal。
+            你的唯一任务：判断 accumulated observations 是否已经直接、完整、可靠地证明 immutable originalGoal，
+            并在 SATISFIED 时指出真正构成最终证明的 Reference。
             只输出 JSON，不要 Markdown，不要解释推理过程。
 
             verdict 只能是 SATISFIED / INSUFFICIENT / NEED_MORE_INFO。
@@ -62,9 +66,17 @@ public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
                 如果 originalGoal 问“共计几个/不同值有几个”，必须有 capability 的直接标量/确定性聚合结果或明确 derivedDeterministic 结果；仅拿到一个姓氏列表后由 Evaluator 自己数成 5，必须判 INSUFFICIENT。
             13. 子集范围也是证明的一部分。若目标限定“这些对象/这两个结果/上述候选”，必须看到实际查询参数或机器结果确实把范围绑定到该子集。
                 dependsOn、purpose、自然语言中的“这两个”都不会自动缩小 structured_query 的数据范围；如果实际结果包含目标子集之外的对象，该结果不能证明这个子集上的数量、枚举或派生统计。
+            14. supportingReferenceIds 是最终回答的机器证明边界，只能填写 observations.metadata.referenceId 中真实存在的 id。
+                当 verdict=SATISFIED 时，必须返回“必要且足够”的最小 Reference 集合：
+                - 被后续 replan 纠正/替代的旧 EMPTY、错误条件查询、失败中间结果不得进入；
+                - 仅用于发现候选、但最终结论已由更强确定性 Reference 直接证明的语义检索不得进入；
+                - 与 originalGoal 无关的证据不得因为出现在历史 observations 中而进入；
+                - 如果目标确实需要跨多个 Reference 才完整证明，则把这些必要 Reference 全部列出。
+                如果你无法从现有 Reference 中指出一个必要且足够的证明集，就不能判 SATISFIED。
+                verdict=INSUFFICIENT/NEED_MORE_INFO 时 supportingReferenceIds 必须为空数组。
 
             输出格式：
-            {"verdict":"SATISFIED|INSUFFICIENT|NEED_MORE_INFO","reason":"简短理由","clarificationMessage":null}
+            {"verdict":"SATISFIED|INSUFFICIENT|NEED_MORE_INFO","reason":"简短理由","clarificationMessage":null,"supportingReferenceIds":["plan:node"]}
             """;
 
     private final ModelApi modelApi;
@@ -101,9 +113,19 @@ public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
                 return Evaluation.needMoreInfo(reason,
                         StrUtil.blankToDefault(json.getStr("clarificationMessage"), "请补充问题中关键但未明确的信息。"));
             }
-            return verdict == Verdict.SATISFIED
-                    ? Evaluation.satisfied(reason)
-                    : Evaluation.insufficient(reason);
+            if (verdict == Verdict.INSUFFICIENT) return Evaluation.insufficient(reason);
+
+            List<String> supporting = supportingReferenceIds(json.getJSONArray("supportingReferenceIds"));
+            Set<String> available = availableReferenceIds(observations);
+            if (supporting.isEmpty()) {
+                return Evaluation.failed("goal evaluator returned SATISFIED without a supporting reference frontier");
+            }
+            for (String referenceId : supporting) {
+                if (!available.contains(referenceId)) {
+                    return Evaluation.failed("goal evaluator returned an unknown supporting reference id");
+                }
+            }
+            return Evaluation.satisfied(reason, supporting);
         } catch (Exception e) {
             log.warn("[{}][failed traceId={} error={}]", PROMPT_KEY,
                     context == null ? null : context.traceId(), e.getMessage());
@@ -123,6 +145,26 @@ public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
                 deterministicAnswers == null ? List.of() : deterministicAnswers)).append('\n');
         sb.append("evidenceSnippets=").append(JSONUtil.toJsonStr(evidenceSnippets(evidences))).append('\n');
         return sb.toString();
+    }
+
+    private Set<String> availableReferenceIds(List<AgentObservation> observations) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        if (observations == null) return Set.of();
+        for (AgentObservation observation : observations) {
+            if (observation == null || observation.metadata() == null) continue;
+            Object raw = observation.metadata().get("referenceId");
+            if (raw != null && StrUtil.isNotBlank(String.valueOf(raw))) out.add(String.valueOf(raw).trim());
+        }
+        return Set.copyOf(out);
+    }
+
+    private List<String> supportingReferenceIds(JSONArray array) {
+        if (array == null || array.isEmpty()) return List.of();
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        for (Object raw : array) {
+            if (raw != null && StrUtil.isNotBlank(String.valueOf(raw))) out.add(String.valueOf(raw).trim());
+        }
+        return List.copyOf(out);
     }
 
     private List<String> evidenceSnippets(List<Evidence> evidences) {
