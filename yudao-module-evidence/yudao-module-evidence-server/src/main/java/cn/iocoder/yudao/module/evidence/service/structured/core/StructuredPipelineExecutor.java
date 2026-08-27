@@ -283,6 +283,11 @@ public class StructuredPipelineExecutor {
                     computed.value(), entry.getKey()));
         }
 
+        int preHavingGroupCount = output.size();
+        if (plan.getHaving() != null) {
+            output.removeIf(row -> !matchesHaving(row.value(), plan.getHaving()));
+        }
+
         GroupSort sorted = sortGroups(plan.getDomainCode(), output, plan.getOrderBy(), plan.getGroupBy());
         if (!sorted.success()) return StructuredPipelineResult.failure(sorted.message());
         output = sorted.rows();
@@ -296,6 +301,8 @@ public class StructuredPipelineExecutor {
         meta.put("authoritativeEmpty", fullGroupCount == 0);
         meta.put("groupCount", output.size());
         meta.put("fullGroupCount", fullGroupCount);
+        meta.put("preHavingGroupCount", preHavingGroupCount);
+        meta.put("havingApplied", plan.getHaving() != null);
         meta.put("limited", limited);
         meta.put("aggregate", aggregate.operation().name());
         meta.put("outputCount", output.size());
@@ -545,6 +552,13 @@ public class StructuredPipelineExecutor {
         return select.stream().anyMatch(StructuredValueExpression::explode);
     }
 
+    private boolean matchesHaving(Double aggregateValue, StructuredHavingSpec having) {
+        if (having == null) return true;
+        if (aggregateValue == null) return false;
+        List<String> expected = having.values().stream().map(String::valueOf).toList();
+        return values.matches(having.operator(), List.of(String.valueOf(aggregateValue)), expected, "DECIMAL");
+    }
+
     private boolean matches(String domainCode, StructuredQueryResult.Row row, StructuredPredicateNode node) {
         if (node == null || node.type() == null) return true;
         return switch (node.type()) {
@@ -585,6 +599,9 @@ public class StructuredPipelineExecutor {
         if (plan == null || StrUtil.isBlank(plan.getDomainCode()) || plan.getScope() == null
                 || plan.getScope().getCurrentKbId() == null) return "pipeline scope/domain is incomplete";
         if (plan.getLimit() != null && (plan.getLimit() < 1 || plan.getLimit() > 50)) return "limit must be 1..50";
+        if (plan.getHaving() != null && (plan.getGroupBy() == null || plan.getGroupBy().isEmpty())) {
+            return "HAVING requires GROUP BY";
+        }
         for (StructuredValueExpression expression : allExpressions(plan)) {
             StructuredValueEvaluator.Validation v = values.validate(plan.getDomainCode(), expression);
             if (!v.valid()) return v.message();
