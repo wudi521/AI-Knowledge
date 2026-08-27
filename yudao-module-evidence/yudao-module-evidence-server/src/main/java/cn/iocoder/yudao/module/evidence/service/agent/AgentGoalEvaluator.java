@@ -3,6 +3,8 @@ package cn.iocoder.yudao.module.evidence.service.agent;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvocationContext;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -31,21 +33,47 @@ public interface AgentGoalEvaluator {
         EVALUATION_FAILED
     }
 
-    record Evaluation(Verdict verdict, String reason, String message) {
+    /**
+     * supportingReferenceIds 是“最终证明集 / proof frontier”。
+     *
+     * <p>历史 observations 可以包含失败、空结果、被后续 replan 纠正的中间事实以及仅用于定位候选的语义证据；
+     * SATISFIED 时必须尽量明确指出真正支持 OriginalGoal 的 Reference，最终回答层只消费这组引用，避免把
+     * 已被纠正的旧结果或无关证据重新拼回答案。</p>
+     */
+    record Evaluation(Verdict verdict, String reason, String message, List<String> supportingReferenceIds) {
+        public Evaluation {
+            LinkedHashSet<String> unique = new LinkedHashSet<>();
+            if (supportingReferenceIds != null) {
+                for (String value : supportingReferenceIds) {
+                    if (value != null && !value.isBlank()) unique.add(value.trim());
+                }
+            }
+            supportingReferenceIds = List.copyOf(new ArrayList<>(unique));
+        }
+
+        /** 兼容旧单测/实现。 */
+        public Evaluation(Verdict verdict, String reason, String message) {
+            this(verdict, reason, message, List.of());
+        }
+
         public static Evaluation satisfied(String reason) {
-            return new Evaluation(Verdict.SATISFIED, reason, null);
+            return new Evaluation(Verdict.SATISFIED, reason, null, List.of());
+        }
+
+        public static Evaluation satisfied(String reason, List<String> supportingReferenceIds) {
+            return new Evaluation(Verdict.SATISFIED, reason, null, supportingReferenceIds);
         }
 
         public static Evaluation insufficient(String reason) {
-            return new Evaluation(Verdict.INSUFFICIENT, reason, null);
+            return new Evaluation(Verdict.INSUFFICIENT, reason, null, List.of());
         }
 
         public static Evaluation needMoreInfo(String reason, String message) {
-            return new Evaluation(Verdict.NEED_MORE_INFO, reason, message);
+            return new Evaluation(Verdict.NEED_MORE_INFO, reason, message, List.of());
         }
 
         public static Evaluation failed(String reason) {
-            return new Evaluation(Verdict.EVALUATION_FAILED, reason, null);
+            return new Evaluation(Verdict.EVALUATION_FAILED, reason, null, List.of());
         }
     }
 
