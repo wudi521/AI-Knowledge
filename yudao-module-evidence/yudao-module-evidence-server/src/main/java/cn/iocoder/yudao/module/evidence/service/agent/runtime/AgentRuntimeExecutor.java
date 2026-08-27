@@ -114,8 +114,9 @@ public class AgentRuntimeExecutor {
         String message = overall == CapabilityResultStatus.FAILED
                 ? "execution plan failed" : overall == CapabilityResultStatus.PARTIAL
                 ? "execution plan completed partially" : null;
+        List<ReferenceRecord> composedReferences = StructuredReferenceAnswerComposer.compose(plan, references);
         return new AgentRuntimeResult(overall, failureType, message, results,
-                activities, references, provenance);
+                activities, composedReferences, provenance);
     }
 
     private NodeExecution executeNode(AgentExecutionPlan plan,
