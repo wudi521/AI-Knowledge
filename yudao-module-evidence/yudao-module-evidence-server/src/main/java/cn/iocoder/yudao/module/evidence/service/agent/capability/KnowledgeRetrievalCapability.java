@@ -55,13 +55,14 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
 
     @Override
     public CapabilityDefinition definition() {
-        return new CapabilityDefinition(NAME, "3",
-                "在当前已授权知识库中检索语义证据；内部执行当前领域已注册的 Scope/Recall/Fusion/Rerank Pipeline。复杂问题可提供 focused subqueries，系统并行检索后合并证据；若当前 Domain 显式注册 Evidence->Entity 映射，还会输出 candidateEntityIds，但绝不会输出 verifiedEntityIds。",
+        return new CapabilityDefinition(NAME, "4",
+                "在当前已授权知识库中检索语义证据；内部执行当前领域已注册的 Scope/Recall/Fusion/Rerank Pipeline。复杂问题可提供 focused subqueries，系统并行检索后合并证据；若当前 Domain 显式注册 Evidence->Entity 映射，还会按证据排名输出 candidateEntityIds，但绝不会输出 verifiedEntityIds。topK 控制证据深度，candidateTopN 独立控制向下游暴露的候选实体宽度。",
                 Map.of(
                         "query", "必填。当前要补足的信息需求；不得从候选中发明新的硬事实。",
-                        "subqueries", "可选。最多 4 个相互独立、共同覆盖当前信息需求的 focused 子查询。非空时系统并行执行这些子查询并合并结果。",
+                        "subqueries", "可选。最多 4 个相互独立、共同覆盖当前信息需求的 focused 子查询。非空时系统并行检索这些子查询并合并结果。",
                         "variants", "可选。最多 5 个保持同一信息需求不变的同义检索表达；仅单查询模式使用。",
-                        "topK", "可选。每个检索请求 1~20，默认 8；最终合并结果最多 20 条。",
+                        "topK", "可选。每个检索请求返回的 Evidence 深度 1~20，默认 8；最终合并证据最多 20 条。",
+                        "candidateTopN", "可选。1~20，默认 20。仅限制按最终 Evidence 排名去重后的 candidateEntityIds 数量，不裁掉 Evidences、不改变 candidate 的不可信属性。单对象解析可设为 1，同时保留更深 topK Evidence 供充分性判断。",
                         "scope", "可选。CURRENT_KB 或 CONTEXT；只有用户明确指代上一轮已验证对象时才用 CONTEXT。"
                 ), Set.of("query"), "EVIDENCE_LIST_WITH_CANDIDATES_AND_ACTIVITY", true,
                 Set.of(), Set.of(), Set.of(), 8_000L, MAX_MERGED_EVIDENCE);
@@ -79,16 +80,10 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         if (arguments.get("variants") != null && !stringArray(arguments.get("variants"), 5)) {
             return CapabilityArgumentValidation.invalid("variants must be an array of at most 5 non-blank strings");
         }
-        if (arguments.get("topK") != null) {
-            Object raw = arguments.get("topK");
-            if (!(raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long)) {
-                return CapabilityArgumentValidation.invalid("topK must be an integer between 1 and 20");
-            }
-            long value = ((Number) raw).longValue();
-            if (value < 1 || value > 20) {
-                return CapabilityArgumentValidation.invalid("topK must be an integer between 1 and 20");
-            }
-        }
+        String topKError = boundedIntegerError(arguments.get("topK"), "topK");
+        if (topKError != null) return CapabilityArgumentValidation.invalid(topKError);
+        String candidateTopNError = boundedIntegerError(arguments.get("candidateTopN"), "candidateTopN");
+        if (candidateTopNError != null) return CapabilityArgumentValidation.invalid(candidateTopNError);
         if (arguments.get("scope") != null) {
             String scope = String.valueOf(arguments.get("scope")).trim().toUpperCase(Locale.ROOT);
             if (!"CURRENT_KB".equals(scope) && !"CONTEXT".equals(scope)) {
@@ -110,7 +105,9 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
                 : List.of();
         String scope = String.valueOf(arguments.getOrDefault("scope", "CURRENT_KB")).trim().toUpperCase(Locale.ROOT);
         int topK = clampTopK(arguments.get("topK"));
-        return "queries=" + effectiveQueries + ";variants=" + variants + ";scope=" + scope + ";topK=" + topK;
+        int candidateTopN = clampCandidateTopN(arguments.get("candidateTopN"));
+        return "queries=" + effectiveQueries + ";variants=" + variants + ";scope=" + scope
+                + ";topK=" + topK + ";candidateTopN=" + candidateTopN;
     }
 
     @Override
@@ -125,6 +122,7 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         List<String> variants = strings(arguments.get("variants"), 5);
         List<String> subqueries = strings(arguments.get("subqueries"), MAX_SUBQUERIES);
         int topK = clampTopK(arguments.get("topK"));
+        int candidateTopN = clampCandidateTopN(arguments.get("candidateTopN"));
         List<Long> documentIds = scope(arguments.get("scope"), context);
         if (documentIds == null) {
             return CapabilityResult.failure(AgentStopReason.NEED_USER_INPUT,
@@ -146,7 +144,8 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         }
 
         List<Evidence> evidences = mergeRoundRobin(runs, MAX_MERGED_EVIDENCE);
-        List<Long> candidateEntityIds = entityMapperRegistry.candidateEntityIds(context.domainCode(), evidences);
+        List<Long> rankedCandidateEntityIds = entityMapperRegistry.candidateEntityIds(context.domainCode(), evidences);
+        List<Long> candidateEntityIds = rankedCandidateEntityIds.stream().limit(candidateTopN).toList();
         int matchedQueries = (int) runs.stream().filter(run -> !run.result().evidences().isEmpty()).count();
         int blockedQueries = (int) runs.stream().filter(run -> run.result().blocked()).count();
         String outcome;
@@ -162,7 +161,10 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
                 Map.copyOf(perQueryCounts), summary(evidences));
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("evidenceCount", evidences.size());
+        metadata.put("rankedCandidateEntityCount", rankedCandidateEntityIds.size());
         metadata.put("candidateEntityCount", candidateEntityIds.size());
+        metadata.put("candidateTopN", candidateTopN);
+        metadata.put("candidateScopeLimited", rankedCandidateEntityIds.size() > candidateEntityIds.size());
         metadata.put("candidateEntityMapped", entityMapperRegistry.hasMapper(context.domainCode()));
         metadata.put("entityTrust", "CANDIDATE");
         metadata.put("retrievalOutcome", outcome);
@@ -264,8 +266,25 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         return context.contextEntityIds().isEmpty() ? null : context.contextEntityIds();
     }
 
+    private String boundedIntegerError(Object raw, String name) {
+        if (raw == null) return null;
+        if (!(raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long)) {
+            return name + " must be an integer between 1 and 20";
+        }
+        long value = ((Number) raw).longValue();
+        return value < 1 || value > 20 ? name + " must be an integer between 1 and 20" : null;
+    }
+
     private int clampTopK(Object raw) {
-        int value = 8;
+        return clampBounded(raw, 8);
+    }
+
+    private int clampCandidateTopN(Object raw) {
+        return clampBounded(raw, MAX_MERGED_EVIDENCE);
+    }
+
+    private int clampBounded(Object raw, int fallback) {
+        int value = fallback;
         if (raw instanceof Number n) value = n.intValue();
         else if (raw != null) try { value = Integer.parseInt(String.valueOf(raw)); } catch (Exception ignore) { }
         return Math.max(1, Math.min(20, value));
