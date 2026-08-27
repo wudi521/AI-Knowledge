@@ -6,6 +6,7 @@ import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityDefin
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvocationContext;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityRegistry;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResult;
+import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResultStatus;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.KnowledgeCapability;
 import cn.iocoder.yudao.module.evidence.service.prompt.PromptSupport;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryLanguageCatalog;
@@ -83,7 +84,8 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
 
         assertThat(input).contains("QUERY_IR_V1", "GROUP_BY", "AGGREGATE", "AVG", "ORDER_BY");
         assertThat(input).contains("dataflowContract=", "metadata.dataflowRows", "allowPartial",
-                "remainingElapsedBudgetMs=", "replanPolicy=", "setFilterPolicy=", "entityResolutionPolicy=");
+                "remainingElapsedBudgetMs=", "replanPolicy=", "planLocalRefPolicy=",
+                "setFilterPolicy=", "entityResolutionPolicy=");
         assertThat(input).contains("originalGoal=哪个专利发明人最多？哪个最少？罗列专利名字和发明人");
         assertThat(input).doesNotContain("ORDER_TOP_N", "PATENT_COUNT", "legacy task", "legacy operation");
         assertThat(system).contains("最少必要节点", "remainingElapsedBudgetMs",
@@ -100,11 +102,52 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
                 "必须使用 IN 或 OR", "禁止生成 field=A AND field=B", "PERSON_SURNAME", "explode=true",
                 "structured_query 若在 argumentSchema 暴露 entityIds",
                 "selector\":\"candidateEntityIds", "candidate 自动升级",
-                "近似名称/错字/口语简称/不确定实体称呼", "n1=knowledge_retrieval", "n2=structured_query");
-        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v6");
+                "近似名称/错字/口语简称/不确定实体称呼", "n1=knowledge_retrieval", "n2=structured_query",
+                "$ref 的 node id 只在“本次 execution plan”内有效",
+                "绝不能产生 n1->$ref(n1) 自引用",
+                "candidate->verified 的机器信任边界",
+                "只能包含 entityIds + select/projections",
+                "不应再加 TITLE CONTAINS “体替代印花”");
+        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v7");
         CapabilityDefinition visible = registry.listDefinitions(
                 new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-ir")).get(0);
         assertThat(visible.argumentSchema()).containsKey("entityIds");
         assertThat(visible.argumentSchema()).doesNotContainKeys("task", "operation", "metric");
+    }
+
+    @Test
+    void historicalReferencesAreExplicitlyMarkedAsNotDataflowAddressable() {
+        ModelApi modelApi = mock(ModelApi.class);
+        PromptSupport promptSupport = mock(PromptSupport.class);
+        when(promptSupport.get(anyString(), anyString())).thenAnswer(invocation -> invocation.getArgument(1));
+        when(modelApi.chat(org.mockito.ArgumentMatchers.any())).thenReturn(CommonResult.success(
+                "{\"action\":\"STOP\",\"message\":\"done\"}"));
+
+        CapabilityDefinition definition = new CapabilityDefinition(
+                "structured_query", "2", "structured query", Map.of("entityIds", "scope", "select", "fields"),
+                Set.of(), "STRUCTURED_RESULT", true, Set.of(), Set.of(), Set.of(), 8_000L, 50);
+        KnowledgeCapability structured = new KnowledgeCapability() {
+            @Override public CapabilityDefinition definition() { return definition; }
+            @Override public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+                return CapabilityResult.success(Map.of(), Map.of());
+            }
+        };
+        CapabilityRegistry registry = new CapabilityRegistry(List.of(structured), List.of());
+        LlmAgentExecutionPlanner planner = new LlmAgentExecutionPlanner(modelApi, promptSupport, registry, null, null);
+
+        ReferenceRecord oldReference = new ReferenceRecord(
+                "trace-r0:n1", "trace-r0", "n1", "knowledge_retrieval",
+                CapabilityResultStatus.PARTIAL, "候选", null, List.of(), List.of(66L), List.of(), Map.of());
+        planner.plan(new AgentExecutionState("查询近似名称详情"),
+                new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace"),
+                List.of(), List.of(oldReference), List.of(), 1, 3);
+
+        ArgumentCaptor<ModelChatReqDTO> captor = ArgumentCaptor.forClass(ModelChatReqDTO.class);
+        verify(modelApi).chat(captor.capture());
+        String input = captor.getValue().getUser();
+        assertThat(input).contains("\"referenceId\":\"trace-r0:n1\"");
+        assertThat(input).contains("\"planId\":\"trace-r0\"");
+        assertThat(input).contains("\"dataflowAddressable\":false");
+        assertThat(input).contains("planLocalRefPolicy=");
     }
 }
