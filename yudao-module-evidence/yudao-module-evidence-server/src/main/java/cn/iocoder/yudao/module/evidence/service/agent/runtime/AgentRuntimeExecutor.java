@@ -2,6 +2,7 @@ package cn.iocoder.yudao.module.evidence.service.agent.runtime;
 
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.module.evidence.domain.Evidence;
+import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentExecutionBudget;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentStopReason;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.AgentCapabilityOutput;
@@ -10,6 +11,9 @@ import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvoc
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvoker;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResult;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResultStatus;
+import com.alibaba.ttl.threadpool.TtlExecutors;
+import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -19,6 +23,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Public Agentic Knowledge Runtime executor.
@@ -30,11 +38,29 @@ import java.util.concurrent.CompletableFuture;
 @Component
 public class AgentRuntimeExecutor {
     private final CapabilityInvoker capabilityInvoker;
+    private final ExecutorService nodeExecutor;
     private final AgentExecutionPlanValidator validator = new AgentExecutionPlanValidator();
     private final PlanArgumentResolver argumentResolver = new PlanArgumentResolver();
 
-    public AgentRuntimeExecutor(CapabilityInvoker capabilityInvoker) {
+    @Autowired
+    public AgentRuntimeExecutor(CapabilityInvoker capabilityInvoker, EvidenceProperties properties) {
         this.capabilityInvoker = capabilityInvoker;
+        int threads = properties == null || properties.getAgent() == null
+                ? 8 : Math.max(2, properties.getAgent().getRuntimeNodeThreads());
+        AtomicInteger seq = new AtomicInteger();
+        ThreadFactory factory = runnable -> {
+            Thread thread = new Thread(runnable, "agent-runtime-node-" + seq.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+        // DAG ready-node 并行执行会切换线程；必须传播 SecurityContext / tenant / trace 等 TTL 上下文。
+        // 使用独立线程池而不是 commonPool，避免 Runtime 并行节点阻塞 JVM 全局 ForkJoinPool。
+        this.nodeExecutor = TtlExecutors.getTtlExecutorService(Executors.newFixedThreadPool(threads, factory));
+    }
+
+    /** 单元测试/纯 Java 场景兼容构造。 */
+    public AgentRuntimeExecutor(CapabilityInvoker capabilityInvoker) {
+        this(capabilityInvoker, new EvidenceProperties());
     }
 
     public AgentRuntimeResult execute(AgentExecutionPlan plan,
@@ -69,7 +95,7 @@ public class AgentRuntimeExecutor {
             List<CompletableFuture<NodeExecution>> futures = new ArrayList<>();
             for (PlanNode node : ready) {
                 futures.add(CompletableFuture.supplyAsync(() -> executeNode(
-                        plan, node, context, new LinkedHashMap<>(results), runtimeStart, safeBudget)));
+                        plan, node, context, new LinkedHashMap<>(results), runtimeStart, safeBudget), nodeExecutor));
             }
 
             for (CompletableFuture<NodeExecution> future : futures) {
@@ -229,6 +255,11 @@ public class AgentRuntimeExecutor {
             if (result != null && result.failureType() != null) return result.failureType();
         }
         return null;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        nodeExecutor.shutdownNow();
     }
 
     private record NodeExecution(PlanNode node,

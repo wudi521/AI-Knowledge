@@ -26,6 +26,9 @@ public class EvidenceProperties {
         private int maxSteps = 6;
         private int maxLlmCalls = 6;
         private long maxElapsedMs = 15_000L;
+        /** Runtime DAG ready-node 并行执行线程数。 */
+        private int runtimeNodeThreads = 8;
+        /** capability 超时隔离执行线程数。 */
         private int capabilityTimeoutThreads = 8;
         private String environment = "default";
         private boolean writeAllowed = false;

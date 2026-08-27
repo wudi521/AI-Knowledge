@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentObservation;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentStopReason;
+import com.alibaba.ttl.threadpool.TtlExecutors;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -61,7 +62,9 @@ public class CapabilityInvoker {
             thread.setDaemon(true);
             return thread;
         };
-        this.executor = Executors.newFixedThreadPool(threads, factory);
+        // capability 会再次切换到独立线程执行超时隔离。必须包装成 TTL executor，
+        // 否则 LoginUser / tenant / trace 等请求上下文会在第二次切线程时丢失，Feign 无法透传登录身份。
+        this.executor = TtlExecutors.getTtlExecutorService(Executors.newFixedThreadPool(threads, factory));
     }
 
     /** 单元测试/纯 Java 场景兼容构造。 */
@@ -163,8 +166,8 @@ public class CapabilityInvoker {
 
     private CapabilityResult invokeOnce(PreparedCall call, CapabilityInvocationContext context) {
         long timeoutMs = call.capability().definition().timeoutMs();
-        // capability 在独立线程池执行，不能依赖调用线程的 ThreadLocal。使用服务端注入的可信 tenantId
-        // 显式建立租户上下文，并由 TenantUtils 在 finally 中恢复 worker 原上下文，避免线程复用时串租户。
+        // executor 负责传播完整请求上下文；tenantId 仍使用服务端注入的可信 context 显式覆盖，
+        // 并由 TenantUtils 在 finally 中恢复 worker 原上下文，避免线程复用时串租户。
         Future<CapabilityResult> future = executor.submit(() ->
                 TenantUtils.execute(context == null ? null : context.tenantId(),
                         () -> call.capability().execute(context, call.arguments())));
