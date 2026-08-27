@@ -47,6 +47,57 @@ class KnowledgeRetrievalCapabilityTest {
     }
 
     @Test
+    void candidateTopNLimitsEntityBreadthWithoutDiscardingEvidenceDepth() {
+        PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
+        List<Evidence> ranked = List.of(
+                evidence(1L, "66", "一种代替印花的运动服", 1.00D),
+                evidence(2L, "77", "一种体外经颅式治疗仪", 0.80D),
+                evidence(3L, "88", "一种多功能药物载体的制备方法", 0.60D)
+        );
+        when(retriever.search("体替代印花", List.of(), List.of(6L), null, 5,
+                1L, 2L, "PATENT", "ag-candidate-width"))
+                .thenReturn(new PlannedEvidenceRetriever.Result(ranked, null, null, null, null));
+
+        KnowledgeRetrievalCapability capability = new KnowledgeRetrievalCapability(
+                retriever, new DomainEvidenceEntityMapperRegistry(List.of(numericDocumentMapper("PATENT"))));
+        CapabilityResult result = capability.execute(
+                new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "ag-candidate-width"),
+                Map.of("query", "体替代印花", "topK", 5, "candidateTopN", 1));
+
+        assertTrue(result.success());
+        KnowledgeRetrievalCapability.Output output = (KnowledgeRetrievalCapability.Output) result.data();
+        assertEquals(3, output.evidences().size(), "证据深度不能被 candidateTopN 一起裁掉");
+        assertEquals(List.of(66L), output.candidateEntityIds(), "只向下游暴露排名第一的候选实体");
+        assertEquals(3, result.metadata().get("rankedCandidateEntityCount"));
+        assertEquals(1, result.metadata().get("candidateEntityCount"));
+        assertEquals(1, result.metadata().get("candidateTopN"));
+        assertEquals(true, result.metadata().get("candidateScopeLimited"));
+        assertTrue(output.verifiedEntityIds().isEmpty());
+        capability.shutdown();
+    }
+
+    @Test
+    void candidateTopNMustBeBoundedInteger() {
+        PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
+        KnowledgeRetrievalCapability capability = new KnowledgeRetrievalCapability(retriever);
+
+        CapabilityArgumentValidation invalidZero = capability.validateArguments(
+                new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "ag-validation"),
+                Map.of("query", "q", "candidateTopN", 0));
+        CapabilityArgumentValidation invalidType = capability.validateArguments(
+                new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "ag-validation"),
+                Map.of("query", "q", "candidateTopN", "1"));
+        CapabilityArgumentValidation valid = capability.validateArguments(
+                new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "ag-validation"),
+                Map.of("query", "q", "candidateTopN", 1));
+
+        assertFalse(invalidZero.valid());
+        assertFalse(invalidType.valid());
+        assertTrue(valid.valid());
+        capability.shutdown();
+    }
+
+    @Test
     void domainWithoutMapperKeepsSemanticCandidatesAsEvidenceOnly() {
         PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
         Evidence candidate = Evidence.builder().chunkId(201L).documentId("74").content("候选").build();
@@ -98,6 +149,11 @@ class KnowledgeRetrievalCapabilityTest {
         assertFalse(result.success());
         assertEquals(AgentStopReason.NEED_USER_INPUT, result.stopReason());
         capability.shutdown();
+    }
+
+    private Evidence evidence(Long chunkId, String documentId, String name, Double score) {
+        return Evidence.builder().chunkId(chunkId).documentId(documentId).documentName(name)
+                .content(name).score(score).products(List.of()).channels(List.of("vector")).build();
     }
 
     private DomainEvidenceEntityMapper numericDocumentMapper(String domainCode) {
