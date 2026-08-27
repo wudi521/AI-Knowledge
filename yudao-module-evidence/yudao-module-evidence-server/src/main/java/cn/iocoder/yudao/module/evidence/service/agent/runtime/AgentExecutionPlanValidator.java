@@ -65,7 +65,20 @@ public class AgentExecutionPlanValidator {
                 return Validation.invalid(entityScopeError + " for node " + node.id());
             }
 
+            // candidateEntityIds 仍是不可信候选。structured_query 第一次接住候选集合时只能做实体物化/字段投影，
+            // 不能在同一节点再混入 literal filter / group / aggregate / order 等语义，否则一个错字硬过滤就会
+            // 把已经召回的正确候选再次过滤掉。若 OriginalGoal 还有独立硬约束，应先得到 verifiedEntityIds，
+            // 再由后续 structured_query 节点消费 verifiedEntityIds 执行这些确定性运算。
+            String candidateBoundaryError = validateCandidateVerificationBoundary(node);
+            if (candidateBoundaryError != null) {
+                return Validation.invalid(candidateBoundaryError + " for node " + node.id());
+            }
+
             for (String reference : references) {
+                if (reference.equals(node.id())) {
+                    return Validation.invalid("current-plan $ref cannot reference its own node: " + node.id()
+                            + "; $ref names are local to the current execution plan");
+                }
                 if (!byId.containsKey(reference)) {
                     return Validation.invalid("unknown argument reference " + reference + " for node " + node.id());
                 }
@@ -135,6 +148,35 @@ public class AgentExecutionPlanValidator {
             return "entityIds reference must not use path projection";
         }
         return null;
+    }
+
+    /**
+     * candidateEntityIds -> deterministic entity materialization is a trust-boundary transition, not a place to
+     * reinterpret the unresolved user text. This rule is capability-level and domain/intent agnostic.
+     */
+    private String validateCandidateVerificationBoundary(PlanNode node) {
+        if (node == null || !"structured_query".equals(node.capability()) || node.arguments() == null) return null;
+        Object rawScope = node.arguments().get("entityIds");
+        if (!(rawScope instanceof Map<?, ?> scope)) return null;
+        String selector = scope.get("selector") == null ? "" : String.valueOf(scope.get("selector")).trim();
+        if (!"candidateEntityIds".equals(selector)) return null;
+
+        Set<String> allowed = Set.of("entityIds", "select", "projections");
+        for (Map.Entry<String, Object> entry : node.arguments().entrySet()) {
+            if (allowed.contains(entry.getKey()) || !meaningful(entry.getValue())) continue;
+            return "structured_query consuming candidateEntityIds is a verification/materialization boundary; "
+                    + "only entityIds plus select/projections are allowed before candidates become verifiedEntityIds; "
+                    + "move '" + entry.getKey() + "' to a downstream node that consumes verifiedEntityIds";
+        }
+        return null;
+    }
+
+    private boolean meaningful(Object value) {
+        if (value == null) return false;
+        if (value instanceof CharSequence text) return !text.toString().isBlank();
+        if (value instanceof Map<?, ?> map) return !map.isEmpty();
+        if (value instanceof List<?> list) return !list.isEmpty();
+        return true;
     }
 
     /**
