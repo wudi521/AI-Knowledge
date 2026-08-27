@@ -6,6 +6,8 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.evidence.api.dto.ChatTurnDTO;
+import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
+import cn.iocoder.yudao.module.evidence.service.agent.AgentExecutionBudget;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentExecutionState;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentObservation;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvocationContext;
@@ -18,6 +20,7 @@ import cn.iocoder.yudao.module.evidence.service.structured.core.MetricDefinition
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -53,6 +56,8 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
             2. tenantId/userId/kbId/domainCode/traceId/permission/budget 等系统范围禁止写入 arguments。
             3. 计划必须满足“最少必要节点”原则：一个 Tool 的输出已经能提供回答所需证据时，不得为了保险再并行访问另一条弱相关路径，
                也不得追加只重复物化相同事实的节点。优先缩短关键路径和 Tool 调用数，再考虑并行补证。
+               remainingElapsedBudgetMs 是本次请求在 Planner 调用开始时的真实 wall-clock 剩余预算；capability.timeoutMs 是单次 Tool 的超时上限，
+               不是预计耗时。剩余预算越少越应选择最短、证据密度最高的计划，并为 Goal Evaluator/最终回答保留余量。
             4. 可以独立执行且确实都为 originalGoal 所需的事实放在无依赖节点中，让 Runtime 并行执行；有真实数据依赖才写 dependsOn。
             5. 下游消费上游结果只能使用显式引用，且引用节点必须同时在 dependsOn。
                基础形式：{"$ref":"n1","selector":"verifiedEntityIds"}。
@@ -101,17 +106,30 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
     private final CapabilityRegistry capabilityRegistry;
     private final DomainFieldRegistry fieldRegistry;
     private final DomainMetricRegistry metricRegistry;
+    private final EvidenceProperties properties;
 
+    @Autowired
     public LlmAgentExecutionPlanner(ModelApi modelApi,
                                     PromptSupport promptSupport,
                                     CapabilityRegistry capabilityRegistry,
                                     DomainFieldRegistry fieldRegistry,
-                                    DomainMetricRegistry metricRegistry) {
+                                    DomainMetricRegistry metricRegistry,
+                                    EvidenceProperties properties) {
         this.modelApi = modelApi;
         this.promptSupport = promptSupport;
         this.capabilityRegistry = capabilityRegistry;
         this.fieldRegistry = fieldRegistry;
         this.metricRegistry = metricRegistry;
+        this.properties = properties == null ? new EvidenceProperties() : properties;
+    }
+
+    /** 兼容纯 Java 单元测试。 */
+    public LlmAgentExecutionPlanner(ModelApi modelApi,
+                                    PromptSupport promptSupport,
+                                    CapabilityRegistry capabilityRegistry,
+                                    DomainFieldRegistry fieldRegistry,
+                                    DomainMetricRegistry metricRegistry) {
+        this(modelApi, promptSupport, capabilityRegistry, fieldRegistry, metricRegistry, new EvidenceProperties());
     }
 
     @Override
@@ -193,6 +211,7 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
         sb.append("currentSubGoal=").append(StrUtil.nullToEmpty(state.getCurrentSubGoal())).append('\n');
         sb.append("replanAttempt=").append(replanAttempt).append('\n');
         sb.append("maxPlanNodes=").append(Math.max(1, maxPlanNodes)).append('\n');
+        sb.append("remainingElapsedBudgetMs=").append(remainingElapsedBudgetMs(state)).append('\n');
         sb.append("dataflowContract=")
                 .append("$ref + selector + optional path/distinct/required/expect/allowPartial; structured rows are metadata.dataflowRows")
                 .append('\n');
@@ -205,6 +224,13 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
         sb.append("observations=").append(JSONUtil.toJsonStr(observations == null ? List.of() : observations)).append('\n');
         sb.append("references=").append(JSONUtil.toJsonStr(referenceSummary(references))).append('\n');
         return sb.toString();
+    }
+
+    private long remainingElapsedBudgetMs(AgentExecutionState state) {
+        long maxElapsedMs = properties.getAgent() == null
+                ? AgentExecutionBudget.defaults().maxElapsedMs()
+                : Math.max(1L, properties.getAgent().getMaxElapsedMs());
+        return Math.max(0L, maxElapsedMs - (state == null ? 0L : state.elapsedMs()));
     }
 
     private List<Map<String, Object>> referenceSummary(List<ReferenceRecord> references) {
