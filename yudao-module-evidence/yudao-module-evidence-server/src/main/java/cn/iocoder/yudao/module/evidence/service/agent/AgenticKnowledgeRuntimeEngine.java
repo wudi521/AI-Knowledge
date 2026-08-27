@@ -139,7 +139,7 @@ public class AgenticKnowledgeRuntimeEngine {
                 }
                 AgentGoalEvaluator.Evaluation evaluation = check.evaluation();
                 if (evaluation.verdict() == AgentGoalEvaluator.Verdict.SATISFIED) {
-                    return answer(state, safeHistory, gatheredEvidence, deterministicAnswers, traceSteps,
+                    return answer(state, safeHistory, evaluation, gatheredEvidence, deterministicAnswers, traceSteps,
                             trustedEntityIds, activities, references, provenance);
                 }
                 if (evaluation.verdict() == AgentGoalEvaluator.Verdict.NEED_MORE_INFO) {
@@ -274,7 +274,7 @@ public class AgenticKnowledgeRuntimeEngine {
             }
             AgentGoalEvaluator.Evaluation evaluation = check.evaluation();
             if (evaluation.verdict() == AgentGoalEvaluator.Verdict.SATISFIED) {
-                return answer(state, safeHistory, gatheredEvidence, deterministicAnswers, traceSteps,
+                return answer(state, safeHistory, evaluation, gatheredEvidence, deterministicAnswers, traceSteps,
                         trustedEntityIds, activities, references, provenance);
             }
             if (evaluation.verdict() == AgentGoalEvaluator.Verdict.NEED_MORE_INFO) {
@@ -328,14 +328,17 @@ public class AgenticKnowledgeRuntimeEngine {
             case NEED_MORE_INFO -> "STOPPED";
             case EVALUATION_FAILED -> "FAILED";
         };
+        String frontier = evaluation.supportingReferenceIds().isEmpty()
+                ? "" : "; proofFrontier=" + evaluation.supportingReferenceIds();
         traceSteps.add(trace(traceSteps, "RESULT_EVALUATION", "EVALUATE", null, state.getOriginalGoal(), null,
-                status, elapsed, "verdict=" + evaluation.verdict() + "; " + StrUtil.maxLength(evaluation.reason(), 400),
-                traceReason));
+                status, elapsed, "verdict=" + evaluation.verdict() + frontier + "; "
+                        + StrUtil.maxLength(evaluation.reason(), 400), traceReason));
         return new GoalCheck(evaluation, null);
     }
 
     private Result answer(AgentExecutionState state,
                           List<ChatTurnDTO> history,
+                          AgentGoalEvaluator.Evaluation evaluation,
                           List<Evidence> gatheredEvidence,
                           List<String> deterministicAnswers,
                           List<AgentTraceStep> traceSteps,
@@ -343,46 +346,106 @@ public class AgenticKnowledgeRuntimeEngine {
                           List<ActivityRecord> activities,
                           List<ReferenceRecord> references,
                           List<ProvenanceRecord> provenance) {
-        List<String> uniqueAnswers = distinct(deterministicAnswers);
-        if (gatheredEvidence.isEmpty() && !uniqueAnswers.isEmpty()) {
+        List<ReferenceRecord> proofReferences = proofReferences(evaluation, references);
+        List<String> proofAnswers = proofReferences.isEmpty()
+                ? distinct(deterministicAnswers) : deterministicAnswers(proofReferences);
+        List<Evidence> proofEvidence = proofReferences.isEmpty()
+                ? List.copyOf(gatheredEvidence) : evidences(proofReferences);
+        String proofSummary = "proofFrontier=" + (evaluation == null ? List.of() : evaluation.supportingReferenceIds())
+                + "; proofReferences=" + proofReferences.size();
+
+        // 已被 Goal Evaluator 选入最终证明集的确定性 Tool 结果可以直接回答时，禁止因为历史上曾有语义 Evidence
+        // 就再次进入昂贵的 Generate + Claim Verify。历史失败/候选证据仍保留在 trace/reference 中，但退出答案作用域。
+        if (proofEvidence.isEmpty() && !proofAnswers.isEmpty()) {
             state.setEvidenceCoverage(EvidenceCoverage.FULL);
             state.stop(AgentStopReason.ENOUGH_EVIDENCE);
             traceSteps.add(trace(traceSteps, "ANSWER_VALIDATION", "ANSWER", null, state.getOriginalGoal(), null,
-                    "SUCCEEDED", 0L, "deterministic references satisfy immutable OriginalGoal",
+                    "SUCCEEDED", 0L, proofSummary + "; deterministicFastPath=true; answerPipelineSkipped=true",
                     AgentStopReason.ENOUGH_EVIDENCE));
-            return new Result(State.ANSWER, String.join("\n", uniqueAnswers), null, AgentStopReason.ENOUGH_EVIDENCE,
+            return new Result(State.ANSWER, String.join("\n", proofAnswers), null, AgentStopReason.ENOUGH_EVIDENCE,
                     List.of(), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), null,
                     List.copyOf(traceSteps), List.copyOf(trustedEntityIds), List.copyOf(activities),
                     List.copyOf(references), List.copyOf(provenance));
         }
-        if (gatheredEvidence.isEmpty() || answerPipeline == null) {
+        if (proofEvidence.isEmpty() || answerPipeline == null) {
             return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
-                    "独立 Goal Evaluator 虽通过，但没有可进入最终 Claim/Evidence 验证的事实输出。",
-                    gatheredEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
+                    "独立 Goal Evaluator 虽通过，但最终证明集中没有可进入回答验证的事实输出。",
+                    proofEvidence, traceSteps, trustedEntityIds, activities, references, provenance);
         }
 
         long start = System.currentTimeMillis();
         GenerationResult generation = answerPipeline.generateWithClaims(state.getOriginalGoal(),
-                List.copyOf(gatheredEvidence), history);
+                List.copyOf(proofEvidence), history);
         long elapsed = System.currentTimeMillis() - start;
         if (generation == null || StrUtil.isBlank(generation.getAnswer()) || generation.isClaimFail()) {
             traceSteps.add(trace(traceSteps, "ANSWER_VALIDATION", "ANSWER", null, state.getOriginalGoal(), null,
-                    "FAILED", elapsed, "answer failed claim/evidence validation", AgentStopReason.NO_RELIABLE_EVIDENCE));
+                    "FAILED", elapsed, proofSummary + "; answer failed claim/evidence validation",
+                    AgentStopReason.NO_RELIABLE_EVIDENCE));
             return stopped(state, AgentStopReason.NO_RELIABLE_EVIDENCE,
-                    "最终回答未通过证据/Claim 验证。", gatheredEvidence, traceSteps,
+                    "最终回答未通过证据/Claim 验证。", proofEvidence, traceSteps,
                     trustedEntityIds, activities, references, provenance);
         }
-        String finalAnswer = uniqueAnswers.isEmpty() ? generation.getAnswer()
-                : String.join("\n", uniqueAnswers) + "\n" + generation.getAnswer();
+        String finalAnswer = proofAnswers.isEmpty() ? generation.getAnswer()
+                : String.join("\n", proofAnswers) + "\n" + generation.getAnswer();
         state.setEvidenceCoverage(EvidenceCoverage.FULL);
         state.stop(AgentStopReason.ENOUGH_EVIDENCE);
+        String timing = "; generateMs=" + generation.getGenerateMs()
+                + "; verifyMs=" + generation.getVerifyMs()
+                + "; generateCount=" + generation.getGenerateCount()
+                + "; verifyCount=" + generation.getVerifyCount()
+                + "; outcome=" + generation.getOutcome();
         traceSteps.add(trace(traceSteps, "ANSWER_VALIDATION", "ANSWER", null, state.getOriginalGoal(), null,
-                "SUCCEEDED", elapsed, "immutable OriginalGoal passed goal evaluation + claim/evidence validation",
+                "SUCCEEDED", elapsed, proofSummary + timing,
                 AgentStopReason.ENOUGH_EVIDENCE));
         return new Result(State.ANSWER, finalAnswer, null, AgentStopReason.ENOUGH_EVIDENCE,
-                List.copyOf(gatheredEvidence), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), generation,
+                List.copyOf(proofEvidence), state.getStep(), state.getLlmCalls(), state.getEvidenceCoverage(), generation,
                 List.copyOf(traceSteps), List.copyOf(trustedEntityIds), List.copyOf(activities),
                 List.copyOf(references), List.copyOf(provenance));
+    }
+
+    private List<ReferenceRecord> proofReferences(AgentGoalEvaluator.Evaluation evaluation,
+                                                  List<ReferenceRecord> references) {
+        if (references == null || references.isEmpty()) return List.of();
+        List<String> selectedIds = evaluation == null ? List.of() : evaluation.supportingReferenceIds();
+        // trustPlanner/迁移期 evaluator 没有 proof frontier 时保持旧兼容；生产 LLM evaluator v1.4 强制返回非空集合。
+        if (selectedIds == null || selectedIds.isEmpty()) return List.copyOf(references);
+
+        Map<String, ReferenceRecord> byId = new LinkedHashMap<>();
+        for (ReferenceRecord reference : references) {
+            if (reference != null && StrUtil.isNotBlank(reference.referenceId())) {
+                byId.put(reference.referenceId(), reference);
+            }
+        }
+        List<ReferenceRecord> out = new ArrayList<>();
+        for (String id : selectedIds) {
+            ReferenceRecord reference = byId.get(id);
+            if (reference != null) out.add(reference);
+        }
+        return List.copyOf(out);
+    }
+
+    private List<String> deterministicAnswers(List<ReferenceRecord> proofReferences) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        if (proofReferences != null) {
+            for (ReferenceRecord reference : proofReferences) {
+                if (reference != null && StrUtil.isNotBlank(reference.deterministicAnswer())) {
+                    out.add(reference.deterministicAnswer());
+                }
+            }
+        }
+        return List.copyOf(out);
+    }
+
+    private List<Evidence> evidences(List<ReferenceRecord> proofReferences) {
+        List<Evidence> out = new ArrayList<>();
+        if (proofReferences == null) return List.of();
+        for (ReferenceRecord reference : proofReferences) {
+            if (reference == null || reference.evidences() == null) continue;
+            for (Evidence evidence : reference.evidences()) {
+                if (evidence != null && !out.contains(evidence)) out.add(evidence);
+            }
+        }
+        return List.copyOf(out);
     }
 
     private Result clarify(AgentExecutionState state,
