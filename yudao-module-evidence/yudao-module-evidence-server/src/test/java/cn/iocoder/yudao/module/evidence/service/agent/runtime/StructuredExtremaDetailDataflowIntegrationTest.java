@@ -81,12 +81,12 @@ class StructuredExtremaDetailDataflowIntegrationTest {
                             ), "罗列极值专利的专利名字和发明人", Set.of("max", "min")),
                             new PlanNode("surname-count", StructuredQueryCapability.NAME, Map.of(
                                     "filter", winnerFilter(maxTitle, minTitle),
-                                    "aggregate", Map.of(
+                                    "aggregate", List.of(Map.of(
                                             "operation", "COUNT_DISTINCT",
                                             "field", "INVENTOR",
                                             "explode", true,
-                                            "transforms", List.of("PERSON_SURNAME")
-                                    )
+                                            "transforms", List.of(Map.of("operation", "PERSON_SURNAME"))
+                                    ))
                             ), "统计这两个极值专利的不同发明人姓氏数量", Set.of("max", "min"))
                     ));
 
@@ -141,11 +141,11 @@ class StructuredExtremaDetailDataflowIntegrationTest {
     private Map<String, Object> extremaArgs(String direction) {
         return Map.of(
                 "groupBy", "TITLE",
-                "aggregate", Map.of(
+                "aggregate", List.of(Map.of(
                         "operation", "COUNT",
                         "field", "INVENTOR",
                         "explode", true
-                ),
+                )),
                 "orderBy", Map.of("aggregateValue", true, "direction", direction),
                 "limit", 1
         );
