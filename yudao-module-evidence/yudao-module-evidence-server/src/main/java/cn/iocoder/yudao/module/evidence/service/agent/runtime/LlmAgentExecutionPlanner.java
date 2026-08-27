@@ -35,8 +35,8 @@ import java.util.Set;
 @Slf4j
 @Component
 public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
-    /** v6 adds typed candidate-entity scope for one-pass resolve -> deterministic detail plans. */
-    private static final String PROMPT_KEY = "agent-execution-plan-v6";
+    /** v7 makes candidate->verified materialization a strict trust boundary and clarifies plan-local $ref scope. */
+    private static final String PROMPT_KEY = "agent-execution-plan-v7";
     private static final String DEFAULT_PROMPT = """
             你是企业知识平台的 Query Planner。你的唯一目标是围绕 immutable originalGoal 生成可执行计划，
             不是给问题分类，也不是直接编造答案。系统会给你当前真实 capabilities、domainFields、domainMetrics、
@@ -59,7 +59,7 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
                remainingElapsedBudgetMs 是 Planner 调用开始时的真实 wall-clock 剩余预算；capability.timeoutMs 是单次 Tool 超时上限而非预计耗时。
                剩余预算越少越应选择最短、证据密度最高的计划，并为 Goal Evaluator/最终回答保留余量。
             4. 可以独立执行且确实都为 originalGoal 所需的事实放在无依赖节点中，让 Runtime 并行执行；有真实数据依赖才写 dependsOn。
-            5. 下游消费上游结果只能使用显式引用，且引用节点必须同时在 dependsOn。
+            5. 下游消费当前计划内的上游结果只能使用显式 $ref，且引用节点必须同时在 dependsOn。
                基础形式：{"$ref":"n1","selector":"verifiedEntityIds"}。
                字段投影形式：{"$ref":"n1","selector":"metadata","path":"dataflowRows[*].groupKey",
                "distinct":true,"required":true,"expect":"LIST"}。
@@ -67,6 +67,10 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
                deterministicAnswer / evidences / summary。path 只允许受控字段导航和 [*] 集合投影；
                distinct 可对列表去重；required=true 表示空结果不能继续；expect 只允许 ANY/LIST/MAP/SCALAR。
                metadata.dataflowRows 默认只能消费 outputComplete=true 的完整输出；只有 originalGoal 明确要求部分集合时才可 allowPartial=true。
+               重要：$ref 的 node id 只在“本次 execution plan”内有效。references 列表里的历史 nodeId/referenceId 只是给你判断事实和纠错，
+               当前协议不能用 $ref 直接消费上一轮 plan 的节点。replan 时绝不能把上一轮 n1 写成当前 n1 的 $ref，绝不能产生 n1->$ref(n1) 自引用。
+               如果 replan 仍需要一个尚未 verified 的候选集合，应在新 plan 中重新放置产生该候选的节点，再由后续节点消费；
+               已进入 verifiedContextEntityIds 的对象才可以通过支持 CONTEXT 的真实能力复用。
             6. structured_query 成功结果会在 metadata.dataflowRows 暴露稳定机器行，每行固定包含 entityId、entityName、fields、value、groupKey。
                GROUP BY 分组键通常取 dataflowRows[*].groupKey；普通字段投影通常取 dataflowRows[*].fields.<FIELD_CODE>。
                当下游 filter.values 需要一组值时必须投影成 LIST，禁止把整个 data/Output/summary/deterministicAnswer 塞进 values。
@@ -80,13 +84,18 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
                structured_query 若在 argumentSchema 暴露 entityIds，可把上游候选作为“读取范围”继续验证：
                entityIds 必须严格写为 {"$ref":"n1","selector":"candidateEntityIds","required":true,"expect":"LIST"}
                或同形的 verifiedEntityIds 引用，禁止写字面内部 ID、禁止从 summary/documentId 文本猜 ID。
-               entityIds 只缩小当前 KB 的结构化读取范围，不会把 candidate 自动升级；只有 structured_query 实际返回的行才成为 verifiedEntityIds。
-               多路候选集合先用 entity_set_operation 得到一个集合，再把该节点输出引用给 entityIds，不要在 entityIds 里手工拼 ID。
+               当 entityIds 来自 candidateEntityIds 时，该 structured_query 是 candidate->verified 的机器信任边界：
+               这个节点只能包含 entityIds + select/projections，用于把候选实体的权威结构化字段读出来；禁止在同一节点再放 filter、groupBy、aggregate、having、orderBy、distinct、limit 等运算。
+               这是 Runtime 的机器合同，不是建议。若 originalGoal 对候选还有独立的申请人/日期/数量等确定性硬约束，正确 DAG 是：
+               n1 产生 candidateEntityIds -> n2 仅物化字段并产生 verifiedEntityIds -> n3 消费 n2.verifiedEntityIds 再执行 filter/aggregate/order。
+               这样模糊实体解析和确定性条件不会混在一个节点里。
             9. 对“用户给了近似名称/错字/口语简称/不确定实体称呼，但最终要的是该对象的结构化详情”这类实体解析问题，
                不要并行猜一个 TITLE CONTAINS/字段 EQ 与 semantic retrieval 竞争答案。若字面结构化条件本身不能可靠成立，优先在一次 DAG 中：
                n1=knowledge_retrieval 用原始称呼定位候选（单对象详情场景通常使用较小 topK，例如 3~5）；
-               n2=structured_query dependsOn n1，通过 entityIds=$ref(n1.candidateEntityIds) 限定读取范围，并 select originalGoal 真正要求的详情字段。
-               n2 不应再叠加从错字字符串猜出的 TITLE CONTAINS。这样 semantic 负责“找可能是谁”，structured 负责“把候选变成可核验事实”。
+               n2=structured_query dependsOn n1，通过 entityIds=$ref(n1.candidateEntityIds) 限定读取范围，并且只 select originalGoal 真正要求的详情字段。
+               n2 绝不能再叠加原始模糊称呼的 TITLE CONTAINS/EQ；否则等于 semantic 已找到候选后，又拿可能错误的原词把正确候选过滤掉。
+               例如用户写“体替代印花的专利详情”，semantic 候选可能是“一种代替印花的运动服”；n2 应只按 candidate entityIds 读取 TITLE/申请号/申请人/发明人/日期等字段，
+               不应再加 TITLE CONTAINS “体替代印花”。semantic 负责“找可能是谁”，structured 负责“把候选变成可核验事实”。
                如果当前 Domain 没有 candidateEntityIds 映射或 structured_query 没暴露 entityIds，再退回其它真实能力，不得编造这条链路。
             10. 多路实体集合在 originalGoal 确实需要交集/并集/差集时才调用 visible 的 entity_set_operation。
                不要仅为了把“同一信息需求的两种召回方式”机械 UNION；entity_set_operation 的输出仍是 candidateEntityIds。
@@ -118,6 +127,8 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
                 新计划必须直接补足其中指出的缺失证明，并在比较主体、统计指标、过滤条件、关系路径或数据源中做对应的实质修正。
                 不得仅改 purpose/JSON 写法后重复语义等价的旧计划；若反馈明确指出“按 X 分组而不是 Y”，下一轮必须按 X 修正。
                 observations 若出现 plan_validator/PLAN_VALIDATION，也必须修正具体参数合同错误后才能再次调用该 capability。
+                如果校验错误包含“current-plan $ref cannot reference its own node”，说明你把历史 nodeId 当成当前计划数据源了：必须重建当前计划内的真实上游节点，禁止再次自引用。
+                如果校验错误说明 candidateEntityIds 是 verification/materialization boundary，必须移除候选物化节点上的 filter/group/aggregate/order，必要时放到 verified 下游节点。
             18. VALIDATION 类错误可通过改变计划修正；PERMISSION/CONFIGURATION/DEPENDENCY/DATA_INCOMPLETE 不能原样重试；
                 TIMEOUT/THROTTLED/TRANSIENT 的原样重试由 Runtime 自己处理。
             19. 节点数量不得超过 maxPlanNodes。references 已足以回答 originalGoal 时 action=ANSWER；
@@ -236,8 +247,9 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
         sb.append("maxPlanNodes=").append(Math.max(1, maxPlanNodes)).append('\n');
         sb.append("remainingElapsedBudgetMs=").append(remainingElapsedBudgetMs(state)).append('\n');
         sb.append("replanPolicy=goal_evaluator/GOAL_NOT_SATISFIED and plan_validator/PLAN_VALIDATION observations are hard correction constraints; do not repeat an equivalent failed/insufficient plan").append('\n');
+        sb.append("planLocalRefPolicy=$ref node ids are local to the current execution plan only; historical references cannot be consumed by reusing their nodeId; never self-reference a replan node").append('\n');
         sb.append("setFilterPolicy=alternative values for one single-valued field use IN/OR, never contradictory AND; aggregate winners needing details require downstream projection nodes").append('\n');
-        sb.append("entityResolutionPolicy=noisy/approximate entity name + requested structured details should prefer one DAG: retrieval candidateEntityIds -> structured_query.entityIds; candidate scope never equals verification").append('\n');
+        sb.append("entityResolutionPolicy=noisy/approximate entity name + requested structured details should prefer one DAG: retrieval candidateEntityIds -> projection-only structured materialization -> verifiedEntityIds; candidate materialization must not repeat the unresolved literal as a filter").append('\n');
         sb.append("dataflowContract=")
                 .append("$ref + selector + optional path/distinct/required/expect/allowPartial; structured rows are metadata.dataflowRows")
                 .append('\n');
@@ -266,6 +278,8 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("referenceId", reference.referenceId());
             item.put("nodeId", reference.nodeId());
+            item.put("planId", reference.planId());
+            item.put("dataflowAddressable", false);
             item.put("capability", reference.capability());
             item.put("status", reference.status());
             item.put("summary", StrUtil.maxLength(reference.summary(), 800));
