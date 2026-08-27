@@ -213,6 +213,11 @@ public class AgentRuntimeExecutor {
                     ? StrUtil.maxLength(String.valueOf(result.data()), 1200)
                     : StrUtil.maxLength(StrUtil.blankToDefault(output.summary(), String.valueOf(result.metadata())), 1200);
             String deterministicAnswer = output == null ? null : output.deterministicAnswer();
+            if (StrUtil.isNotBlank(deterministicAnswer)
+                    && result.metadata().containsKey("shape")
+                    && result.metadata().containsKey("normalizedPlan")) {
+                deterministicAnswer = StructuredDeterministicAnswerPresenter.present(node.purpose(), deterministicAnswer);
+            }
             reference = new ReferenceRecord(referenceId, plan.planId(), node.id(), node.capability(),
                     result.status(), summary, deterministicAnswer, evidences, candidateIds, verifiedIds, result.metadata());
             provenance = new ProvenanceRecord(referenceId, plan.planId(), node.id(), node.capability(),
