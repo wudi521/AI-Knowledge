@@ -25,7 +25,7 @@ import java.util.Locale;
 @Slf4j
 @Component
 public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
-    private static final String PROMPT_KEY = "agent-goal-evaluator-v1.2";
+    private static final String PROMPT_KEY = "agent-goal-evaluator-v1.3";
     private static final String DEFAULT_PROMPT = """
             你是企业知识 Agent 的独立 Goal Satisfaction Evaluator，不负责回答用户，也不负责选择工具。
             你的唯一任务：判断 accumulated observations 是否已经直接、完整、可靠地证明 immutable originalGoal。
@@ -55,6 +55,13 @@ public class LlmAgentGoalEvaluator implements AgentGoalEvaluator {
             8. 语义检索证据必须实际包含回答 originalGoal 所需事实；候选相似、关键词相关或命中数量本身不能替代目标事实。
             9. 如果 originalGoal 本身存在会改变答案含义的关键歧义，而且 observations 没有消除歧义，返回 NEED_MORE_INFO，并给出简短 clarificationMessage。
             10. 如果所有必要部分都已经被直接执行事实覆盖，返回 SATISFIED；否则返回 INSUFFICIENT，并在 reason 中指出“还缺哪类证明”，不要建议具体业务硬编码。
+            11. 对 originalGoal 明确要求输出的字段/属性，必须逐项看到真实结果值，不能用节点 purpose、summary 或相邻派生字段代替。
+                节点 purpose 只是计划声明，不是事实证据；例如 purpose 写“及其发明人列表”，但结果只返回标题和人数，仍然没有证明发明人姓名。
+                派生字段也不能冒充源字段：PERSON_SURNAME/姓氏只能证明姓氏，不能满足“发明人姓名/完整名称”；数量也不能替代枚举值，枚举值也不能替代用户明确要求的其他字段。
+            12. Evaluator 只能验收已经执行的计算，禁止从列表长度、去重后的展示项、文本排列等自行推导一个新的数量、去重数量、极值或比较结论。
+                如果 originalGoal 问“共计几个/不同值有几个”，必须有 capability 的直接标量/确定性聚合结果或明确 derivedDeterministic 结果；仅拿到一个姓氏列表后由 Evaluator 自己数成 5，必须判 INSUFFICIENT。
+            13. 子集范围也是证明的一部分。若目标限定“这些对象/这两个结果/上述候选”，必须看到实际查询参数或机器结果确实把范围绑定到该子集。
+                dependsOn、purpose、自然语言中的“这两个”都不会自动缩小 structured_query 的数据范围；如果实际结果包含目标子集之外的对象，该结果不能证明这个子集上的数量、枚举或派生统计。
 
             输出格式：
             {"verdict":"SATISFIED|INSUFFICIENT|NEED_MORE_INFO","reason":"简短理由","clarificationMessage":null}
