@@ -140,32 +140,59 @@ public class CapabilityInvoker {
     }
 
     /**
-     * Runtime 执行入口。Planner 修正和 Runtime retry 在这里彻底分离：
-     * plannerRecoverable 结果直接返回给上层重新规划；runtimeRetryable 才会在本层原样重试。
+     * 兼容非 Runtime 调用：只受 capability 自身声明 timeout 约束。
      */
     public CapabilityResult invoke(PreparedCall call, CapabilityInvocationContext context) {
+        return invoke(call, context, Long.MAX_VALUE);
+    }
+
+    /**
+     * Runtime 执行入口。除了 capability 自身 timeout，还必须服从调用方传入的剩余 wall-clock 预算。
+     * Planner 修正和 Runtime retry 在这里彻底分离：plannerRecoverable 结果直接返回给上层重新规划；
+     * runtimeRetryable 只有在剩余预算仍足够时才允许原样重试。
+     */
+    public CapabilityResult invoke(PreparedCall call,
+                                   CapabilityInvocationContext context,
+                                   long wallClockBudgetMs) {
         if (!call.accepted()) {
             return call.recoverable()
                     ? CapabilityResult.recoverableFailure(call.message(), Map.of("errorKind", "PREPARE_CONTRACT"))
                     : CapabilityResult.failure(call.stopReason(), call.message());
         }
 
+        long boundedBudgetMs = wallClockBudgetMs == Long.MAX_VALUE
+                ? Long.MAX_VALUE : Math.max(1L, wallClockBudgetMs);
+        long invocationStart = System.currentTimeMillis();
         CapabilityResult last = null;
         for (int attempt = 0; attempt <= MAX_RUNTIME_RETRIES; attempt++) {
-            last = invokeOnce(call, context);
+            long remainingMs = remainingBudgetMs(invocationStart, boundedBudgetMs);
+            if (remainingMs <= 0L) {
+                return enforceResultContracts(call.capability().definition(), runtimeBudgetTimeout(call, boundedBudgetMs));
+            }
+
+            last = invokeOnce(call, context, remainingMs);
             if (last == null || !last.runtimeRetryable() || attempt >= MAX_RUNTIME_RETRIES
-                    || Thread.currentThread().isInterrupted()) {
+                    || Thread.currentThread().isInterrupted()
+                    || Boolean.TRUE.equals(last.metadata().get("runtimeBudgetExhausted"))) {
                 return enforceResultContracts(call.capability().definition(), last);
             }
-            if (!backoff(attempt)) {
+
+            long delay = retryBackoffMs(attempt);
+            if (remainingBudgetMs(invocationStart, boundedBudgetMs) <= delay || !backoff(delay)) {
                 return enforceResultContracts(call.capability().definition(), last);
             }
         }
         return enforceResultContracts(call.capability().definition(), last);
     }
 
-    private CapabilityResult invokeOnce(PreparedCall call, CapabilityInvocationContext context) {
-        long timeoutMs = call.capability().definition().timeoutMs();
+    private CapabilityResult invokeOnce(PreparedCall call,
+                                        CapabilityInvocationContext context,
+                                        long remainingBudgetMs) {
+        long declaredTimeoutMs = Math.max(1L, call.capability().definition().timeoutMs());
+        long timeoutMs = remainingBudgetMs == Long.MAX_VALUE
+                ? declaredTimeoutMs : Math.max(1L, Math.min(declaredTimeoutMs, remainingBudgetMs));
+        boolean runtimeBudgetBounded = timeoutMs < declaredTimeoutMs;
+
         // executor 负责传播完整请求上下文；tenantId 仍使用服务端注入的可信 context 显式覆盖，
         // 并由 TenantUtils 在 finally 中恢复 worker 原上下文，避免线程复用时串租户。
         Future<CapabilityResult> future = executor.submit(() ->
@@ -175,8 +202,17 @@ public class CapabilityInvoker {
             return future.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
             future.cancel(true);
+            if (runtimeBudgetBounded) {
+                return CapabilityResult.failure(CapabilityFailureType.TIMEOUT,
+                        AgentStopReason.TIME_BUDGET_EXCEEDED,
+                        "runtime time budget exhausted during capability: " + call.capability().definition().name(),
+                        Map.of("runtimeBudgetExhausted", true,
+                                "declaredTimeoutMs", declaredTimeoutMs,
+                                "appliedTimeoutMs", timeoutMs));
+            }
             return CapabilityResult.failure(CapabilityFailureType.TIMEOUT, AgentStopReason.TIME_BUDGET_EXCEEDED,
-                    "capability timed out after " + timeoutMs + "ms: " + call.capability().definition().name());
+                    "capability timed out after " + timeoutMs + "ms: " + call.capability().definition().name(),
+                    Map.of("declaredTimeoutMs", declaredTimeoutMs, "appliedTimeoutMs", timeoutMs));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             future.cancel(true);
@@ -193,10 +229,26 @@ public class CapabilityInvoker {
         }
     }
 
-    private boolean backoff(int completedRetryIndex) {
-        long delay = INITIAL_RETRY_BACKOFF_MS * (1L << Math.min(completedRetryIndex, 6));
+    private CapabilityResult runtimeBudgetTimeout(PreparedCall call, long budgetMs) {
+        return CapabilityResult.failure(CapabilityFailureType.TIMEOUT,
+                AgentStopReason.TIME_BUDGET_EXCEEDED,
+                "runtime time budget exhausted before capability retry: " + call.capability().definition().name(),
+                Map.of("runtimeBudgetExhausted", true, "appliedTimeoutMs", Math.max(0L, budgetMs)));
+    }
+
+    private long remainingBudgetMs(long startedAt, long budgetMs) {
+        if (budgetMs == Long.MAX_VALUE) return Long.MAX_VALUE;
+        long elapsed = Math.max(0L, System.currentTimeMillis() - startedAt);
+        return Math.max(0L, budgetMs - elapsed);
+    }
+
+    private long retryBackoffMs(int completedRetryIndex) {
+        return INITIAL_RETRY_BACKOFF_MS * (1L << Math.min(completedRetryIndex, 6));
+    }
+
+    private boolean backoff(long delayMs) {
         try {
-            Thread.sleep(delay);
+            Thread.sleep(delayMs);
             return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
