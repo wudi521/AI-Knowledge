@@ -35,8 +35,8 @@ import java.util.Set;
 @Slf4j
 @Component
 public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
-    /** v8 separates semantic evidence depth from candidate-entity breadth for one-pass entity resolution. */
-    private static final String PROMPT_KEY = "agent-execution-plan-v8";
+    /** v9 aligns candidate-entity breadth with downstream proof-evidence scope. */
+    private static final String PROMPT_KEY = "agent-execution-plan-v9";
     private static final String DEFAULT_PROMPT = """
             你是企业知识平台的 Query Planner。你的唯一目标是围绕 immutable originalGoal 生成可执行计划，
             不是给问题分类，也不是直接编造答案。系统会给你当前真实 capabilities、domainFields、domainMetrics、
@@ -81,8 +81,10 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
                必须在同一 DAG 中增加依赖极值节点的后续投影节点，用上游 groupKey/字段值做确定性过滤后再 select 所需详情。
             8. candidateEntityIds 与 verifiedEntityIds 不同：语义检索、全文候选只能使用 candidateEntityIds；
                只有结构化/关系等确定性 Tool 明确返回的 verifiedEntityIds 才是可信实体。禁止把 candidate 当 verified。
-               knowledge_retrieval 的 topK 控制保留多少 Evidence，candidateTopN 独立控制向下游暴露多少个按 Evidence 排名去重后的候选实体。
-               candidateTopN 不裁剪 Evidence，也不提高候选可信度。单一对象解析时优先 candidateTopN=1，同时 topK 可保留 3~5 条证据用于充分性判断；
+               knowledge_retrieval 的 topK 控制内部召回多少 Evidence，candidateTopN 独立控制向下游暴露多少个按 Evidence 排名去重后的候选实体。
+               显式 candidateTopN 时，Tool 还会把下游 Reference 的 proof Evidence 限定到入选候选实体；未入选候选的 Evidence 只保留在计数/Activity 诊断中，
+               同一入选候选命中的多个 chunk 仍保留。candidateTopN 只控制范围，不提高候选可信度。
+               单一对象解析时优先 topK=3~5 + candidateTopN=1：内部仍可用多条召回结果排序，但下游只接收排名第一的候选实体及其证据；
                用户明确要求多个对象、候选集合或问题本身存在多实体输出时，才按需要提高 candidateTopN。
                structured_query 若在 argumentSchema 暴露 entityIds，可把上游候选作为“读取范围”继续验证：
                entityIds 必须严格写为 {"$ref":"n1","selector":"candidateEntityIds","required":true,"expect":"LIST"}
@@ -94,10 +96,11 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
                这样模糊实体解析和确定性条件不会混在一个节点里。
             9. 对“用户给了近似名称/错字/口语简称/不确定实体称呼，但最终要的是该对象的结构化详情”这类实体解析问题，
                不要并行猜一个 TITLE CONTAINS/字段 EQ 与 semantic retrieval 竞争答案。若字面结构化条件本身不能可靠成立，优先在一次 DAG 中：
-               n1=knowledge_retrieval，用原始称呼定位候选；若用户显然在问一个对象，使用 topK=3~5 + candidateTopN=1，保留多条 Evidence 但只向下游传排名第一的候选实体；
+               n1=knowledge_retrieval，用原始称呼定位候选；若用户显然在问一个对象，使用 topK=3~5 + candidateTopN=1，
+               让召回层内部用多条 Evidence 做排名，但向下游只暴露第一候选及其相关 Evidence；
                n2=structured_query dependsOn n1，通过 entityIds=$ref(n1.candidateEntityIds) 限定读取范围，并且只 select originalGoal 真正要求的详情字段。
                n2 绝不能再叠加原始模糊称呼的 TITLE CONTAINS/EQ；否则等于 semantic 已找到候选后，又拿可能错误的原词把正确候选过滤掉。
-               例如用户写“体替代印花的专利详情”，semantic 排名第一的候选可能是“一种代替印花的运动服”；n1 应保留若干 Evidence 但 candidateTopN=1，
+               例如用户写“体替代印花的专利详情”，semantic 排名第一的候选可能是“一种代替印花的运动服”；n1 应使用 candidateTopN=1，
                n2 只按该 candidate entityId 读取 TITLE/申请号/申请人/发明人/日期等字段，不应再加 TITLE CONTAINS “体替代印花”。
                semantic 负责“找可能是谁”，structured 负责“把候选变成可核验事实”。如果当前 Domain 没有 candidateEntityIds 映射或 structured_query 没暴露 entityIds，
                再退回其它真实能力，不得编造这条链路。
@@ -253,7 +256,7 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
         sb.append("replanPolicy=goal_evaluator/GOAL_NOT_SATISFIED and plan_validator/PLAN_VALIDATION observations are hard correction constraints; do not repeat an equivalent failed/insufficient plan").append('\n');
         sb.append("planLocalRefPolicy=$ref node ids are local to the current execution plan only; historical references cannot be consumed by reusing their nodeId; never self-reference a replan node").append('\n');
         sb.append("setFilterPolicy=alternative values for one single-valued field use IN/OR, never contradictory AND; aggregate winners needing details require downstream projection nodes").append('\n');
-        sb.append("entityResolutionPolicy=noisy/approximate singular entity + requested structured details: knowledge_retrieval keeps evidence depth with topK but candidateTopN=1 bounds entity breadth -> projection-only structured materialization -> verifiedEntityIds; never repeat unresolved literal as a structured filter").append('\n');
+        sb.append("entityResolutionPolicy=noisy/approximate singular entity + requested structured details: knowledge_retrieval uses topK=3..5 for internal ranking and candidateTopN=1 to expose only the top entity and its proof evidence -> projection-only structured materialization -> verifiedEntityIds; never repeat unresolved literal as a structured filter").append('\n');
         sb.append("dataflowContract=")
                 .append("$ref + selector + optional path/distinct/required/expect/allowPartial; structured rows are metadata.dataflowRows")
                 .append('\n');
