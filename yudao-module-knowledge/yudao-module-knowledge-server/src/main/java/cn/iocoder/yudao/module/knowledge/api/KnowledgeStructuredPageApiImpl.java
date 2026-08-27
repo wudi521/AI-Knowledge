@@ -130,8 +130,10 @@ public class KnowledgeStructuredPageApiImpl implements KnowledgeStructuredPageAp
         return switch (metricCode.trim().toUpperCase()) {
             case "DOCUMENT_COUNT" -> 1D;
             case "CLAIM_COUNT" -> {
+                // 缺失不是 0。0 是一个真实业务值，而缺失表示“无法证明该逻辑实体的权项数”。
+                // 必须把 null 原样交给 Evidence 的 aggregate completeness contract，禁止把未知值伪装成完整数据。
                 Integer value = metadata == null ? null : metadata.getInt("claimCount");
-                yield value == null ? 0D : value.doubleValue();
+                yield value == null ? null : value.doubleValue();
             }
             default -> null;
         };
