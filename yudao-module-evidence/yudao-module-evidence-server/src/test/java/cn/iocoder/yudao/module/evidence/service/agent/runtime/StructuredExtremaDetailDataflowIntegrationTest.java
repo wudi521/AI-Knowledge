@@ -5,7 +5,6 @@ import cn.iocoder.yudao.module.evidence.service.agent.AgentExecutionBudget;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvocationContext;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvoker;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityRegistry;
-import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResult;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityResultStatus;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.StructuredPipelineCapabilityDelegate;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.StructuredQueryCapability;
@@ -95,7 +94,7 @@ class StructuredExtremaDetailDataflowIntegrationTest {
                     new AgentExecutionBudget(6, 6, 5_000L));
 
             assertThat(result.status()).isEqualTo(CapabilityResultStatus.SUCCESS);
-            assertThat(result.nodeResults().values()).allSatisfy(CapabilityResult::success);
+            assertThat(result.nodeResults().values()).allSatisfy(node -> assertThat(node.success()).isTrue());
 
             List<?> maxRows = (List<?>) result.nodeResults().get("max").metadata()
                     .get(StructuredPipelineResult.DATAFLOW_ROWS_METADATA_KEY);
