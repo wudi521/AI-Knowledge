@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.evidence.service.agent.capability;
 
+import cn.iocoder.yudao.module.evidence.service.agent.AgentObservation;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentStopReason;
 import org.junit.jupiter.api.Test;
 
@@ -115,6 +116,46 @@ class CapabilityInvokerTest {
         }
     }
 
+    @Test
+    void structuredSuccessMustProveCompleteDatasetCoverage() {
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
+                List.of(new IncompleteStructuredCapability()), List.of()));
+        try {
+            CapabilityInvocationContext context = new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-incomplete");
+            CapabilityInvoker.PreparedCall prepared = invoker.prepare("structured_query", Map.of(), context);
+            CapabilityResult result = invoker.invoke(prepared, context);
+
+            assertFalse(result.success());
+            assertEquals(CapabilityFailureType.DATA_INCOMPLETE, result.failureType());
+            assertEquals(AgentStopReason.NO_RELIABLE_EVIDENCE, result.stopReason());
+            assertEquals("STRUCTURED_COVERAGE_CONTRACT", result.metadata().get("errorKind"));
+            assertEquals(AgentObservation.COVERAGE_COMPLETE,
+                    result.metadata().get(AgentObservation.META_REQUIRED_COVERAGE));
+            assertFalse(Boolean.TRUE.equals(result.metadata().get(AgentObservation.META_COVERAGE_COMPLETE)));
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
+    void structuredCompleteDatasetCoveragePassesAndCarriesProofContract() {
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
+                List.of(new CompleteStructuredCapability()), List.of()));
+        try {
+            CapabilityInvocationContext context = new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-complete");
+            CapabilityInvoker.PreparedCall prepared = invoker.prepare("structured_query", Map.of(), context);
+            CapabilityResult result = invoker.invoke(prepared, context);
+
+            assertTrue(result.success());
+            assertEquals(AgentObservation.COVERAGE_COMPLETE,
+                    result.metadata().get(AgentObservation.META_REQUIRED_COVERAGE));
+            assertTrue(Boolean.TRUE.equals(result.metadata().get(AgentObservation.META_COVERAGE_COMPLETE)));
+            assertFalse(Boolean.TRUE.equals(result.metadata().get(AgentObservation.META_SOURCE_TRUNCATED)));
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
     private static final class EchoCapability implements KnowledgeCapability {
         private final CapabilityDefinition definition = new CapabilityDefinition(
                 "echo", "1", "测试能力", Set.of("query"), true, 1000, 10);
@@ -174,6 +215,32 @@ class CapabilityInvokerTest {
         @Override public CapabilityDefinition definition() { return definition; }
         @Override public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
             return CapabilityResult.success(List.of("a", "b", "c"), Map.of("outputCount", 3));
+        }
+    }
+
+    private static final class IncompleteStructuredCapability implements KnowledgeCapability {
+        private final CapabilityDefinition definition = new CapabilityDefinition(
+                "structured_query", "1", "不完整结构化结果测试", Set.of(), true, 1000, 10);
+        @Override public CapabilityDefinition definition() { return definition; }
+        @Override public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+            return CapabilityResult.success("partial-global-result", Map.of(
+                    "outputCount", 1,
+                    "completeDataset", false,
+                    "sourceTruncated", true,
+                    "missingValueCount", 0));
+        }
+    }
+
+    private static final class CompleteStructuredCapability implements KnowledgeCapability {
+        private final CapabilityDefinition definition = new CapabilityDefinition(
+                "structured_query", "1", "完整结构化结果测试", Set.of(), true, 1000, 10);
+        @Override public CapabilityDefinition definition() { return definition; }
+        @Override public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+            return CapabilityResult.success("complete-global-result", Map.of(
+                    "outputCount", 1,
+                    "completeDataset", true,
+                    "sourceTruncated", false,
+                    "missingValueCount", 0));
         }
     }
 }
