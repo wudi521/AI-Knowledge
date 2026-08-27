@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.evidence.service.agent.capability;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.tenant.core.util.TenantUtils;
 import cn.iocoder.yudao.module.evidence.framework.evidence.EvidenceProperties;
+import cn.iocoder.yudao.module.evidence.service.agent.AgentObservation;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentStopReason;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -34,6 +35,7 @@ public class CapabilityInvoker {
     /** Runtime 只对 TIMEOUT / THROTTLED / TRANSIENT 做有限原样重试。 */
     private static final int MAX_RUNTIME_RETRIES = 2;
     private static final long INITIAL_RETRY_BACKOFF_MS = 50L;
+    private static final String STRUCTURED_QUERY_CAPABILITY = "structured_query";
 
     /**
      * 系统范围和执行预算永远由服务端注入。这里使用去下划线/连字符并转小写后的规范名，
@@ -150,13 +152,13 @@ public class CapabilityInvoker {
             last = invokeOnce(call, context);
             if (last == null || !last.runtimeRetryable() || attempt >= MAX_RUNTIME_RETRIES
                     || Thread.currentThread().isInterrupted()) {
-                return enforceMaxRows(call.capability().definition(), last);
+                return enforceResultContracts(call.capability().definition(), last);
             }
             if (!backoff(attempt)) {
-                return enforceMaxRows(call.capability().definition(), last);
+                return enforceResultContracts(call.capability().definition(), last);
             }
         }
-        return enforceMaxRows(call.capability().definition(), last);
+        return enforceResultContracts(call.capability().definition(), last);
     }
 
     private CapabilityResult invokeOnce(PreparedCall call, CapabilityInvocationContext context) {
@@ -199,18 +201,64 @@ public class CapabilityInvoker {
         }
     }
 
-    private CapabilityResult enforceMaxRows(CapabilityDefinition definition, CapabilityResult result) {
+    /**
+     * 所有 Tool Result 在进入 AgentRuntimeExecutor 前必须先通过中央结果合同。
+     * structured_query 当前产品语义固定为：最终 limit 可以裁剪输出，但计算源必须覆盖完整授权数据集。
+     * 这里按 capability contract 校验机器字段，不解析 originalGoal，也不依赖 Planner 自报布尔值。
+     */
+    private CapabilityResult enforceResultContracts(CapabilityDefinition definition, CapabilityResult result) {
         if (result == null) {
             return CapabilityResult.failure(CapabilityFailureType.DEPENDENCY, AgentStopReason.NO_RELIABLE_EVIDENCE,
                     "capability returned null result");
         }
-        if (!result.success()) return result;
-        int outputCount = outputCount(result);
+
+        CapabilityResult contracted = enforceCoverageContract(definition, result);
+        if (!contracted.success()) return contracted;
+
+        int outputCount = outputCount(contracted);
         if (outputCount > definition.maxRows()) {
+            Map<String, Object> metadata = new LinkedHashMap<>(contracted.metadata());
+            metadata.put("errorKind", "OUTPUT_CONTRACT");
+            metadata.put("outputCount", outputCount);
+            metadata.put("maxRows", definition.maxRows());
             return CapabilityResult.failure(CapabilityFailureType.DATA_INCOMPLETE, AgentStopReason.NO_RELIABLE_EVIDENCE,
-                    "capability output exceeds maxRows: " + outputCount + " > " + definition.maxRows());
+                    "capability output exceeds maxRows: " + outputCount + " > " + definition.maxRows(), metadata);
         }
-        return result;
+        return contracted;
+    }
+
+    private CapabilityResult enforceCoverageContract(CapabilityDefinition definition, CapabilityResult result) {
+        if (definition == null || !STRUCTURED_QUERY_CAPABILITY.equals(definition.name())) return result;
+
+        Map<String, Object> metadata = new LinkedHashMap<>(result.metadata());
+        metadata.put(AgentObservation.META_REQUIRED_COVERAGE, AgentObservation.COVERAGE_COMPLETE);
+        metadata.put("coverageContractVersion", 1);
+
+        boolean completeDataset = Boolean.TRUE.equals(metadata.get("completeDataset"));
+        boolean sourceTruncated = Boolean.TRUE.equals(metadata.get(AgentObservation.META_SOURCE_TRUNCATED));
+        int missingValueCount = intMetadata(metadata.get("missingValueCount"), 0);
+        boolean coverageComplete = completeDataset && !sourceTruncated && missingValueCount == 0;
+        metadata.put(AgentObservation.META_SOURCE_TRUNCATED, sourceTruncated);
+        metadata.put(AgentObservation.META_COVERAGE_COMPLETE, coverageComplete);
+
+        if (result.success() && !coverageComplete) {
+            metadata.put("errorKind", "STRUCTURED_COVERAGE_CONTRACT");
+            return CapabilityResult.failure(CapabilityFailureType.DATA_INCOMPLETE,
+                    AgentStopReason.NO_RELIABLE_EVIDENCE,
+                    "structured result cannot prove COMPLETE dataset coverage", metadata);
+        }
+
+        return new CapabilityResult(result.status(), result.data(), metadata,
+                result.stopReason(), result.failureType(), result.message());
+    }
+
+    private int intMetadata(Object value, int defaultValue) {
+        if (value instanceof Number number) return number.intValue();
+        if (value != null) {
+            try { return Integer.parseInt(String.valueOf(value)); }
+            catch (Exception ignore) { }
+        }
+        return defaultValue;
     }
 
     private int outputCount(CapabilityResult result) {
