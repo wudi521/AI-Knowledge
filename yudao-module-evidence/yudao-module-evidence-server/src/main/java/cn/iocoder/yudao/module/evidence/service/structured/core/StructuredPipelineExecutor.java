@@ -61,7 +61,13 @@ public class StructuredPipelineExecutor {
         String validation = validate(plan);
         if (validation != null) return StructuredPipelineResult.failure(validation);
 
-        StructuredPushdownResult pushdown = pushdownCoordinator == null
+        // 内部实体子集必须由 Core 自己再次落实，不能只相信某个领域 pushdown/adapter 恰好支持 resolvedEntityIds。
+        // 为了让 GROUP/AGGREGATE 也保持严格子集语义，entity-scoped plan 强制走 canonical fallback，
+        // source rows 到达 JVM 后再按 entityId 做第二次裁剪，然后才允许过滤/分组/聚合。
+        Set<Long> entityScope = entityScope(plan);
+        StructuredPushdownResult pushdown = !entityScope.isEmpty()
+                ? StructuredPushdownResult.unsupported("entity subset scope requires canonical verification")
+                : pushdownCoordinator == null
                 ? StructuredPushdownResult.unsupported("pushdown coordinator unavailable")
                 : pushdownCoordinator.execute(plan);
         if (pushdown == null) return pushdownFailure("pushdown coordinator returned null", null);
@@ -108,6 +114,16 @@ public class StructuredPipelineExecutor {
         }
 
         List<StructuredQueryResult.Row> sourceRows = source.getRows() == null ? List.of() : source.getRows();
+        if (!entityScope.isEmpty()) {
+            if (sourceRows.stream().anyMatch(row -> row != null && row.getEntityId() == null)) {
+                return StructuredPipelineResult.failure(
+                        "entity-scoped structured source contains rows without entityId; subset proof is unsafe",
+                        Map.of("completeDataset", false, "entityScopeApplied", true));
+            }
+            sourceRows = sourceRows.stream()
+                    .filter(row -> row != null && row.getEntityId() != null && entityScope.contains(row.getEntityId()))
+                    .toList();
+        }
         int sourceEntityCount = sourceRows.size();
 
         // 过滤本身也可能参与全集结论。除了 EXISTS（它的语义就是判断是否有值）之外，
@@ -124,6 +140,12 @@ public class StructuredPipelineExecutor {
             return executeGrouped(plan, filtered, sourceEntityCount);
         }
         return executeFlat(plan, filtered, sourceEntityCount);
+    }
+
+    private Set<Long> entityScope(StructuredPipelinePlan plan) {
+        if (plan == null || plan.getScope() == null || plan.getScope().getResolvedEntityIds() == null
+                || plan.getScope().getResolvedEntityIds().isEmpty()) return Set.of();
+        return new LinkedHashSet<>(plan.getScope().getResolvedEntityIds());
     }
 
     private StructuredPipelineResult validateSucceededPushdown(StructuredPipelineResult result) {
