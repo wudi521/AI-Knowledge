@@ -110,7 +110,7 @@ public class StructuredQueryCapability implements KnowledgeCapability {
                         return CapabilityArgumentValidation.invalid("distinct must be boolean");
                     }
                 }
-                case "filter", "aggregate" -> {
+                case "filter", "aggregate", "having" -> {
                     if (!(value instanceof Map<?, ?>)) {
                         return CapabilityArgumentValidation.invalid(key + " must be an object");
                     }
@@ -134,6 +134,11 @@ public class StructuredQueryCapability implements KnowledgeCapability {
                     // 未知参数已由 Invoker 的 argumentSchema 白名单提前拦截。
                 }
             }
+        }
+        if (context != null && StrUtil.isNotBlank(context.domainCode())) {
+            String filterError = StructuredFilterArgumentValidator.validate(
+                    fieldRegistry, context.domainCode(), arguments.get("filter"));
+            if (filterError != null) return CapabilityArgumentValidation.invalid(filterError);
         }
         return CapabilityArgumentValidation.ok();
     }
