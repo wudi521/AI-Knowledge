@@ -25,7 +25,8 @@ public class EvidenceProperties {
         private String mode = "AGENT";
         private int maxSteps = 6;
         private int maxLlmCalls = 6;
-        private long maxElapsedMs = 15_000L;
+        /** Planner、Typed Tool Runtime、Goal Evaluator 共用的请求级 wall-clock 预算。 */
+        private long maxElapsedMs = 30_000L;
         /** Runtime DAG ready-node 并行执行线程数。 */
         private int runtimeNodeThreads = 8;
         /** capability 超时隔离执行线程数。 */
