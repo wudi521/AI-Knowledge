@@ -47,12 +47,13 @@ class KnowledgeRetrievalCapabilityTest {
     }
 
     @Test
-    void candidateTopNLimitsEntityBreadthWithoutDiscardingEvidenceDepth() {
+    void candidateTopNScopesProofEvidenceToSelectedEntityButKeepsItsMultipleChunks() {
         PlannedEvidenceRetriever retriever = mock(PlannedEvidenceRetriever.class);
         List<Evidence> ranked = List.of(
                 evidence(1L, "66", "一种代替印花的运动服", 1.00D),
-                evidence(2L, "77", "一种体外经颅式治疗仪", 0.80D),
-                evidence(3L, "88", "一种多功能药物载体的制备方法", 0.60D)
+                evidence(2L, "66", "一种代替印花的运动服", 0.90D),
+                evidence(3L, "77", "一种体外经颅式治疗仪", 0.80D),
+                evidence(4L, "88", "一种多功能药物载体的制备方法", 0.60D)
         );
         when(retriever.search("体替代印花", List.of(), List.of(6L), null, 5,
                 1L, 2L, "PATENT", "ag-candidate-width"))
@@ -66,8 +67,14 @@ class KnowledgeRetrievalCapabilityTest {
 
         assertTrue(result.success());
         KnowledgeRetrievalCapability.Output output = (KnowledgeRetrievalCapability.Output) result.data();
-        assertEquals(3, output.evidences().size(), "证据深度不能被 candidateTopN 一起裁掉");
+        assertEquals(2, output.evidences().size(), "同一入选候选的多个 chunk 应保留为 proof evidence");
+        assertTrue(output.evidences().stream().allMatch(e -> "66".equals(e.getDocumentId())),
+                "未入选候选的 Evidence 不得污染最终 proof scope");
         assertEquals(List.of(66L), output.candidateEntityIds(), "只向下游暴露排名第一的候选实体");
+        assertEquals(4, result.metadata().get("retrievedEvidenceCount"));
+        assertEquals(2, result.metadata().get("evidenceCount"));
+        assertEquals(2, result.metadata().get("discardedEvidenceCount"));
+        assertEquals(true, result.metadata().get("candidateEvidenceScoped"));
         assertEquals(3, result.metadata().get("rankedCandidateEntityCount"));
         assertEquals(1, result.metadata().get("candidateEntityCount"));
         assertEquals(1, result.metadata().get("candidateTopN"));
