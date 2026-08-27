@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.evidence.service.agent.runtime;
 import cn.iocoder.yudao.module.evidence.service.agent.AgentExecutionBudget;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.AgentCapabilityOutput;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityDefinition;
+import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityFailureType;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvocationContext;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityInvoker;
 import cn.iocoder.yudao.module.evidence.service.agent.capability.CapabilityRegistry;
@@ -48,6 +49,33 @@ class AgentRuntimeExecutorTest {
             assertEquals(3, result.provenance().size());
             assertEquals(List.of(11L, 12L), consumedIds.get());
             assertTrue(result.provenance().stream().allMatch(p -> "trace-dag".equals(p.traceId())));
+        } finally {
+            invoker.shutdown();
+        }
+    }
+
+    @Test
+    void runtimeBudgetCapsCapabilityTimeoutAndPreventsRetryPastDeadline() {
+        CapabilityInvoker invoker = new CapabilityInvoker(new CapabilityRegistry(
+                List.of(new SlowCapability()), List.of()));
+        try {
+            AgentRuntimeExecutor runtime = new AgentRuntimeExecutor(invoker);
+            AgentExecutionPlan plan = new AgentExecutionPlan("budget-plan", "在请求预算内执行", 0, List.of(
+                    new PlanNode("slow", "slow", Map.of(), "慢调用", Set.of())
+            ));
+
+            long started = System.currentTimeMillis();
+            AgentRuntimeResult result = runtime.execute(plan,
+                    new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-budget"),
+                    new AgentExecutionBudget(2, 2, 80L));
+            long elapsed = System.currentTimeMillis() - started;
+
+            CapabilityResult node = result.nodeResults().get("slow");
+            assertEquals(CapabilityResultStatus.FAILED, result.status());
+            assertEquals(CapabilityFailureType.TIMEOUT, node.failureType());
+            assertEquals(Boolean.TRUE, node.metadata().get("runtimeBudgetExhausted"));
+            assertTrue(((Number) node.metadata().get("appliedTimeoutMs")).longValue() <= 80L);
+            assertTrue(elapsed < 400L, "runtime budget must cap the 1000ms capability timeout and its retries");
         } finally {
             invoker.shutdown();
         }
@@ -115,6 +143,23 @@ class AgentRuntimeExecutorTest {
                 @Override public String deterministicAnswer() { return "已消费前序实体集合"; }
             };
             return CapabilityResult.success(output, Map.of("outputCount", 1));
+        }
+    }
+
+    private static final class SlowCapability implements KnowledgeCapability {
+        private final CapabilityDefinition definition = new CapabilityDefinition(
+                "slow", "1", "慢调用", Set.of(), true, 1_000L, 10);
+
+        @Override public CapabilityDefinition definition() { return definition; }
+
+        @Override
+        public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
+            try {
+                Thread.sleep(500L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return CapabilityResult.success(Map.of("done", true), Map.of("outputCount", 1));
         }
     }
 }
