@@ -55,14 +55,14 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
 
     @Override
     public CapabilityDefinition definition() {
-        return new CapabilityDefinition(NAME, "4",
-                "在当前已授权知识库中检索语义证据；内部执行当前领域已注册的 Scope/Recall/Fusion/Rerank Pipeline。复杂问题可提供 focused subqueries，系统并行检索后合并证据；若当前 Domain 显式注册 Evidence->Entity 映射，还会按证据排名输出 candidateEntityIds，但绝不会输出 verifiedEntityIds。topK 控制证据深度，candidateTopN 独立控制向下游暴露的候选实体宽度。",
+        return new CapabilityDefinition(NAME, "5",
+                "在当前已授权知识库中检索语义证据；内部执行当前领域已注册的 Scope/Recall/Fusion/Rerank Pipeline。复杂问题可提供 focused subqueries，系统并行检索后合并证据；若当前 Domain 显式注册 Evidence->Entity 映射，还会按证据排名输出 candidateEntityIds，但绝不会输出 verifiedEntityIds。topK 控制召回证据深度，candidateTopN 独立控制向下游暴露的候选实体宽度；显式 candidateTopN 时，下游 proof Evidence 只保留所选候选实体对应的证据。",
                 Map.of(
                         "query", "必填。当前要补足的信息需求；不得从候选中发明新的硬事实。",
                         "subqueries", "可选。最多 4 个相互独立、共同覆盖当前信息需求的 focused 子查询。非空时系统并行检索这些子查询并合并结果。",
                         "variants", "可选。最多 5 个保持同一信息需求不变的同义检索表达；仅单查询模式使用。",
-                        "topK", "可选。每个检索请求返回的 Evidence 深度 1~20，默认 8；最终合并证据最多 20 条。",
-                        "candidateTopN", "可选。1~20，默认 20。仅限制按最终 Evidence 排名去重后的 candidateEntityIds 数量，不裁掉 Evidences、不改变 candidate 的不可信属性。单对象解析可设为 1，同时保留更深 topK Evidence 供充分性判断。",
+                        "topK", "可选。每个检索请求返回的召回 Evidence 深度 1~20，默认 8；最终内部合并证据最多 20 条。",
+                        "candidateTopN", "可选。1~20，默认 20。限制按最终 Evidence 排名去重后的 candidateEntityIds 数量。显式提供时，未入选候选实体的 Evidence 只保留计数/活动诊断，不进入下游 Reference proof scope；同一入选候选命中的多个 chunk 仍保留。单对象解析通常设为 1。",
                         "scope", "可选。CURRENT_KB 或 CONTEXT；只有用户明确指代上一轮已验证对象时才用 CONTEXT。"
                 ), Set.of("query"), "EVIDENCE_LIST_WITH_CANDIDATES_AND_ACTIVITY", true,
                 Set.of(), Set.of(), Set.of(), 8_000L, MAX_MERGED_EVIDENCE);
@@ -107,7 +107,8 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         int topK = clampTopK(arguments.get("topK"));
         int candidateTopN = clampCandidateTopN(arguments.get("candidateTopN"));
         return "queries=" + effectiveQueries + ";variants=" + variants + ";scope=" + scope
-                + ";topK=" + topK + ";candidateTopN=" + candidateTopN;
+                + ";topK=" + topK + ";candidateTopN=" + candidateTopN
+                + ";candidateScopeExplicit=" + arguments.containsKey("candidateTopN");
     }
 
     @Override
@@ -123,6 +124,7 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         List<String> subqueries = strings(arguments.get("subqueries"), MAX_SUBQUERIES);
         int topK = clampTopK(arguments.get("topK"));
         int candidateTopN = clampCandidateTopN(arguments.get("candidateTopN"));
+        boolean candidateScopeExplicit = arguments.containsKey("candidateTopN");
         List<Long> documentIds = scope(arguments.get("scope"), context);
         if (documentIds == null) {
             return CapabilityResult.failure(AgentStopReason.NEED_USER_INPUT,
@@ -143,13 +145,17 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
                             "failedSubqueryCount", failed.size(), "subqueryCount", runs.size()));
         }
 
-        List<Evidence> evidences = mergeRoundRobin(runs, MAX_MERGED_EVIDENCE);
-        List<Long> rankedCandidateEntityIds = entityMapperRegistry.candidateEntityIds(context.domainCode(), evidences);
+        List<Evidence> retrievedEvidences = mergeRoundRobin(runs, MAX_MERGED_EVIDENCE);
+        List<Long> rankedCandidateEntityIds = entityMapperRegistry.candidateEntityIds(
+                context.domainCode(), retrievedEvidences);
         List<Long> candidateEntityIds = rankedCandidateEntityIds.stream().limit(candidateTopN).toList();
+        List<Evidence> proofEvidences = candidateScopeExplicit
+                ? evidenceForCandidates(context.domainCode(), retrievedEvidences, candidateEntityIds)
+                : retrievedEvidences;
         int matchedQueries = (int) runs.stream().filter(run -> !run.result().evidences().isEmpty()).count();
         int blockedQueries = (int) runs.stream().filter(run -> run.result().blocked()).count();
         String outcome;
-        if (evidences.isEmpty()) {
+        if (retrievedEvidences.isEmpty()) {
             outcome = blockedQueries > 0 ? "SCOPE_BLOCKED" : "NO_MATCHES";
         } else {
             outcome = blockedQueries > 0 ? "PARTIAL_SCOPE_BLOCKED" : "MATCHES";
@@ -157,13 +163,18 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         Map<String, Integer> perQueryCounts = new LinkedHashMap<>();
         for (QueryRun run : runs) perQueryCounts.put(run.query(), run.result().evidences().size());
 
-        Output output = new Output(evidences, candidateEntityIds, List.copyOf(effectiveQueries), outcome,
-                Map.copyOf(perQueryCounts), summary(evidences));
+        Output output = new Output(proofEvidences, candidateEntityIds, List.copyOf(effectiveQueries), outcome,
+                Map.copyOf(perQueryCounts), summary(proofEvidences));
         Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("evidenceCount", evidences.size());
+        metadata.put("retrievedEvidenceCount", retrievedEvidences.size());
+        metadata.put("evidenceCount", proofEvidences.size());
+        metadata.put("discardedEvidenceCount", Math.max(0, retrievedEvidences.size() - proofEvidences.size()));
+        metadata.put("candidateEvidenceScoped", candidateScopeExplicit
+                && entityMapperRegistry.hasMapper(context.domainCode()) && !candidateEntityIds.isEmpty());
         metadata.put("rankedCandidateEntityCount", rankedCandidateEntityIds.size());
         metadata.put("candidateEntityCount", candidateEntityIds.size());
         metadata.put("candidateTopN", candidateTopN);
+        metadata.put("candidateScopeExplicit", candidateScopeExplicit);
         metadata.put("candidateScopeLimited", rankedCandidateEntityIds.size() > candidateEntityIds.size());
         metadata.put("candidateEntityMapped", entityMapperRegistry.hasMapper(context.domainCode()));
         metadata.put("entityTrust", "CANDIDATE");
@@ -179,6 +190,22 @@ public class KnowledgeRetrievalCapability implements KnowledgeCapability {
         // semantic top-K retrieval and scope blocks are execution facts, not exhaustive corpus absence proofs.
         metadata.put("outputComplete", false);
         return CapabilityResult.success(output, metadata);
+    }
+
+    private List<Evidence> evidenceForCandidates(String domainCode,
+                                                 List<Evidence> evidences,
+                                                 List<Long> candidateEntityIds) {
+        if (evidences == null || evidences.isEmpty() || candidateEntityIds == null || candidateEntityIds.isEmpty()
+                || !entityMapperRegistry.hasMapper(domainCode)) {
+            return evidences == null ? List.of() : List.copyOf(evidences);
+        }
+        Set<Long> selected = new LinkedHashSet<>(candidateEntityIds);
+        List<Evidence> out = new ArrayList<>();
+        for (Evidence evidence : evidences) {
+            List<Long> mapped = entityMapperRegistry.candidateEntityIds(domainCode, List.of(evidence));
+            if (mapped.stream().anyMatch(selected::contains)) out.add(evidence);
+        }
+        return List.copyOf(out);
     }
 
     private List<QueryRun> runQueries(List<String> queries, List<String> variants,
