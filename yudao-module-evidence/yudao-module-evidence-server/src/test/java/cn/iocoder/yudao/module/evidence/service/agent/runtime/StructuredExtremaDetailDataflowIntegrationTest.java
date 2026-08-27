@@ -31,7 +31,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-/** Regression for: find max/min group, then list detail fields for both winners. */
+/** Regression for: find max/min group, then list detail fields and derived stats for both winners only. */
 class StructuredExtremaDetailDataflowIntegrationTest {
 
     @Test
@@ -64,7 +64,7 @@ class StructuredExtremaDetailDataflowIntegrationTest {
             Map<String, Object> minTitle = groupKeyRef("min");
             AgentExecutionPlan plan = new AgentExecutionPlan(
                     "extrema-detail-chain",
-                    "哪个专利发明人最多？哪个最少？罗列出来专利名字和发明人",
+                    "哪个专利发明人最多？哪个最少？罗列出来专利名字和发明人，这两个专利共计有几个姓氏？",
                     0,
                     List.of(
                             new PlanNode("max", StructuredQueryCapability.NAME,
@@ -72,26 +72,29 @@ class StructuredExtremaDetailDataflowIntegrationTest {
                             new PlanNode("min", StructuredQueryCapability.NAME,
                                     extremaArgs("ASC"), "确定发明人数量最少的专利", Set.of()),
                             new PlanNode("details", StructuredQueryCapability.NAME, Map.of(
-                                    "filter", Map.of(
-                                            "logic", "OR",
-                                            "children", List.of(
-                                                    Map.of("field", "TITLE", "operator", "EQ", "values", maxTitle),
-                                                    Map.of("field", "TITLE", "operator", "EQ", "values", minTitle)
-                                            )
-                                    ),
+                                    "filter", winnerFilter(maxTitle, minTitle),
                                     "select", List.of(
                                             "TITLE",
                                             Map.of("field", "INVENTOR", "explode", true)
                                     ),
                                     "limit", 20
-                            ), "罗列极值专利的专利名字和发明人", Set.of("max", "min"))
+                            ), "罗列极值专利的专利名字和发明人", Set.of("max", "min")),
+                            new PlanNode("surname-count", StructuredQueryCapability.NAME, Map.of(
+                                    "filter", winnerFilter(maxTitle, minTitle),
+                                    "aggregate", Map.of(
+                                            "operation", "COUNT_DISTINCT",
+                                            "field", "INVENTOR",
+                                            "explode", true,
+                                            "transforms", List.of("PERSON_SURNAME")
+                                    )
+                            ), "统计这两个极值专利的不同发明人姓氏数量", Set.of("max", "min"))
                     ));
 
             AgentRuntimeResult result = new AgentRuntimeExecutor(invoker).execute(
                     plan,
                     new CapabilityInvocationContext(1L, 2L, 6L, PatentStructuredPack.DOMAIN_CODE,
                             "trace-extrema-detail"),
-                    new AgentExecutionBudget(6, 6, 5_000L));
+                    new AgentExecutionBudget(8, 6, 5_000L));
 
             assertThat(result.status()).isEqualTo(CapabilityResultStatus.SUCCESS);
             assertThat(result.nodeResults().values()).allSatisfy(node -> assertThat(node.success()).isTrue());
@@ -119,6 +122,15 @@ class StructuredExtremaDetailDataflowIntegrationTest {
                     .contains("一种体外经颅式治疗仪")
                     .contains("发明人=郝海涛、吴恒莉、贾少微、何昕")
                     .doesNotContain("筛选条件");
+
+            Object surnameCount = result.nodeResults().get("surname-count").data();
+            assertThat(String.valueOf(surnameCount)).contains("scalarValue=5");
+            ReferenceRecord surnameReference = result.references().stream()
+                    .filter(reference -> "surname-count".equals(reference.nodeId()))
+                    .findFirst().orElseThrow();
+            assertThat(surnameReference.deterministicAnswer())
+                    .contains("不同发明人姓氏")
+                    .contains("5");
         } finally {
             invoker.shutdown();
         }
@@ -134,6 +146,16 @@ class StructuredExtremaDetailDataflowIntegrationTest {
                 ),
                 "orderBy", Map.of("aggregateValue", true, "direction", direction),
                 "limit", 1
+        );
+    }
+
+    private Map<String, Object> winnerFilter(Map<String, Object> maxTitle, Map<String, Object> minTitle) {
+        return Map.of(
+                "logic", "OR",
+                "children", List.of(
+                        Map.of("field", "TITLE", "operator", "EQ", "values", maxTitle),
+                        Map.of("field", "TITLE", "operator", "EQ", "values", minTitle)
+                )
         );
     }
 
