@@ -20,6 +20,7 @@ import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRespDTO;
 import cn.iocoder.yudao.module.knowledge.api.dto.StructuredQueryRowDTO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -36,6 +37,11 @@ import java.util.regex.Matcher;
 public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter, DomainEntityResolver {
 
     private static final int SOURCE_PAGE_SIZE = 1000;
+    /**
+     * JVM fallback 只作为无法安全下推时的完整语义兜底。这里是运行资源保护，不是数据语义截断：
+     * 超过预算必须 fail-closed，绝不能返回前 N 行冒充完整结果。
+     */
+    private static final int DEFAULT_MAX_SOURCE_ROWS = 200_000;
 
     private static final Set<String> EXECUTABLE_METRICS = Set.of(
             PatentStructuredPack.METRIC_PATENT_COUNT,
@@ -53,19 +59,28 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
 
     private final KnowledgeApi knowledgeApi;
     private final KnowledgeStructuredPageApi structuredPageApi;
+    private final int maxSourceRows;
 
     /** 正式 Spring 运行路径：分页 API 是完整结构化源的物理访问合同。 */
     @Autowired
     public PatentStructuredDataAdapter(KnowledgeApi knowledgeApi,
-                                       KnowledgeStructuredPageApi structuredPageApi) {
+                                       KnowledgeStructuredPageApi structuredPageApi,
+                                       @Value("${knowledge.evidence.structured.max-source-rows:200000}") int maxSourceRows) {
         this.knowledgeApi = knowledgeApi;
         this.structuredPageApi = structuredPageApi;
+        if (maxSourceRows <= 0) throw new IllegalArgumentException("maxSourceRows must be > 0");
+        this.maxSourceRows = maxSourceRows;
+    }
+
+    /** 兼容既有纯 Java 单元测试。 */
+    public PatentStructuredDataAdapter(KnowledgeApi knowledgeApi,
+                                       KnowledgeStructuredPageApi structuredPageApi) {
+        this(knowledgeApi, structuredPageApi, DEFAULT_MAX_SOURCE_ROWS);
     }
 
     /** 兼容既有纯 Java 单元测试；测试桩仍可只实现旧 KnowledgeApi。 */
     public PatentStructuredDataAdapter(KnowledgeApi knowledgeApi) {
-        this.knowledgeApi = knowledgeApi;
-        this.structuredPageApi = null;
+        this(knowledgeApi, null, DEFAULT_MAX_SOURCE_ROWS);
     }
 
     @Override
@@ -189,26 +204,35 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
 
     /**
      * 正式路径沿 keyset 游标读到末页；只有末页确认后才返回 truncated=false。
+     * 扫描预算只负责保护 JVM；一旦下游明确还有更多行，就必须失败而不是把预算边界冒充完整数据集。
      * 测试兼容路径保留旧单 RPC 语义，并原样传播其 truncated 标志。
      */
     private SourceRead readCompleteSource(StructuredQueryReqDTO req) {
         if (structuredPageApi == null) {
             CommonResult<StructuredQueryRespDTO> response = knowledgeApi.structuredQuery(req);
             StructuredQueryRespDTO data = checkedData(response, "legacy structured query");
-            return new SourceRead(data.getRows() == null ? List.of() : List.copyOf(data.getRows()), data.isTruncated());
+            List<StructuredQueryRowDTO> rows = data.getRows() == null ? List.of() : List.copyOf(data.getRows());
+            ensureSourceBudget(rows.size());
+            return new SourceRead(rows, data.isTruncated());
         }
 
         List<StructuredQueryRowDTO> all = new ArrayList<>();
         Long cursor = null;
         while (true) {
+            int remaining = maxSourceRows - all.size();
+            if (remaining <= 0) {
+                throw sourceBudgetExceeded(all.size());
+            }
             req.setAfterDocumentId(cursor);
-            req.setRowCap(SOURCE_PAGE_SIZE);
+            req.setRowCap(Math.min(SOURCE_PAGE_SIZE, remaining));
             CommonResult<StructuredQueryRespDTO> response = structuredPageApi.page(req);
             StructuredQueryRespDTO data = checkedData(response, "structured page");
             List<StructuredQueryRowDTO> pageRows = data.getRows() == null ? List.of() : data.getRows();
+            ensureSourceBudget((long) all.size() + pageRows.size());
             all.addAll(pageRows);
 
             if (!data.isTruncated()) return new SourceRead(List.copyOf(all), false);
+            if (all.size() >= maxSourceRows) throw sourceBudgetExceeded(all.size());
 
             Long next = data.getNextDocumentId();
             if (next == null || next <= 0 || (cursor != null && next <= cursor)) {
@@ -219,6 +243,15 @@ public class PatentStructuredDataAdapter implements DomainStructuredDataAdapter,
             }
             cursor = next;
         }
+    }
+
+    private void ensureSourceBudget(long rowCount) {
+        if (rowCount > maxSourceRows) throw sourceBudgetExceeded(rowCount);
+    }
+
+    private IllegalStateException sourceBudgetExceeded(long rowCount) {
+        return new IllegalStateException("structured source scan budget exceeded: rows=" + rowCount
+                + ", limit=" + maxSourceRows + "; authoritative pushdown required for complete answer");
     }
 
     private StructuredQueryRespDTO checkedData(CommonResult<StructuredQueryRespDTO> response, String source) {
