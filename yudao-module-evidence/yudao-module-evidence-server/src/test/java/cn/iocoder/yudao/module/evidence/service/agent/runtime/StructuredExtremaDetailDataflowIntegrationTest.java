@@ -98,6 +98,8 @@ class StructuredExtremaDetailDataflowIntegrationTest {
 
             assertThat(result.status()).isEqualTo(CapabilityResultStatus.SUCCESS);
             assertThat(result.nodeResults().values()).allSatisfy(node -> assertThat(node.success()).isTrue());
+            assertThat(result.nodeResults().get("max").metadata().get("rankedSelectionComplete")).isEqualTo(true);
+            assertThat(result.nodeResults().get("min").metadata().get("rankedSelectionComplete")).isEqualTo(true);
 
             List<?> maxRows = (List<?>) result.nodeResults().get("max").metadata()
                     .get(StructuredPipelineResult.DATAFLOW_ROWS_METADATA_KEY);
@@ -166,8 +168,7 @@ class StructuredExtremaDetailDataflowIntegrationTest {
                 "path", StructuredPipelineResult.DATAFLOW_ROWS_METADATA_KEY + "[*].groupKey",
                 "distinct", true,
                 "required", true,
-                "expect", "LIST",
-                "allowPartial", true
+                "expect", "LIST"
         );
     }
 
