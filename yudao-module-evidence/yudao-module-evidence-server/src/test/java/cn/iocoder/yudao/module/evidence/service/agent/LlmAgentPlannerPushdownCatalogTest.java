@@ -13,6 +13,7 @@ import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -22,7 +23,7 @@ import static org.mockito.Mockito.when;
 class LlmAgentPlannerPushdownCatalogTest {
 
     @Test
-    void plannerInputContainsRuntimeTypedPushdownCapabilities() {
+    void legacyPlannerMustNotReceiveFieldOperatorCombinationMenu() {
         ModelApi modelApi = mock(ModelApi.class);
         PromptSupport promptSupport = mock(PromptSupport.class);
         CapabilityRegistry capabilityRegistry = mock(CapabilityRegistry.class);
@@ -43,10 +44,8 @@ class LlmAgentPlannerPushdownCatalogTest {
         ArgumentCaptor<ModelChatReqDTO> captor = ArgumentCaptor.forClass(ModelChatReqDTO.class);
         verify(modelApi).chat(captor.capture());
         String input = captor.getValue().getUser();
-        assertTrue(input.contains("pushdownCapabilities="));
-        assertTrue(input.contains("ORDER_TOP_N"));
-        assertTrue(input.contains("TITLE"));
-        assertTrue(input.contains("LENGTH"));
-        assertTrue(input.contains("PATENT_COUNT"));
+        assertTrue(input.contains("pushdownCapabilities=[]"));
+        assertFalse(input.contains("ORDER_TOP_N"));
+        assertFalse(input.contains("PATENT_COUNT"));
     }
 }

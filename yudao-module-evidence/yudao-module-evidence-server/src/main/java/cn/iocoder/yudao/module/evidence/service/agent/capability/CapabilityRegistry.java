@@ -1,5 +1,10 @@
 package cn.iocoder.yudao.module.evidence.service.agent.capability;
 
+import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredPipelinePlan;
+import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryLanguageCapability;
+import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredQueryLanguageCatalog;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -7,14 +12,23 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Component
 public class CapabilityRegistry {
+    private static final String STRUCTURED_QUERY = "structured_query";
+    private static final Set<String> LEGACY_STRUCTURED_PLANNER_ARGUMENTS = Set.of(
+            "task", "field", "operator", "values", "projections", "metric", "operation", "sort", "transforms"
+    );
+
     private final Map<String, KnowledgeCapability> capabilities;
     private final List<CapabilityVisibilityPolicy> visibilityPolicies;
+    private final StructuredQueryLanguageCatalog queryLanguageCatalog;
 
+    @Autowired
     public CapabilityRegistry(List<KnowledgeCapability> capabilityList,
-                              List<CapabilityVisibilityPolicy> visibilityPolicies) {
+                              List<CapabilityVisibilityPolicy> visibilityPolicies,
+                              StructuredQueryLanguageCatalog queryLanguageCatalog) {
         Map<String, KnowledgeCapability> map = new LinkedHashMap<>();
         if (capabilityList != null) {
             for (KnowledgeCapability capability : capabilityList) {
@@ -24,6 +38,13 @@ public class CapabilityRegistry {
         }
         this.capabilities = Collections.unmodifiableMap(map);
         this.visibilityPolicies = visibilityPolicies == null ? List.of() : List.copyOf(visibilityPolicies);
+        this.queryLanguageCatalog = queryLanguageCatalog;
+    }
+
+    /** 兼容既有纯 Java 单测；Spring 正式运行使用三参数构造并注入运行时 Query IR 目录。 */
+    public CapabilityRegistry(List<KnowledgeCapability> capabilityList,
+                              List<CapabilityVisibilityPolicy> visibilityPolicies) {
+        this(capabilityList, visibilityPolicies, null);
     }
 
     public KnowledgeCapability getVisible(String name, CapabilityInvocationContext context) {
@@ -39,7 +60,7 @@ public class CapabilityRegistry {
         for (KnowledgeCapability capability : capabilities.values()) {
             CapabilityDefinition plannerDefinition = capability.plannerDefinition(context);
             if (plannerDefinition != null && isVisible(plannerDefinition, context)) {
-                out.add(withPlannerGuidance(plannerDefinition));
+                out.add(withPlannerGuidance(plannerDefinition, context));
             }
         }
         return Collections.unmodifiableList(out);
@@ -48,13 +69,30 @@ public class CapabilityRegistry {
     /**
      * 在 Tool Contract 边界补充领域无关的关系代数/结果形态规则。
      *
-     * <p>这里不识别“姓氏/重复文档”等用户意图，只声明四类稳定语义：
-     * transform-before-filter、multi-value element binding、metric data grain、result shape。</p>
+     * <p>这里不识别“姓氏/重复文档”等用户意图，只声明稳定执行语义。structured_query 额外做一件
+     * 关键事情：执行端继续兼容旧 task/TOP_N 参数，但 Planner-facing contract 隐藏这些迁移参数，
+     * 只允许模型使用组合式 Query IR，并把运行时插件发现到的语言能力动态写入 contract。</p>
      */
-    private CapabilityDefinition withPlannerGuidance(CapabilityDefinition definition) {
+    private CapabilityDefinition withPlannerGuidance(CapabilityDefinition definition,
+                                                     CapabilityInvocationContext context) {
         Map<String, String> schema = definition.argumentSchema();
         Map<String, String> enriched = schema == null ? new LinkedHashMap<>() : new LinkedHashMap<>(schema);
         StringBuilder description = new StringBuilder(definition.description());
+
+        if (STRUCTURED_QUERY.equals(definition.name())) {
+            // 旧参数仍留在机器执行契约做兼容，但禁止 Planner 再走 task/TOP_N/单算子菜单式规划。
+            for (String legacy : LEGACY_STRUCTURED_PLANNER_ARGUMENTS) enriched.remove(legacy);
+            List<StructuredQueryLanguageCapability> languages = queryLanguageCatalog == null ? List.of()
+                    : queryLanguageCatalog.capabilities(context == null ? null : context.domainCode());
+            description.append(" Planner-facing contract=").append(StructuredPipelinePlan.IR_VERSION)
+                    .append("；必须组合 select/filter/groupBy/aggregate/having/orderBy/distinct/limit 表达目标，")
+                    .append("不得发明业务 intent 或依赖兼容 task 枚举。")
+                    .append(" COUNT/SUM/AVG/MIN/MAX 等是 Query IR 语言原语，不代表用户语义分类。");
+            if (!languages.isEmpty()) {
+                description.append(" queryLanguageCapabilities=")
+                        .append(JSONUtil.toJsonStr(languages)).append("。");
+            }
+        }
 
         if (enriched.containsKey("filter") && enriched.containsKey("select")) {
             enriched.computeIfPresent("filter", (key, value) -> value

@@ -1,15 +1,20 @@
 package cn.iocoder.yudao.module.evidence.service.structured.patent;
 
-import cn.iocoder.yudao.module.evidence.service.structured.core.Operation;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredPushdownCapability;
 import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredPushdownCapabilityProvider;
-import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredValueTransform;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-/** PATENT 当前已经有权威完整性证明的 typed 下推能力目录。 */
+/**
+ * 迁移期保留的旧“字段 + 运算 + transform 组合签名”Provider。
+ *
+ * <p>这类组合目录不再作为 Planner 的认知模型：真实下推仍由 StructuredPushdownAdapter.supports(plan)
+ * 对完整 Query IR 做最终判断；Planner 使用 StructuredQueryLanguageCapabilityProvider 发现通用语言边界。
+ * 因此这里故意不再枚举 COUNT/TITLE+LENGTH/TOP_N 等组合。</p>
+ */
 @Component
+@Deprecated
 public class PatentStructuredPushdownCapabilityProvider implements StructuredPushdownCapabilityProvider {
 
     @Override
@@ -19,27 +24,6 @@ public class PatentStructuredPushdownCapabilityProvider implements StructuredPus
 
     @Override
     public List<StructuredPushdownCapability> capabilities() {
-        return List.of(
-                new StructuredPushdownCapability(
-                        PatentStructuredPack.DOMAIN_CODE, Operation.COUNT.name(), null,
-                        PatentStructuredPack.METRIC_DOCUMENT_COUNT, List.of(), false, false,
-                        "SCALAR", "KNOWLEDGE_SQL"),
-                new StructuredPushdownCapability(
-                        PatentStructuredPack.DOMAIN_CODE, Operation.COUNT.name(), null,
-                        PatentStructuredPack.METRIC_PATENT_COUNT, List.of(), false, false,
-                        "SCALAR", "KNOWLEDGE_SQL"),
-                new StructuredPushdownCapability(
-                        PatentStructuredPack.DOMAIN_CODE, Operation.MIN.name(), PatentStructuredPack.FIELD_TITLE,
-                        null, List.of(StructuredValueTransform.LENGTH.name()), false, false,
-                        "SCALAR", "KNOWLEDGE_SQL"),
-                new StructuredPushdownCapability(
-                        PatentStructuredPack.DOMAIN_CODE, Operation.MAX.name(), PatentStructuredPack.FIELD_TITLE,
-                        null, List.of(StructuredValueTransform.LENGTH.name()), false, false,
-                        "SCALAR", "KNOWLEDGE_SQL"),
-                new StructuredPushdownCapability(
-                        PatentStructuredPack.DOMAIN_CODE, "ORDER_TOP_N", PatentStructuredPack.FIELD_TITLE,
-                        null, List.of(StructuredValueTransform.LENGTH.name()), false, true,
-                        "ROWS", "KNOWLEDGE_SQL")
-        );
+        return List.of();
     }
 }

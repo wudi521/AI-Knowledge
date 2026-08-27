@@ -7,12 +7,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Agent V1.1 的组合式结构化查询计划。
- * 固定的是数据运算原语，不固定用户问题类型；近似受控 relational pipeline。
+ * Canonical Query IR V1：Planner 的声明式结构化计划在执行前统一编译到这里。
+ *
+ * <p>固定的是可组合的数据运算语言，不固定用户问题类型。COUNT/AVG/GROUP_BY/ORDER_BY 等属于
+ * Query IR 的有限执行原语，不是用户意图枚举；新的自然语言语义只要能由这些原语组合表达，
+ * 就不应增加新的 intent/task/业务分支。</p>
  */
 @Data
 @Builder
 public class StructuredPipelinePlan {
+    public static final String IR_VERSION = "QUERY_IR_V1";
+
     private String domainCode;
     private String entityType;
     private QueryScope scope;
