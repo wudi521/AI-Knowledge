@@ -24,6 +24,10 @@ import java.util.regex.Pattern;
  * {"$ref":"node-a","selector":"data","path":"rows[*].groupKey",
  *  "distinct":true,"required":true,"expect":"LIST"}.</p>
  *
+ * <p>References into metadata.dataflowRows fail closed when the producer reports an incomplete output.
+ * A plan may opt into partial consumption only with an explicit {@code allowPartial:true}; this keeps
+ * accidental default/result limits from silently becoming an incomplete downstream scope.</p>
+ *
  * <p>The resolver intentionally supports only maps, lists/arrays and Java record components.
  * It is not an expression language and never invokes arbitrary bean getters or methods.</p>
  */
@@ -34,7 +38,7 @@ public class PlanArgumentResolver {
     );
     private static final Set<String> SUPPORTED_EXPECTATIONS = Set.of("ANY", "LIST", "MAP", "SCALAR");
     private static final Set<String> SUPPORTED_REFERENCE_KEYS = Set.of(
-            "$ref", "selector", "path", "distinct", "required", "expect"
+            "$ref", "selector", "path", "distinct", "required", "expect", "allowPartial"
     );
     private static final Pattern PATH_SEGMENT = Pattern.compile("[A-Za-z_][A-Za-z0-9_|:-]*(?:\\[\\*])?");
 
@@ -75,6 +79,9 @@ public class PlanArgumentResolver {
         if (ref.containsKey("required") && !(ref.get("required") instanceof Boolean)) {
             return "plan reference required must be boolean";
         }
+        if (ref.containsKey("allowPartial") && !(ref.get("allowPartial") instanceof Boolean)) {
+            return "plan reference allowPartial must be boolean";
+        }
         if (ref.containsKey("expect")) {
             String expect = String.valueOf(ref.get("expect")).trim().toUpperCase();
             if (!SUPPORTED_EXPECTATIONS.contains(expect)) {
@@ -112,6 +119,9 @@ public class PlanArgumentResolver {
         if (!result.success()) throw new IllegalArgumentException("referenced node did not produce a usable result: " + nodeId);
 
         String selector = ref.get("selector") == null ? "data" : String.valueOf(ref.get("selector"));
+        String path = ref.get("path") instanceof String value ? value.trim() : "";
+        rejectIncompleteDataflow(result, ref, selector, path, nodeId);
+
         Object selected = switch (selector) {
             case "data" -> result.data();
             case "metadata" -> result.metadata();
@@ -124,7 +134,6 @@ public class PlanArgumentResolver {
             default -> throw new IllegalArgumentException("unsupported plan reference selector: " + selector);
         };
 
-        String path = ref.get("path") instanceof String value ? value.trim() : "";
         if (StrUtil.isNotBlank(path)) selected = project(selected, path);
         if (Boolean.TRUE.equals(ref.get("distinct"))) selected = distinct(selected);
         if (Boolean.TRUE.equals(ref.get("required")) && empty(selected)) {
@@ -134,6 +143,25 @@ public class PlanArgumentResolver {
         String expect = ref.get("expect") == null ? "ANY" : String.valueOf(ref.get("expect")).trim().toUpperCase();
         validateExpectedType(selected, expect, nodeId, path);
         return selected;
+    }
+
+    private void rejectIncompleteDataflow(CapabilityResult result,
+                                          Map<String, Object> ref,
+                                          String selector,
+                                          String path,
+                                          String nodeId) {
+        if (!"metadata".equals(selector) || !dataflowPath(path) || Boolean.TRUE.equals(ref.get("allowPartial"))) {
+            return;
+        }
+        Map<String, Object> metadata = result.metadata() == null ? Map.of() : result.metadata();
+        if (!Boolean.TRUE.equals(metadata.get("outputComplete"))) {
+            throw new IllegalArgumentException("referenced dataflow output is incomplete: " + nodeId + "." + path
+                    + "; set allowPartial=true only when partial consumption is intentional");
+        }
+    }
+
+    private boolean dataflowPath(String path) {
+        return "dataflowRows".equals(path) || path.startsWith("dataflowRows.") || path.startsWith("dataflowRows[*]");
     }
 
     private Object project(Object root, String path) {
