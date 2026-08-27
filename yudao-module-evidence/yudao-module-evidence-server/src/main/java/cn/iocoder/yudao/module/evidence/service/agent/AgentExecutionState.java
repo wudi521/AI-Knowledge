@@ -20,6 +20,8 @@ public final class AgentExecutionState {
     private String lastProgressHash;
     private AgentStopReason stopReason;
     private EvidenceCoverage evidenceCoverage = EvidenceCoverage.NONE;
+    /** Engine 在每次规划前刷新；仅用于把当前真实 wall-clock 余量暴露给 Planner。 */
+    private long remainingElapsedBudgetMs;
 
     public AgentExecutionState(String originalGoal) {
         String normalized = originalGoal == null ? "" : originalGoal.trim();
@@ -38,6 +40,10 @@ public final class AgentExecutionState {
     public int incrementLlmCalls() { return ++llmCalls; }
     public long getStartedAtMillis() { return startedAtMillis; }
     public long elapsedMs() { return Math.max(0L, System.currentTimeMillis() - startedAtMillis); }
+    public long getRemainingElapsedBudgetMs() { return remainingElapsedBudgetMs; }
+    public void setRemainingElapsedBudgetMs(long remainingElapsedBudgetMs) {
+        this.remainingElapsedBudgetMs = Math.max(0L, remainingElapsedBudgetMs);
+    }
     public boolean hasCapabilityCallFingerprint(String fingerprint) { return capabilityCallFingerprints.contains(fingerprint); }
     public boolean addCapabilityCallFingerprint(String fingerprint) {
         if (fingerprint == null || fingerprint.isBlank()) throw new IllegalArgumentException("fingerprint must not be blank");
