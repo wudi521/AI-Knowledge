@@ -67,7 +67,8 @@ public class AgentRuntimeExecutor {
                                       CapabilityInvocationContext context,
                                       AgentExecutionBudget budget) {
         AgentExecutionBudget safeBudget = budget == null ? AgentExecutionBudget.defaults() : budget;
-        AgentExecutionPlanValidator.Validation validation = validator.validate(plan, safeBudget);
+        AgentExecutionPlanValidator.Validation validation = validator.validate(
+                plan, safeBudget, capabilityInvoker, context);
         if (!validation.valid()) {
             return new AgentRuntimeResult(CapabilityResultStatus.FAILED, CapabilityFailureType.VALIDATION,
                     validation.message(), Map.of(), List.of(), List.of(), List.of());
