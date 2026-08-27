@@ -87,14 +87,16 @@ public class StructuredQueryCapability implements KnowledgeCapability {
     }
 
     /**
-     * 调用前机器校验 JSON 形状/类型/范围。字段是否存在、是否 sortable/groupable、transform/operator
-     * 是否允许等领域语义仍由 StructuredPipeline 编译器/Executor 依据 Domain Schema 做第二层校验。
+     * 调用前机器校验 JSON 形状/类型/范围。Pipeline 模式会先把少量无歧义的等价 JSON 表达归一化，
+     * 再做严格校验；静态参数还会尝试完整编译，避免把可预知的 IR 合同错误拖到真实执行阶段。
      */
     @Override
     public CapabilityArgumentValidation validateArguments(CapabilityInvocationContext context,
                                                            Map<String, Object> arguments) {
         if (arguments == null) return CapabilityArgumentValidation.ok();
-        for (Map.Entry<String, Object> entry : arguments.entrySet()) {
+        Map<String, Object> safeArguments = pipelineDelegate == null
+                ? arguments : normalizePipelineArguments(arguments);
+        for (Map.Entry<String, Object> entry : safeArguments.entrySet()) {
             String key = entry.getKey();
             Object value = entry.getValue();
             if (value == null) continue;
@@ -137,8 +139,13 @@ public class StructuredQueryCapability implements KnowledgeCapability {
         }
         if (context != null && StrUtil.isNotBlank(context.domainCode())) {
             String filterError = StructuredFilterArgumentValidator.validate(
-                    fieldRegistry, context.domainCode(), arguments.get("filter"));
+                    fieldRegistry, context.domainCode(), safeArguments.get("filter"));
             if (filterError != null) return CapabilityArgumentValidation.invalid(filterError);
+            if (pipelineDelegate != null && !containsPlanReference(safeArguments)
+                    && pipelineDelegate.canonicalPlanKey(context.domainCode(), safeArguments) == null) {
+                return CapabilityArgumentValidation.invalid(
+                        "structured query cannot be compiled against the current domain contract");
+            }
         }
         return CapabilityArgumentValidation.ok();
     }
@@ -147,13 +154,122 @@ public class StructuredQueryCapability implements KnowledgeCapability {
     public String canonicalExecutionKey(CapabilityInvocationContext context,
                                         Map<String, Object> arguments) {
         if (pipelineDelegate == null || context == null || StrUtil.isBlank(context.domainCode())) return null;
-        return pipelineDelegate.canonicalPlanKey(context.domainCode(), arguments);
+        return pipelineDelegate.canonicalPlanKey(context.domainCode(), normalizePipelineArguments(arguments));
     }
 
     @Override
     public CapabilityResult execute(CapabilityInvocationContext context, Map<String, Object> arguments) {
-        if (pipelineDelegate != null) return pipelineDelegate.execute(context, arguments);
+        if (pipelineDelegate != null) {
+            Map<String, Object> normalized = normalizePipelineArguments(arguments);
+            CapabilityResult result = pipelineDelegate.execute(context, normalized);
+            return markExplicitRankedSelection(result, normalized);
+        }
         return executeLegacy(context, arguments);
+    }
+
+    /**
+     * Tool boundary canonicalization for equivalent, unambiguous JSON spellings commonly produced by LLMs.
+     * It does not invent fields/operators or repair business semantics.
+     */
+    private Map<String, Object> normalizePipelineArguments(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) return Map.of();
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : arguments.entrySet()) {
+            out.put(entry.getKey(), normalizePipelineValue(entry.getKey(), entry.getValue()));
+        }
+        Object aggregate = out.get("aggregate");
+        if (aggregate instanceof List<?> list && list.size() == 1 && list.get(0) instanceof Map<?, ?>) {
+            out.put("aggregate", list.get(0));
+        }
+        return out;
+    }
+
+    private Object normalizePipelineValue(String key, Object raw) {
+        if (raw == null) return null;
+        if ("transforms".equals(key)) return normalizeTransforms(raw);
+        if (raw instanceof Map<?, ?> source) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : source.entrySet()) {
+                if (entry.getKey() == null) continue;
+                String childKey = String.valueOf(entry.getKey());
+                out.put(childKey, normalizePipelineValue(childKey, entry.getValue()));
+            }
+            return out;
+        }
+        if (raw instanceof Iterable<?> iterable) {
+            List<Object> out = new ArrayList<>();
+            for (Object item : iterable) out.add(normalizePipelineValue(null, item));
+            return List.copyOf(out);
+        }
+        return raw;
+    }
+
+    private Object normalizeTransforms(Object raw) {
+        if (raw instanceof Map<?, ?> map) {
+            Object operation = map.get("operation");
+            if (map.size() == 1 && isScalar(operation)) return String.valueOf(operation);
+            return raw;
+        }
+        if (raw instanceof Iterable<?> iterable) {
+            List<Object> out = new ArrayList<>();
+            for (Object item : iterable) {
+                if (item instanceof Map<?, ?> map && map.size() == 1 && isScalar(map.get("operation"))) {
+                    out.add(String.valueOf(map.get("operation")));
+                } else {
+                    out.add(item);
+                }
+            }
+            return List.copyOf(out);
+        }
+        return raw;
+    }
+
+    private boolean containsPlanReference(Object raw) {
+        if (raw instanceof Map<?, ?> map) {
+            if (map.containsKey("$ref")) return true;
+            for (Object value : map.values()) if (containsPlanReference(value)) return true;
+            return false;
+        }
+        if (raw instanceof Iterable<?> iterable) {
+            for (Object value : iterable) if (containsPlanReference(value)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * outputComplete=false normally means dataflow rows are unsafe as a downstream scope. An explicit ordered
+     * limit is different: the full source was evaluated and the selected Top-N rows are the complete result of
+     * that ranking operation. Expose that fact separately instead of weakening the general completeness guard.
+     */
+    private CapabilityResult markExplicitRankedSelection(CapabilityResult result, Map<String, Object> arguments) {
+        if (result == null || !result.success() || arguments == null
+                || !arguments.containsKey("limit") || emptyContainer(arguments.get("orderBy"))) {
+            return result;
+        }
+        Map<String, Object> metadata = result.metadata() == null ? Map.of() : result.metadata();
+        boolean completeSource = Boolean.TRUE.equals(metadata.get("completeDataset"))
+                && !Boolean.TRUE.equals(metadata.get("sourceTruncated"))
+                && missingValueCount(metadata.get("missingValueCount")) == 0L;
+        if (!completeSource) return result;
+
+        Map<String, Object> enriched = new LinkedHashMap<>(metadata);
+        enriched.put("rankedSelectionComplete", true);
+        return new CapabilityResult(result.status(), result.data(), enriched,
+                result.stopReason(), result.failureType(), result.message());
+    }
+
+    private boolean emptyContainer(Object raw) {
+        if (raw == null) return true;
+        if (raw instanceof Map<?, ?> map) return map.isEmpty();
+        if (raw instanceof Iterable<?> iterable) return !iterable.iterator().hasNext();
+        return false;
+    }
+
+    private long missingValueCount(Object raw) {
+        if (raw instanceof Number number) return number.longValue();
+        if (raw == null) return 0L;
+        try { return Long.parseLong(String.valueOf(raw)); }
+        catch (Exception ignore) { return Long.MAX_VALUE; }
     }
 
     /** 第一纵切兼容执行；线上 Spring Agent 已不走此路径。 */
