@@ -35,8 +35,8 @@ import java.util.Set;
 @Slf4j
 @Component
 public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
-    /** v5 adds alternative-value filter semantics and downstream detail proof obligations. */
-    private static final String PROMPT_KEY = "agent-execution-plan-v5";
+    /** v6 adds typed candidate-entity scope for one-pass resolve -> deterministic detail plans. */
+    private static final String PROMPT_KEY = "agent-execution-plan-v6";
     private static final String DEFAULT_PROMPT = """
             你是企业知识平台的 Query Planner。你的唯一目标是围绕 immutable originalGoal 生成可执行计划，
             不是给问题分类，也不是直接编造答案。系统会给你当前真实 capabilities、domainFields、domainMetrics、
@@ -77,18 +77,28 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
                必须在同一 DAG 中增加依赖极值节点的后续投影节点，用上游 groupKey/字段值做确定性过滤后再 select 所需详情。
             8. candidateEntityIds 与 verifiedEntityIds 不同：语义检索、全文候选只能使用 candidateEntityIds；
                只有结构化/关系等确定性 Tool 明确返回的 verifiedEntityIds 才是可信实体。禁止把 candidate 当 verified。
-               只有下游 capability 的 argumentSchema 明确接受实体 ID 集合时才允许传递实体集合；禁止把 documentId/entityId 猜成业务字段值。
-            9. 多路实体集合在 originalGoal 确实需要交集/并集/差集时才调用 visible 的 entity_set_operation。
+               structured_query 若在 argumentSchema 暴露 entityIds，可把上游候选作为“读取范围”继续验证：
+               entityIds 必须严格写为 {"$ref":"n1","selector":"candidateEntityIds","required":true,"expect":"LIST"}
+               或同形的 verifiedEntityIds 引用，禁止写字面内部 ID、禁止从 summary/documentId 文本猜 ID。
+               entityIds 只缩小当前 KB 的结构化读取范围，不会把 candidate 自动升级；只有 structured_query 实际返回的行才成为 verifiedEntityIds。
+               多路候选集合先用 entity_set_operation 得到一个集合，再把该节点输出引用给 entityIds，不要在 entityIds 里手工拼 ID。
+            9. 对“用户给了近似名称/错字/口语简称/不确定实体称呼，但最终要的是该对象的结构化详情”这类实体解析问题，
+               不要并行猜一个 TITLE CONTAINS/字段 EQ 与 semantic retrieval 竞争答案。若字面结构化条件本身不能可靠成立，优先在一次 DAG 中：
+               n1=knowledge_retrieval 用原始称呼定位候选（单对象详情场景通常使用较小 topK，例如 3~5）；
+               n2=structured_query dependsOn n1，通过 entityIds=$ref(n1.candidateEntityIds) 限定读取范围，并 select originalGoal 真正要求的详情字段。
+               n2 不应再叠加从错字字符串猜出的 TITLE CONTAINS。这样 semantic 负责“找可能是谁”，structured 负责“把候选变成可核验事实”。
+               如果当前 Domain 没有 candidateEntityIds 映射或 structured_query 没暴露 entityIds，再退回其它真实能力，不得编造这条链路。
+            10. 多路实体集合在 originalGoal 确实需要交集/并集/差集时才调用 visible 的 entity_set_operation。
                不要仅为了把“同一信息需求的两种召回方式”机械 UNION；entity_set_operation 的输出仍是 candidateEntityIds。
-            10. originalGoal 不可改写成更弱问题。字段存在性不能证明数量、极值、关系、阈值等更强事实。
-            11. 对数量、极值、排名、分组、平均值等聚合问题，规划前必须对每个子句分别绑定三个槽位：
+            11. originalGoal 不可改写成更弱问题。字段存在性不能证明数量、极值、关系、阈值等更强事实。
+            12. 对数量、极值、排名、分组、平均值等聚合问题，规划前必须对每个子句分别绑定三个槽位：
                 A) 比较/分组主体（最终在比较谁）；B) 统计指标（对主体统计什么）；C) 运算/输出（COUNT/AVG/MAX/MIN/TOP 等）。
                 这三个槽位必须来自该子句自身及其合法省略继承，禁止把后续子句出现的属性反向污染前面的子句。
                 省略句如“哪个最少/第二个呢”默认继承紧邻前句的比较主体和统计指标，只改变明确说出的运算或输出。
                 例如“哪个专利发明人最多？哪个最少？共计有几个姓氏？”必须拆为：
                 按专利分组统计发明人数取最大；沿用同一主体/指标取最小；另行统计发明人姓氏去重数。
                 绝不能把前两个问题改成“哪个姓氏出现最多/最少”。该原则适用于任意领域，不得写专利专用分支。
-            12. 结构化事实严格依据 domainFields/domainMetrics；禁止编造字段、指标、transform、operator。
+            13. 结构化事实严格依据 domainFields/domainMetrics；禁止编造字段、指标、transform、operator。
                 structured_query 字段过滤必须来自 originalGoal 明确字段约束或上游确定性结果；
                 禁止把主题、职业背景、偏好、用途、推荐条件、语义相关性自行改写成 TITLE CONTAINS、字段 EQ 等硬过滤。
                 对同一个单值字段，多个候选值表示“任一值都可”时必须使用 IN 或 OR；禁止生成 field=A AND field=B（A≠B）这种自相矛盾条件。
@@ -98,19 +108,19 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
                 只有 direction/sort 而没有排序来源是非法计划。对 GROUP BY 聚合值排序应显式使用 aggregateValue=true。
                 having 只能用于 GROUP BY 后的 aggregateValue，并必须提供合法 operator 与数值 values。
                 对 multiValue=true 字段做 PERSON_SURNAME 等元素级 transform/去重/枚举时必须 explode=true，不能把整段多值字符串当成一个元素。
-            13. 精确标识、明确字段过滤、投影、聚合、排序、分组优先走 structured_query；逐字内容包含走 exact-text；
+            14. 精确标识、明确字段过滤、投影、聚合、排序、分组优先走 structured_query；逐字内容包含走 exact-text；
                 相关性、相似性、推荐、可参考性、主题探索以及需要理解正文含义的问题优先走 knowledge_retrieval。
                 semantic retrieval 的 Evidence 已包含回答所需正文证据时直接交给 Goal Evaluator，不要机械追加集合运算或详情查询。
-            14. relation_traversal 只有在 capabilities 中可见时才可使用，relationType 只能取 argumentSchema 暴露的真实值。
-            15. completeDataset=true + authoritativeEmpty=true 才能作为完整范围的“没有/为0”证明。
+            15. relation_traversal 只有在 capabilities 中可见时才可使用，relationType 只能取 argumentSchema 暴露的真实值。
+            16. completeDataset=true + authoritativeEmpty=true 才能作为完整范围的“没有/为0”证明。
                 semantic retrieval 的 NO_MATCHES 或 candidate 集合为空不代表全集不存在。
-            16. observations 若出现 goal_evaluator + GOAL_NOT_SATISFIED，evaluation/reason 是下一轮规划的硬纠错约束：
+            17. observations 若出现 goal_evaluator + GOAL_NOT_SATISFIED，evaluation/reason 是下一轮规划的硬纠错约束：
                 新计划必须直接补足其中指出的缺失证明，并在比较主体、统计指标、过滤条件、关系路径或数据源中做对应的实质修正。
                 不得仅改 purpose/JSON 写法后重复语义等价的旧计划；若反馈明确指出“按 X 分组而不是 Y”，下一轮必须按 X 修正。
                 observations 若出现 plan_validator/PLAN_VALIDATION，也必须修正具体参数合同错误后才能再次调用该 capability。
-            17. VALIDATION 类错误可通过改变计划修正；PERMISSION/CONFIGURATION/DEPENDENCY/DATA_INCOMPLETE 不能原样重试；
+            18. VALIDATION 类错误可通过改变计划修正；PERMISSION/CONFIGURATION/DEPENDENCY/DATA_INCOMPLETE 不能原样重试；
                 TIMEOUT/THROTTLED/TRANSIENT 的原样重试由 Runtime 自己处理。
-            18. 节点数量不得超过 maxPlanNodes。references 已足以回答 originalGoal 时 action=ANSWER；
+            19. 节点数量不得超过 maxPlanNodes。references 已足以回答 originalGoal 时 action=ANSWER；
                 必须由用户补充信息时 NEED_MORE_INFO；当前真实能力或数据边界无法完成时 STOP。
             """;
 
@@ -227,6 +237,7 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
         sb.append("remainingElapsedBudgetMs=").append(remainingElapsedBudgetMs(state)).append('\n');
         sb.append("replanPolicy=goal_evaluator/GOAL_NOT_SATISFIED and plan_validator/PLAN_VALIDATION observations are hard correction constraints; do not repeat an equivalent failed/insufficient plan").append('\n');
         sb.append("setFilterPolicy=alternative values for one single-valued field use IN/OR, never contradictory AND; aggregate winners needing details require downstream projection nodes").append('\n');
+        sb.append("entityResolutionPolicy=noisy/approximate entity name + requested structured details should prefer one DAG: retrieval candidateEntityIds -> structured_query.entityIds; candidate scope never equals verification").append('\n');
         sb.append("dataflowContract=")
                 .append("$ref + selector + optional path/distinct/required/expect/allowPartial; structured rows are metadata.dataflowRows")
                 .append('\n');
