@@ -32,6 +32,29 @@ class PlanArgumentResolverCompletenessTest {
     }
 
     @Test
+    void completeRankedSelectionCanFlowWithoutPartialOptIn() {
+        CapabilityResult upstream = CapabilityResult.success(null, Map.of(
+                StructuredPipelineResult.DATAFLOW_ROWS_METADATA_KEY, List.of(Map.of("groupKey", "P-1")),
+                "outputComplete", false,
+                "limited", true,
+                "completeDataset", true,
+                "rankedSelectionComplete", true
+        ));
+        Map<String, Object> ref = Map.of(
+                "$ref", "n1",
+                "selector", "metadata",
+                "path", "dataflowRows[*].groupKey",
+                "required", true,
+                "expect", "LIST"
+        );
+
+        Map<String, Object> resolved = new PlanArgumentResolver().resolve(
+                Map.of("values", ref), Map.of("n1", upstream));
+
+        assertEquals(List.of("P-1"), resolved.get("values"));
+    }
+
+    @Test
     void partialDataflowRowsRequireExplicitOptIn() {
         CapabilityResult upstream = partialRows();
         Map<String, Object> ref = Map.of(
