@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.evidence.service.structured.core;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -11,9 +12,18 @@ import java.util.List;
 public class StructuredPushdownCoordinator {
 
     private final List<StructuredPushdownAdapter> adapters;
+    private final List<StructuredPushdownCapabilityProvider> capabilityProviders;
 
-    public StructuredPushdownCoordinator(List<StructuredPushdownAdapter> adapters) {
+    @Autowired
+    public StructuredPushdownCoordinator(List<StructuredPushdownAdapter> adapters,
+                                         List<StructuredPushdownCapabilityProvider> capabilityProviders) {
         this.adapters = adapters == null ? List.of() : List.copyOf(adapters);
+        this.capabilityProviders = capabilityProviders == null ? List.of() : List.copyOf(capabilityProviders);
+    }
+
+    /** 兼容既有纯 Java 单元测试。 */
+    public StructuredPushdownCoordinator(List<StructuredPushdownAdapter> adapters) {
+        this(adapters, List.of());
     }
 
     /**
@@ -28,11 +38,17 @@ public class StructuredPushdownCoordinator {
             List<StructuredPushdownCapability> capabilities = adapter.capabilities();
             if (capabilities != null) out.addAll(capabilities);
         }
+        for (StructuredPushdownCapabilityProvider provider : capabilityProviders) {
+            if (provider == null) continue;
+            if (domainCode != null && !domainCode.equalsIgnoreCase(provider.domainCode())) continue;
+            List<StructuredPushdownCapability> capabilities = provider.capabilities();
+            if (capabilities != null) out.addAll(capabilities);
+        }
         out.sort(Comparator.comparing(StructuredPushdownCapability::domainCode, Comparator.nullsLast(String::compareTo))
                 .thenComparing(StructuredPushdownCapability::operation, Comparator.nullsLast(String::compareTo))
                 .thenComparing(StructuredPushdownCapability::fieldCode, Comparator.nullsLast(String::compareTo))
                 .thenComparing(StructuredPushdownCapability::metricCode, Comparator.nullsLast(String::compareTo)));
-        return List.copyOf(out);
+        return out.stream().distinct().toList();
     }
 
     public StructuredPushdownResult execute(StructuredPipelinePlan plan) {
