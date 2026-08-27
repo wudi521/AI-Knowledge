@@ -32,7 +32,8 @@ import java.util.Set;
 @Slf4j
 @Component
 public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
-    private static final String PROMPT_KEY = "agent-execution-plan-v1";
+    /** v2 adds typed multi-node dataflow projection; do not let an old v1 prompt silently override the new contract. */
+    private static final String PROMPT_KEY = "agent-execution-plan-v2";
     private static final String DEFAULT_PROMPT = """
             你是企业知识平台的 Query Planner。你的唯一目标是围绕 immutable originalGoal 生成可执行计划，
             不是给问题分类，也不是直接编造答案。系统会给你当前真实 capabilities、domainFields、domainMetrics、
@@ -51,26 +52,38 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
             1. 节点只能调用 capabilities 中真实存在的能力；arguments 必须符合 argumentSchema。
             2. tenantId/userId/kbId/domainCode/traceId/permission/budget 等系统范围禁止写入 arguments。
             3. 可以独立执行的事实必须放在无依赖节点中，让 Runtime 并行执行；有真实数据依赖才写 dependsOn。
-            4. 下游消费上游结果只能使用显式引用：{"$ref":"n1","selector":"..."}，且引用节点必须同时在 dependsOn。
+            4. 下游消费上游结果只能使用显式引用，且引用节点必须同时在 dependsOn。
+               基础形式：{"$ref":"n1","selector":"verifiedEntityIds"}。
+               字段投影形式：{"$ref":"n1","selector":"metadata","path":"dataflowRows[*].groupKey",
+               "distinct":true,"required":true,"expect":"LIST"}。
                selector 只允许 data / metadata / status / candidateEntityIds / verifiedEntityIds /
                deterministicAnswer / evidences / summary。
-            5. candidateEntityIds 与 verifiedEntityIds 不同：语义检索、全文候选只能使用 candidateEntityIds；
+               path 只允许受控字段导航和 [*] 集合投影；distinct 可对列表去重；required=true 表示空结果不能继续；
+               expect 只允许 ANY/LIST/MAP/SCALAR，用于声明下游真正需要的类型。
+            5. structured_query 成功结果会在 metadata.dataflowRows 暴露稳定机器行，每行固定包含：
+               entityId、entityName、fields、value、groupKey。
+               GROUP BY 的分组键通常取 dataflowRows[*].groupKey；普通字段投影通常取
+               dataflowRows[*].fields.<FIELD_CODE>。当下游 filter.values 需要一组值时必须投影成 LIST，
+               禁止把整个 data/Output/summary/deterministicAnswer 塞进 values。
+            6. 多跳问题应在一次计划中继续连接 n1→n2→n3→...，每一跳只消费上游明确投影出的字段；
+               不要因为用户连续问了多个子问题就把它们压成展示文本，也不要为具体业务问题发明特殊节点类型。
+            7. candidateEntityIds 与 verifiedEntityIds 不同：语义检索、全文候选只能使用 candidateEntityIds；
                只有结构化/关系等确定性 Tool 明确返回的 verifiedEntityIds 才是可信实体。禁止把 candidate 当 verified。
-            6. 多路实体集合需要交集/并集/差集时必须调用 visible 的 entity_set_operation，不要让模型自己计算 ID 集合。
+            8. 多路实体集合需要交集/并集/差集时必须调用 visible 的 entity_set_operation，不要让模型自己计算 ID 集合。
                entity_set_operation 的输出仍是 candidateEntityIds，不会自动提升为 verified。
-            7. originalGoal 不可改写成更弱问题。字段存在性不能证明数量、极值、关系、阈值等更强事实。
-            8. 结构化事实严格依据 domainFields/domainMetrics；禁止编造字段、指标、transform、operator。
-            9. 精确过滤/投影/聚合优先走结构化能力；逐字包含走 exact-text；开放语义问题才走 semantic retrieval。
-               不要把所有问题都变成向量检索。
-            10. relation_traversal 只有在 capabilities 中可见时才可使用，relationType 只能取其 argumentSchema 暴露的真实值。
-            11. completeDataset=true + authoritativeEmpty=true 才能作为完整范围的“没有/为0”证明。
+            9. originalGoal 不可改写成更弱问题。字段存在性不能证明数量、极值、关系、阈值等更强事实。
+            10. 结构化事实严格依据 domainFields/domainMetrics；禁止编造字段、指标、transform、operator。
+            11. 精确过滤/投影/聚合优先走结构化能力；逐字包含走 exact-text；开放语义问题才走 semantic retrieval。
+                不要把所有问题都变成向量检索。
+            12. relation_traversal 只有在 capabilities 中可见时才可使用，relationType 只能取其 argumentSchema 暴露的真实值。
+            13. completeDataset=true + authoritativeEmpty=true 才能作为完整范围的“没有/为0”证明。
                 semantic retrieval 的 NO_MATCHES 或 candidate 集合为空，不代表全集不存在。
-            12. observations 若出现 goal_evaluator + GOAL_NOT_SATISFIED，新计划必须直接补足证明缺口，
+            14. observations 若出现 goal_evaluator + GOAL_NOT_SATISFIED，新计划必须直接补足证明缺口，
                 不能只换 JSON 写法重复同一个弱事实。
-            13. VALIDATION 类错误可通过改变计划修正；PERMISSION/CONFIGURATION/DEPENDENCY/DATA_INCOMPLETE
+            15. VALIDATION 类错误可通过改变计划修正；PERMISSION/CONFIGURATION/DEPENDENCY/DATA_INCOMPLETE
                 不能通过原样重试绕过；TIMEOUT/THROTTLED/TRANSIENT 的原样重试由 Runtime 自己处理。
-            14. 节点数量不得超过 maxPlanNodes。不要为了“保险”重复查询。
-            15. references 已经足以回答 originalGoal 时 action=ANSWER；必须由用户补充信息时 NEED_MORE_INFO；
+            16. 节点数量不得超过 maxPlanNodes。不要为了“保险”重复查询。
+            17. references 已经足以回答 originalGoal 时 action=ANSWER；必须由用户补充信息时 NEED_MORE_INFO；
                 当前真实能力或数据边界无法完成时 STOP。
             """;
 
@@ -171,6 +184,9 @@ public class LlmAgentExecutionPlanner implements AgentExecutionPlanner {
         sb.append("currentSubGoal=").append(StrUtil.nullToEmpty(state.getCurrentSubGoal())).append('\n');
         sb.append("replanAttempt=").append(replanAttempt).append('\n');
         sb.append("maxPlanNodes=").append(Math.max(1, maxPlanNodes)).append('\n');
+        sb.append("dataflowContract=")
+                .append("$ref + selector + optional path/distinct/required/expect; structured rows are metadata.dataflowRows")
+                .append('\n');
         sb.append("capabilities=").append(JSONUtil.toJsonStr(capabilityRegistry.listDefinitions(context))).append('\n');
         sb.append("domainFields=").append(JSONUtil.toJsonStr(fieldSchema(domain))).append('\n');
         sb.append("domainMetrics=").append(JSONUtil.toJsonStr(metricSchema(domain))).append('\n');
