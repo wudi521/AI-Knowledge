@@ -13,6 +13,7 @@ import cn.iocoder.yudao.module.evidence.service.structured.core.DomainFieldRegis
 import cn.iocoder.yudao.module.evidence.service.structured.core.DomainMetricRegistry;
 import cn.iocoder.yudao.module.evidence.service.structured.core.FieldDefinition;
 import cn.iocoder.yudao.module.evidence.service.structured.core.MetricDefinition;
+import cn.iocoder.yudao.module.evidence.service.structured.core.StructuredPushdownCoordinator;
 import cn.iocoder.yudao.module.model.api.ModelApi;
 import cn.iocoder.yudao.module.model.api.dto.ModelChatReqDTO;
 import lombok.extern.slf4j.Slf4j;
@@ -32,7 +33,7 @@ public class LlmAgentPlanner implements AgentPlanner {
     private static final String PROMPT_KEY = "agent-planner-v1.1-pipeline";
     private static final String DEFAULT_PROMPT = """
             你是企业知识平台的受控 Agent Planner。你的职责不是给用户意图分类，而是完成 originalGoal。
-            你只能观察系统提供的 capabilities、domainFields、domainMetrics、history 和 observations，选择唯一下一步动作。
+            你只能观察系统提供的 capabilities、domainFields、domainMetrics、pushdownCapabilities、history 和 observations，选择唯一下一步动作。
             只输出 JSON，不要 Markdown，不要解释内部推理过程。
 
             action 只能是 CALL_CAPABILITY / ANSWER / NEED_MORE_INFO / STOP。
@@ -60,6 +61,7 @@ public class LlmAgentPlanner implements AgentPlanner {
             19. capability/source failure 且 recoverableError=false 时不得通过换参数或换近似查询绕过；只有明确标记 recoverable 的参数或执行契约错误才允许在预算内自修复。基础设施失败和“合法零匹配”必须严格区分。
             20. 如果 observation 来自 goal_evaluator 且 errorKind=GOAL_NOT_SATISFIED，它表示独立充分性门认为现有事实没有完整证明 originalGoal。下一步必须补齐 evaluator 指出的证明缺口、澄清歧义或 STOP；禁止在证据不变时再次 ANSWER。
             21. 如果 originalGoal 的真假取决于“是否存在符合某条件的对象”或“某个值是否属于某多值字段”，且结构化字段能直接表达该谓词，优先用 filter + aggregate COUNT（COUNT 不带 field/metric 时表示对过滤后的实体计数）证明 0 或 >0。不要用 select + limit=1 代替存在性证明；投影展示值与筛选谓词是两个不同事实。
+            22. pushdownCapabilities 是后端已经证明可在权威存储层完整执行的 typed 运算目录。目标与某签名匹配时应优先构造对应 structured_query 计划，避免不必要的 JVM 全量扫描。目录中没有某组合不等于禁止 structured_query，Runtime 仍可能在安全预算内走 canonical fallback；但不得假设未声明的组合一定能在大数据量下完成。
 
             输出格式：
             {"action":"CALL_CAPABILITY","capability":"<capability-name>","arguments":{},"purpose":"本步要补足的信息","message":null}
@@ -71,19 +73,27 @@ public class LlmAgentPlanner implements AgentPlanner {
     private final CapabilityRegistry capabilityRegistry;
     private final DomainFieldRegistry fieldRegistry;
     private final DomainMetricRegistry metricRegistry;
+    private final StructuredPushdownCoordinator pushdownCoordinator;
 
     @Autowired
     public LlmAgentPlanner(ModelApi modelApi, PromptSupport promptSupport, CapabilityRegistry capabilityRegistry,
-                           DomainFieldRegistry fieldRegistry, DomainMetricRegistry metricRegistry) {
+                           DomainFieldRegistry fieldRegistry, DomainMetricRegistry metricRegistry,
+                           StructuredPushdownCoordinator pushdownCoordinator) {
         this.modelApi = modelApi;
         this.promptSupport = promptSupport;
         this.capabilityRegistry = capabilityRegistry;
         this.fieldRegistry = fieldRegistry;
         this.metricRegistry = metricRegistry;
+        this.pushdownCoordinator = pushdownCoordinator;
+    }
+
+    public LlmAgentPlanner(ModelApi modelApi, PromptSupport promptSupport, CapabilityRegistry capabilityRegistry,
+                           DomainFieldRegistry fieldRegistry, DomainMetricRegistry metricRegistry) {
+        this(modelApi, promptSupport, capabilityRegistry, fieldRegistry, metricRegistry, null);
     }
 
     public LlmAgentPlanner(ModelApi modelApi, PromptSupport promptSupport, CapabilityRegistry capabilityRegistry) {
-        this(modelApi, promptSupport, capabilityRegistry, null, null);
+        this(modelApi, promptSupport, capabilityRegistry, null, null, null);
     }
 
     @Override
@@ -129,6 +139,8 @@ public class LlmAgentPlanner implements AgentPlanner {
         sb.append("capabilities=").append(JSONUtil.toJsonStr(capabilities)).append('\n');
         sb.append("domainFields=").append(JSONUtil.toJsonStr(fieldSchema(domain))).append('\n');
         sb.append("domainMetrics=").append(JSONUtil.toJsonStr(metricSchema(domain))).append('\n');
+        sb.append("pushdownCapabilities=").append(JSONUtil.toJsonStr(
+                pushdownCoordinator == null ? List.of() : pushdownCoordinator.capabilities(domain))).append('\n');
         sb.append("conversationContextEntityIds=")
                 .append(context == null ? List.of() : context.contextEntityIds()).append('\n');
         sb.append("history=").append(historySummary(history)).append('\n');
