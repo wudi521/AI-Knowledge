@@ -108,8 +108,9 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
                 "candidate->verified 的机器信任边界",
                 "只能包含 entityIds + select/projections",
                 "candidateTopN", "topK=3~5 + candidateTopN=1",
+                "未入选候选的 Evidence 只保留在计数/Activity 诊断中",
                 "不应再加 TITLE CONTAINS “体替代印花”");
-        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v8");
+        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v9");
         CapabilityDefinition visible = registry.listDefinitions(
                 new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-ir")).get(0);
         assertThat(visible.argumentSchema()).containsKey("entityIds");
