@@ -29,7 +29,7 @@ import static org.mockito.Mockito.when;
 class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
 
     @Test
-    void plannerReceivesQueryIrLanguageTypedDataflowBudgetAndClauseBindingContract() {
+    void plannerReceivesQueryIrLanguageTypedDataflowBudgetClauseBindingAndDetailContract() {
         ModelApi modelApi = mock(ModelApi.class);
         PromptSupport promptSupport = mock(PromptSupport.class);
         when(promptSupport.get(anyString(), anyString())).thenAnswer(invocation -> invocation.getArgument(1));
@@ -70,7 +70,7 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
         LlmAgentExecutionPlanner planner = new LlmAgentExecutionPlanner(
                 modelApi, promptSupport, registry, null, null);
 
-        planner.plan(new AgentExecutionState("哪个专利发明人最多？哪个最少？共计有几个姓氏？"),
+        planner.plan(new AgentExecutionState("哪个专利发明人最多？哪个最少？罗列专利名字和发明人"),
                 new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-ir"),
                 List.of(), List.of(), List.of(), 0, 4);
 
@@ -82,8 +82,8 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
 
         assertThat(input).contains("QUERY_IR_V1", "GROUP_BY", "AGGREGATE", "AVG", "ORDER_BY");
         assertThat(input).contains("dataflowContract=", "metadata.dataflowRows", "allowPartial",
-                "remainingElapsedBudgetMs=", "replanPolicy=");
-        assertThat(input).contains("originalGoal=哪个专利发明人最多？哪个最少？共计有几个姓氏？");
+                "remainingElapsedBudgetMs=", "replanPolicy=", "setFilterPolicy=");
+        assertThat(input).contains("originalGoal=哪个专利发明人最多？哪个最少？罗列专利名字和发明人");
         assertThat(input).doesNotContain("ORDER_TOP_N", "PATENT_COUNT", "legacy task", "legacy operation");
         assertThat(system).contains("最少必要节点", "remainingElapsedBudgetMs",
                 "dataflowRows[*].groupKey", "dataflowRows[*].fields.<FIELD_CODE>",
@@ -94,8 +94,10 @@ class LlmAgentExecutionPlannerCapabilityDiscoveryTest {
                 "比较/分组主体", "统计指标", "省略句", "禁止把后续子句出现的属性反向污染前面的子句",
                 "按专利分组统计发明人数取最大", "绝不能把前两个问题改成“哪个姓氏出现最多/最少”",
                 "orderBy 每个排序项必须明确且仅明确一个排序来源", "aggregateValue=true",
-                "硬纠错约束", "不得仅改 purpose/JSON 写法后重复语义等价的旧计划");
-        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v4");
+                "硬纠错约束", "不得仅改 purpose/JSON 写法后重复语义等价的旧计划",
+                "purpose 必须只描述该节点实际能够证明的事实", "后续投影节点",
+                "必须使用 IN 或 OR", "禁止生成 field=A AND field=B", "PERSON_SURNAME", "explode=true");
+        assertThat(request.getScenario()).isEqualTo("agent-execution-plan-v5");
         assertThat(registry.listDefinitions(new CapabilityInvocationContext(1L, 2L, 6L, "PATENT", "trace-ir"))
                 .get(0).argumentSchema()).doesNotContainKeys("task", "operation", "metric");
     }
