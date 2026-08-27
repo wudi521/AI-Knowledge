@@ -18,6 +18,13 @@ public record AgentObservation(String capability,
                                boolean recoverableError,
                                String errorCode,
                                Map<String, Object> metadata) {
+
+    /** Runtime/Goal Validator 共享的覆盖范围合同字段。 */
+    public static final String META_REQUIRED_COVERAGE = "requiredCoverage";
+    public static final String META_COVERAGE_COMPLETE = "coverageComplete";
+    public static final String META_SOURCE_TRUNCATED = "sourceTruncated";
+    public static final String COVERAGE_COMPLETE = "COMPLETE";
+
     public AgentObservation {
         metadata = metadata == null ? Map.of()
                 : Collections.unmodifiableMap(new LinkedHashMap<>(metadata));
@@ -48,21 +55,29 @@ public record AgentObservation(String capability,
     /**
      * structured_query 的“计算范围完整”与“最终输出是否被 limit”是两个正交事实。
      *
+     * <p>当前 structured_query 的产品合同是：所有结构化结果都基于当前授权范围内的完整集合计算，
+     * limit 只裁剪最终输出。因此 Runtime 在 Observation 边界强制声明 requiredCoverage=COMPLETE，
+     * 不能由 Planner/Capability 通过自然语言或自报 metadata 降级。Goal Validator 会再次校验执行证明。</p>
+     *
      * <p>历史字段 outputComplete/limited 只描述最终输出行，不能再被 Planner/Evaluator 当成
-     * 数据源覆盖证明。这里在 Observation 边界统一补齐 coverage contract，保持旧字段兼容。</p>
+     * 数据源覆盖证明。这里统一补齐 coverage contract，保持旧字段兼容。</p>
      */
     private static Map<String, Object> normalizeMetadata(String capability, Map<String, Object> metadata) {
         Map<String, Object> normalized = new LinkedHashMap<>(metadata == null ? Map.of() : metadata);
         if (!"structured_query".equals(capability)) return normalized;
 
+        // 结构化执行当前必须建立在完整数据集之上；调用方不能把它降级为 PARTIAL/BOUNDED。
+        normalized.put(META_REQUIRED_COVERAGE, COVERAGE_COMPLETE);
+        normalized.put("coverageContractVersion", 1);
+
         boolean completeDataset = Boolean.TRUE.equals(normalized.get("completeDataset"));
-        boolean sourceTruncated = Boolean.TRUE.equals(normalized.get("sourceTruncated"));
+        boolean sourceTruncated = Boolean.TRUE.equals(normalized.get(META_SOURCE_TRUNCATED));
         int missingValueCount = number(normalized.get("missingValueCount"), 0);
         boolean coverageComplete = completeDataset && !sourceTruncated && missingValueCount == 0;
         boolean outputLimited = Boolean.TRUE.equals(normalized.get("limited"));
 
-        normalized.put("sourceTruncated", sourceTruncated);
-        normalized.put("coverageComplete", coverageComplete);
+        normalized.put(META_SOURCE_TRUNCATED, sourceTruncated);
+        normalized.put(META_COVERAGE_COMPLETE, coverageComplete);
         normalized.put("outputLimited", outputLimited);
 
         Object sourceRows = firstNumber(normalized.get("sourceRowCount"), normalized.get("sourceEntityCount"));
