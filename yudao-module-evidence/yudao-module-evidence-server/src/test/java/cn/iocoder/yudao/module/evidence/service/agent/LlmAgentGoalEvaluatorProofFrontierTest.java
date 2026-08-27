@@ -19,10 +19,11 @@ import static org.mockito.Mockito.when;
 class LlmAgentGoalEvaluatorProofFrontierTest {
 
     @Test
-    void satisfiedEvaluationReturnsOnlyKnownSupportingReferences() {
+    void satisfiedEvaluationReturnsOnlyKnownSupportingAndAnswerReferences() {
         LlmAgentGoalEvaluator evaluator = evaluator("""
                 {"verdict":"SATISFIED","reason":"新结构化详情已完整证明目标",\
-                 "clarificationMessage":null,"supportingReferenceIds":["resolved-plan:detail"]}
+                 "clarificationMessage":null,"supportingReferenceIds":["resolved-plan:detail"],\
+                 "answerReferenceIds":["resolved-plan:detail"]}
                 """);
 
         AgentGoalEvaluator.Evaluation result = evaluator.evaluate(
@@ -37,13 +38,52 @@ class LlmAgentGoalEvaluatorProofFrontierTest {
 
         assertEquals(AgentGoalEvaluator.Verdict.SATISFIED, result.verdict());
         assertEquals(List.of("resolved-plan:detail"), result.supportingReferenceIds());
+        assertEquals(List.of("resolved-plan:detail"), result.answerReferenceIds());
+    }
+
+    @Test
+    void semanticResolutionCanSupportProofWithoutEnteringAnswerContent() {
+        LlmAgentGoalEvaluator evaluator = evaluator("""
+                {"verdict":"SATISFIED","reason":"语义证据完成实体消歧，结构化结果提供最终详情",\
+                 "clarificationMessage":null,\
+                 "supportingReferenceIds":["plan:resolve","plan:detail"],\
+                 "answerReferenceIds":["plan:detail"]}
+                """);
+
+        AgentGoalEvaluator.Evaluation result = evaluator.evaluate(
+                "帮我检索出来体替代印花的专利详情信息",
+                List.of(
+                        observation("plan:resolve", "PARTIAL"),
+                        observation("plan:detail", "SUCCESS")
+                ), List.of("结构化详情"), List.of(), context());
+
+        assertEquals(AgentGoalEvaluator.Verdict.SATISFIED, result.verdict());
+        assertEquals(List.of("plan:resolve", "plan:detail"), result.supportingReferenceIds());
+        assertEquals(List.of("plan:detail"), result.answerReferenceIds());
     }
 
     @Test
     void satisfiedWithoutProofFrontierFailsClosed() {
         LlmAgentGoalEvaluator evaluator = evaluator("""
                 {"verdict":"SATISFIED","reason":"声称已经足够",\
-                 "clarificationMessage":null,"supportingReferenceIds":[]}
+                 "clarificationMessage":null,"supportingReferenceIds":[],\
+                 "answerReferenceIds":[]}
+                """);
+
+        AgentGoalEvaluator.Evaluation result = evaluator.evaluate(
+                "查询专利详情",
+                List.of(observation("resolved-plan:detail", "SUCCESS")),
+                List.of("新详情"), List.of(), context());
+
+        assertEquals(AgentGoalEvaluator.Verdict.EVALUATION_FAILED, result.verdict());
+    }
+
+    @Test
+    void satisfiedWithoutAnswerReferencesFailsClosed() {
+        LlmAgentGoalEvaluator evaluator = evaluator("""
+                {"verdict":"SATISFIED","reason":"有证明但没声明答案内容来源",\
+                 "clarificationMessage":null,"supportingReferenceIds":["resolved-plan:detail"],\
+                 "answerReferenceIds":[]}
                 """);
 
         AgentGoalEvaluator.Evaluation result = evaluator.evaluate(
@@ -58,13 +98,30 @@ class LlmAgentGoalEvaluatorProofFrontierTest {
     void inventedProofReferenceFailsClosed() {
         LlmAgentGoalEvaluator evaluator = evaluator("""
                 {"verdict":"SATISFIED","reason":"声称已经足够",\
-                 "clarificationMessage":null,"supportingReferenceIds":["invented:reference"]}
+                 "clarificationMessage":null,"supportingReferenceIds":["invented:reference"],\
+                 "answerReferenceIds":["invented:reference"]}
                 """);
 
         AgentGoalEvaluator.Evaluation result = evaluator.evaluate(
                 "查询专利详情",
                 List.of(observation("resolved-plan:detail", "SUCCESS")),
                 List.of("新详情"), List.of(), context());
+
+        assertEquals(AgentGoalEvaluator.Verdict.EVALUATION_FAILED, result.verdict());
+    }
+
+    @Test
+    void answerReferenceOutsideProofFrontierFailsClosed() {
+        LlmAgentGoalEvaluator evaluator = evaluator("""
+                {"verdict":"SATISFIED","reason":"答案来源不属于证明链",\
+                 "clarificationMessage":null,"supportingReferenceIds":["plan:resolve"],\
+                 "answerReferenceIds":["plan:detail"]}
+                """);
+
+        AgentGoalEvaluator.Evaluation result = evaluator.evaluate(
+                "查询专利详情",
+                List.of(observation("plan:resolve", "PARTIAL"), observation("plan:detail", "SUCCESS")),
+                List.of("详情"), List.of(), context());
 
         assertEquals(AgentGoalEvaluator.Verdict.EVALUATION_FAILED, result.verdict());
     }
