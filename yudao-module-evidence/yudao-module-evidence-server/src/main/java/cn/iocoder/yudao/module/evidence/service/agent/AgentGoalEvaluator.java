@@ -34,46 +34,68 @@ public interface AgentGoalEvaluator {
     }
 
     /**
-     * supportingReferenceIds 是“最终证明集 / proof frontier”。
+     * supportingReferenceIds 是“完整证明集 / proof frontier”；answerReferenceIds 是其用户答案内容子集。
      *
-     * <p>历史 observations 可以包含失败、空结果、被后续 replan 纠正的中间事实以及仅用于定位候选的语义证据；
-     * SATISFIED 时必须尽量明确指出真正支持 OriginalGoal 的 Reference，最终回答层只消费这组引用，避免把
-     * 已被纠正的旧结果或无关证据重新拼回答案。</p>
+     * <p>例如近似名称解析可以需要 semantic retrieval + structured detail 两条 Reference 才能证明“对象找对了且详情可靠”，
+     * 但用户最终展示的详情只应该消费 structured detail。这样支持性语义证据仍参与严格验收，却不会污染答案内容或强制触发
+     * 不必要的生成模型调用。</p>
      */
-    record Evaluation(Verdict verdict, String reason, String message, List<String> supportingReferenceIds) {
+    record Evaluation(Verdict verdict,
+                      String reason,
+                      String message,
+                      List<String> supportingReferenceIds,
+                      List<String> answerReferenceIds) {
         public Evaluation {
-            LinkedHashSet<String> unique = new LinkedHashSet<>();
-            if (supportingReferenceIds != null) {
-                for (String value : supportingReferenceIds) {
-                    if (value != null && !value.isBlank()) unique.add(value.trim());
-                }
-            }
-            supportingReferenceIds = List.copyOf(new ArrayList<>(unique));
+            supportingReferenceIds = immutableUnique(supportingReferenceIds);
+            answerReferenceIds = immutableUnique(answerReferenceIds);
         }
 
-        /** 兼容旧单测/实现。 */
+        /** 兼容旧单测/实现：未显式区分角色时，全部证明 Reference 同时作为答案内容 Reference。 */
+        public Evaluation(Verdict verdict, String reason, String message, List<String> supportingReferenceIds) {
+            this(verdict, reason, message, supportingReferenceIds, supportingReferenceIds);
+        }
+
+        /** 兼容更旧的三参数构造。 */
         public Evaluation(Verdict verdict, String reason, String message) {
-            this(verdict, reason, message, List.of());
+            this(verdict, reason, message, List.of(), List.of());
         }
 
         public static Evaluation satisfied(String reason) {
-            return new Evaluation(Verdict.SATISFIED, reason, null, List.of());
+            return new Evaluation(Verdict.SATISFIED, reason, null, List.of(), List.of());
         }
 
         public static Evaluation satisfied(String reason, List<String> supportingReferenceIds) {
-            return new Evaluation(Verdict.SATISFIED, reason, null, supportingReferenceIds);
+            return new Evaluation(Verdict.SATISFIED, reason, null,
+                    supportingReferenceIds, supportingReferenceIds);
+        }
+
+        public static Evaluation satisfied(String reason,
+                                           List<String> supportingReferenceIds,
+                                           List<String> answerReferenceIds) {
+            return new Evaluation(Verdict.SATISFIED, reason, null,
+                    supportingReferenceIds, answerReferenceIds);
         }
 
         public static Evaluation insufficient(String reason) {
-            return new Evaluation(Verdict.INSUFFICIENT, reason, null, List.of());
+            return new Evaluation(Verdict.INSUFFICIENT, reason, null, List.of(), List.of());
         }
 
         public static Evaluation needMoreInfo(String reason, String message) {
-            return new Evaluation(Verdict.NEED_MORE_INFO, reason, message, List.of());
+            return new Evaluation(Verdict.NEED_MORE_INFO, reason, message, List.of(), List.of());
         }
 
         public static Evaluation failed(String reason) {
-            return new Evaluation(Verdict.EVALUATION_FAILED, reason, null, List.of());
+            return new Evaluation(Verdict.EVALUATION_FAILED, reason, null, List.of(), List.of());
+        }
+
+        private static List<String> immutableUnique(List<String> source) {
+            LinkedHashSet<String> unique = new LinkedHashSet<>();
+            if (source != null) {
+                for (String value : source) {
+                    if (value != null && !value.isBlank()) unique.add(value.trim());
+                }
+            }
+            return List.copyOf(new ArrayList<>(unique));
         }
     }
 
